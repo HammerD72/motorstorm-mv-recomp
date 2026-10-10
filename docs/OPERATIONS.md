@@ -25,6 +25,8 @@ File clears on consumption; stdout acknowledges [cellPad] PAD_FILE press. Observ
 
 ## Capture discipline
 
+The migrated private baseline contains ten PPU sources, 24 SPU images and five capture hooks; it is instrumented. Original EXE/PDB are retained under build/preserved/, and rebuilt identities are in build/native/build_identity.json. Build or migration success is not gameplay proof. Work solo, muted, bounded and atomic.
+
 Record same-resource raw ID/length/hash, root/variants and lookup args at the same operation. Current observer: four16MiB raw slots, fatal dump budget128MiB/buffer16MiB. Successful animations previously exhausted128-event quota; reserve fatal budget and cover both constructors. A fatal_gate label can describe a successful animation-present gate, not a fatal. Heavy diagnostics change timing.
 
 Before native symbolization check EXE/PDB CodeView GUID+age. Actual PC, unwound frames and raw stack candidates are distinct; stale CIA0 is not current PC. RPCS3 GDB attach pauses execution: validate guest bytes, set breakpoint, explicitly resume vCont;c, distinguish trap from frozen post-fault capture. Compare effective full configs/version logs/disc/HDD inputs and explicit target mapping.

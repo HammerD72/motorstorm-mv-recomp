@@ -186,7 +186,7 @@
   },
   {
     "note": "HANDOFF_prompt_2026-10-10_evening.md",
-    "owner": "HANDOFF.md",
+    "owner": "docs/BUILDING.md",
     "sha256": "7bd9e520465792c73bad9ab7d607cf46a687b2402cef6077d77930436d7675d3"
   },
   {
@@ -281,7 +281,7 @@
   },
   {
     "note": "m4_title_tracer.md",
-    "owner": "HANDOFF.md",
+    "owner": "docs/OPERATIONS.md",
     "sha256": "89a88e82b4131efbde3bc99c67a76ff323d024f5c509e3012c9ff73929dfd73f"
   },
   {
@@ -296,7 +296,7 @@
   },
   {
     "note": "NATIVE_PORT_BOUNDARY.md",
-    "owner": "HANDOFF.md",
+    "owner": "docs/BUILDING.md",
     "sha256": "4c0d5b51c0d633a58c84228d975ce7c500873b81d77babfadf1b7249c33f2a52"
   },
   {
@@ -311,7 +311,7 @@
   },
   {
     "note": "sol-handoff-2026-10-07.md",
-    "owner": "HANDOFF.md",
+    "owner": "docs/research/RUNTIME.md",
     "sha256": "ff26cb79e0795a8528e39521d8f7739f6bdd94e6fd26087682c18b1ba99dd4a0"
   },
   {

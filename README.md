@@ -4,6 +4,6 @@ Work in progress: Windows runner, translation tools and modified [ps3recomp](htt
 
 **You must supply your own legally obtained game files.** The source license covers this tooling, not the game. Setup and generation run locally; this repository provides no game downloads.
 
-Start with [setup and build](docs/BUILDING.md), then [running and capturing](docs/OPERATIONS.md). [HANDOFF](HANDOFF.md) identifies the current target and next task. [Documentation index](docs/README.md) groups the research by topic.
+Start with [setup and build](docs/BUILDING.md), then [running and capturing](docs/OPERATIONS.md). Track atomic work in [GitHub issues](https://github.com/robbe1912/motorstorm-mv-recomp/issues). [Documentation index](docs/README.md) groups the research by topic.
 
 See [vendor provenance and licenses](docs/VENDOR.md) and [publication audit](docs/REPOSITORY.md). Source licensing does not grant rights to the game or guarantee immunity from legal claims. No affiliation with Sony or the original developers.

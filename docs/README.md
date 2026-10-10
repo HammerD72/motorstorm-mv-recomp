@@ -1,12 +1,12 @@
 # Documentation index
 
-Each subject has one canonical owner. Begin with [current handoff](../HANDOFF.md); chronological notes remain private evidence, not competing current instructions.
+Each subject has one canonical owner. Begin with [setup and target](BUILDING.md), then [operations](OPERATIONS.md). [GitHub issues](https://github.com/robbe1912/motorstorm-mv-recomp/issues) own pending work; chronological notes remain private evidence.
 
 | Subject | Owner |
 |---|---|
 | Dependencies, private inputs/keys, generation/build | [Building](BUILDING.md) |
 | Owned process guards, input, capture, cleanup | [Operations](OPERATIONS.md) |
-| Ordered diagnosis and acceptance gates | [Next steps](NEXT_STEPS.md) |
+| Atomic work and dependency navigation | [Issue tracking](NEXT_STEPS.md) |
 | Failing native resource, controls, reference compatibility | [Havok/reference](research/HAVOK_REFERENCE.md) |
 | Shared PPU/SPU fixes and regression scope | [Runtime](research/RUNTIME.md) |
 | Ownership/CPU spans and allocation chronology | [SPURS](research/SPURS.md) |

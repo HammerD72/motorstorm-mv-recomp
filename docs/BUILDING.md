@@ -2,6 +2,12 @@
 
 Developer tooling, not a ready-to-play distribution. The initial embedded SPU stage does **not** recreate all 24 private images currently used. Extra firmware codecs, runtime-built PM and captured DSP modules need separate inputs/stages. An automated clean-clone boot has not been verified.
 
+## Target and native architecture
+
+The current diagnostic target is named-US debug `EBOOT_MSMVdbgUS.ELF` with authentic launch-US BCUS98137 PS3_GAME data (VERSION 01.00/FW 1.80). ELF SHA256: `3e68c72f8fbd6a30ef30d4535462cf70f1cc86d111f56574adb7dd2c255e0706`. BCES00006 Complete APP_VER 03.10 is a separate revision; do not mix generated trees or assume address/data compatibility. External original inputs remain at their configured paths and need not be duplicated.
+
+The native architecture is statically translated guest code plus compatible host services, including real host media decoding. A Bevy/engine replacement remains parked until native works. No original game-code patches, title-specific runtime bypasses, fabricated assets or suppressed errors establish acceptance. The current fatal/resource evidence belongs to [Havok/reference](research/HAVOK_REFERENCE.md); pending work belongs to [GitHub issues](https://github.com/robbe1912/motorstorm-mv-recomp/issues).
+
 ## Dependencies
 
 Windows x64; Visual Studio 2022 Build Tools Desktop C++/Windows SDK; LLVM/clang-cl, Ninja and CMake>=3.20 on PATH; Python 3.10+ and `python -m pip install -r requirements.txt`. The wrapper imports vcvars64 through vswhere. Supply an LGPL **shared** FFmpeg development distribution with matching `include/`, import libraries in `lib/`, DLLs in `bin/` (avcodec, avutil, swscale). D3D12/DXGI/D3DCompiler/DXGUID and Windows audio libraries are linked.

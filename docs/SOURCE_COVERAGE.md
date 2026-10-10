@@ -6,7 +6,8 @@ The full old workspace, knowledge/findings and outputs remain in `temp/legacy/re
 
 Important evidence caveats: native_havokcap3.* was overwritten by cap4, so resourcesystem938 survives in its atomic note only. Older interpfix stdout/CSV were overwritten; snapshots survive. Repeated m33 underscore/hyphen handoffs and mislabeled HANDOFF_save_data are historical summaries, not independent save proofs. A successful11214-byte AUTOSAVE.DAT read does not establish round-trip integrity.
 
-| Original note | Canonical owner |
+
+| Original note (private) | Canonical owner |
 |---|---|
 | atomic-2026-10-08-coh-overflow.md | [RUNTIME](research/RUNTIME.md) |
 | atomic-2026-10-08-interp-contracts.md | [RUNTIME](research/RUNTIME.md) |
@@ -45,7 +46,7 @@ Important evidence caveats: native_havokcap3.* was overwritten by cap4, so resou
 | HANDOFF_menu_nav.md | [OPERATIONS](OPERATIONS.md) |
 | HANDOFF_pad_input.md | [OPERATIONS](OPERATIONS.md) |
 | HANDOFF_ppu_consumer.md | [SPURS](research/SPURS.md) |
-| HANDOFF_prompt_2026-10-10_evening.md | [HANDOFF](../HANDOFF.md) |
+| HANDOFF_prompt_2026-10-10_evening.md | [BUILDING](BUILDING.md) |
 | HANDOFF_RecompBootstrap.md | [BUILDING](BUILDING.md) |
 | HANDOFF_rsx_readiness.md | [GRAPHICS_AUDIO](research/GRAPHICS_AUDIO.md) |
 | HANDOFF_save_data.md | [BUILDING](BUILDING.md) |
@@ -64,11 +65,11 @@ Important evidence caveats: native_havokcap3.* was overwritten by cap4, so resou
 | m46_boot_progress.md | [BUILDING](BUILDING.md) |
 | m4_audio.md | [GRAPHICS_AUDIO](research/GRAPHICS_AUDIO.md) |
 | m4_textures.md | [GRAPHICS_AUDIO](research/GRAPHICS_AUDIO.md) |
-| m4_title_tracer.md | [HANDOFF](../HANDOFF.md) |
+| m4_title_tracer.md | [OPERATIONS](OPERATIONS.md) |
 | MASTER_HANDOFF.md | [PARKED_MSTREAM](research/PARKED_MSTREAM.md) |
 | NAMED_BUILD_FEASIBILITY.md | [TRANSLATION](research/TRANSLATION.md) |
-| NATIVE_PORT_BOUNDARY.md | [HANDOFF](../HANDOFF.md) |
+| NATIVE_PORT_BOUNDARY.md | [BUILDING](BUILDING.md) |
 | next-20-steps-2026-10-10.md | [NEXT_STEPS](NEXT_STEPS.md) |
 | probeoff-2026-10-08.md | [OPERATIONS](OPERATIONS.md) |
-| sol-handoff-2026-10-07.md | [HANDOFF](../HANDOFF.md) |
+| sol-handoff-2026-10-07.md | [RUNTIME](research/RUNTIME.md) |
 | wws-stall-dossier-2026-10-07.md | [SPURS](research/SPURS.md) |
