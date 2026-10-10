@@ -1,0 +1,8 @@
+{
+  "elf": "game/elf/EBOOT_MSMVdbgUS.ELF",
+  "disc": "game/disc/PS3_GAME",
+  "ffmpeg": "temp/deps/ffmpeg",
+  "keys": "game/private_keys",
+  "userdata": "game/userdata",
+  "generated": "build/generated/named"
+}

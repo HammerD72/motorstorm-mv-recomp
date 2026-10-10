@@ -1,0 +1,80 @@
+# Setup and build
+
+Developer tooling, not a ready-to-play distribution. The initial embedded SPU stage does **not** recreate all 24 private images currently used. Extra firmware codecs, runtime-built PM and captured DSP modules need separate inputs/stages. An automated clean-clone boot has not been verified.
+
+## Dependencies
+
+Windows x64; Visual Studio 2022 Build Tools Desktop C++/Windows SDK; LLVM/clang-cl, Ninja and CMake>=3.20 on PATH; Python 3.10+ and `python -m pip install -r requirements.txt`. The wrapper imports vcvars64 through vswhere. Supply an LGPL **shared** FFmpeg development distribution with matching `include/`, import libraries in `lib/`, DLLs in `bin/` (avcodec, avutil, swscale). D3D12/DXGI/D3DCompiler/DXGUID and Windows audio libraries are linked.
+
+RPCS3 and Ghidra are optional research/reference dependencies, not the native runner. The asset-name audit requires an explicitly supplied RA/LZH reader; it is not bundled.
+
+## Private inputs
+
+Supply your own decrypted executable, matching PS3_GAME, firmware and keys where applicable. No acquisition service/payload is included. External paths work; originals need not be copied.
+
+| Ignored location | Contents |
+|---|---|
+| `game/elf/`, `game/disc/` | Optional local original inputs |
+| `game/private_keys/` | Private C headers and Python key JSON |
+| `game/userdata/` | Isolated writable native HDD/save tree |
+| `build/generated/named/ppu/`, `spu/` | Generated translations/registrations |
+| `build/metadata/`, `build/spu-inputs/` | Loader data/extracted inputs |
+| `build/native/`, `build/preserved/` | Current and preserved EXE/PDB |
+| `temp/deps/`, `temp/runs/`, `temp/builds/` | Dependencies, captures and diagnostics |
+| `temp/legacy/` | Local migrated history, tools and fixtures |
+
+Also ignored: `config/local.json`. Generated registry source stays private even when named differently from spu_recomp.c.
+
+## Private key interface
+
+C builds require two user-supplied headers in `game/private_keys/` or `--keys-dir`:
+
+- `ps3_sdata_keys.h`: guarded definitions of `static const uint8_t SDAT_KEY[16]` and `EDAT_KEY_0[16]`.
+- `ps3_edat_keys.h`: guarded `static const uint8_t` definitions of `EDAT_KEY_0[16]`, `EDAT_KEY_1[16]`, `SDAT_KEY[16]`, `NP_OMAC_KEY_2[16]`, `NP_OMAC_KEY_3[16]`; `static const uint8_t KLIC_CANDIDATES[][16]` with your own supported candidates; `static const size_t NUM_KLIC_CANDIDATES = sizeof(KLIC_CANDIDATES) / sizeof(KLIC_CANDIDATES[0])`.
+
+Provide actual private bytes; no placeholder keys are distributed. Missing headers intentionally fail configure. Content may also require its own EDAT license key via the original interface.
+
+Python extraction reads `PS3_KEYS_FILE`: an absolute path to private JSON with `SDAT_KEY`, `EDAT_KEY_0`, `PS3_GPKG_KEY`, `PSP_PKG_KEY`, each holding your own 32 hexadecimal characters (16 bytes). Set `$env:PS3_KEYS_FILE` before invoking vendor tools. Missing/invalid keys fail explicitly. Current local material is retained in the ignored directory; captured instruction fixtures are in `temp/legacy/vendor_test_source/` and are not needed to compile.
+
+## Configure
+
+From the repository root, replacing these example paths with your own:
+
+```powershell
+python scripts/project.py setup --elf 'F:/YourDump/EBOOT_MSMVdbgUS.ELF' --disc 'F:/YourDump/PS3_GAME' --ffmpeg 'temp/deps/ffmpeg' --keys-dir 'game/private_keys'
+```
+
+This validates ELF/disc/FFmpeg presence and writes local.json. The public example describes the schema. Presence is not executable/disc compatibility; verify identities. The migrated user config deliberately keeps F: originals.
+
+Install the local staged-source protection once: `python scripts/install_hooks.py`. Before committing, run `python scripts/check_repository.py` and `python scripts/check_docs.py`; see [repository audit](REPOSITORY.md).
+
+## Generate
+
+Generation refuses overwriting existing trees. Preserve a baseline and select a fresh ignored tree in local config for regeneration.
+
+```powershell
+python scripts/project.py generate --stage ppu
+python scripts/project.py generate --stage spu
+```
+
+PPU: loader/import metadata, named executable .symtab bounds, preserved lifter with HLE imports and C++ nonlocal jumps. Stripped retail needs independently validated function metadata. SPU: embedded ELF extraction and build_spu_workloads. Review unsupported-instruction diagnostics and registration; this is only the initial set.
+
+Additional scripts accept explicit inputs/outputs; inspect `--help`:
+
+- `scripts/spu/lift_ms1_jobmods.py`: original job-module extraction/lifting; retain unique IDs and staged span identity.
+- `scripts/spu/lift_flash_codec_at_base.py --elf INPUT --base BASE --prefix NAME --code-end END --out OUTPUT`: observed link-base codec lift, fixed-low-LS extern restoration; `--module-lift` is the separate module-relative form.
+- `scripts/spu/lift_ms1_debug_dsp.py --dump INPUT --trees OUTPUT_TREE[,OUTPUT_TREE]`: capture-based reconstruction; trees need existing target-specific workload files. Observed bases/content provenance remain necessary.
+- `scripts/analysis/debug_elf_functions.py ELF --out OUTPUT`: executable function bounds, rejects empty/overlapping spans.
+- `scripts/analysis/audit_ms1_asset_names.py`: requires `--ra-tool`, `--index`, `--elf`; optional `--dat`, `--cnk`, `--extract`, `--out-dir` for explicit read-only extraction.
+
+Guest inputs/output belong in ignored folders. Debug and retail modules are not interchangeable. Firmware/PM/DSP extraction is not yet one automated pipeline: the archived private recipes and [translation evidence](research/TRANSLATION.md) provide context, not a clean-clone completeness claim.
+
+## Build
+
+```powershell
+python scripts/project.py build
+```
+
+The wrapper kills ms1_recomp.exe before relinking, configures root CMake into build/native, uses clang-cl and at most eight jobs. Full warnings/errors go to unique temp/builds/TIMESTAMP/configure.log and build.log. Failure prints a bounded tail and full log path; no warning suppression added. Success records EXE/ELF hashes/tree paths/log directory in build_identity.json.
+
+Public vendor tests exclude unreviewed guest fixtures. PS3RECOMP_BUILD_TESTS=ON fails clearly; review upstream synthetic tests separately. Build success establishes compilation, not native gameplay. Use [operations](OPERATIONS.md) for live work.

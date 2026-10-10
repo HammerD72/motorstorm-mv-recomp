@@ -1,0 +1,875 @@
+/* spurs_policy.c — run a SPURS workload's policy module on a lifted SPU.
+ *
+ * The real SPURS kernel dispatches a workload by loading its policy module
+ * (a raw SPU binary) at LS 0xA00 and entering it with the ABI of
+ * cellSpursModuleEntry(uintptr_t context, uint64_t ea):
+ *
+ *   r0 = return-to-kernel address     r3 = kernel context LS address (0x100)
+ *   r1 = stack (the PM re-loads its   r4 = the workload's u64 data (preferred
+ *        own initial stack)                doubleword) — e.g. a joblist EA
+ *                                     r5 = poll status
+ *
+ * The SpursKernelContext fields this fills, per the layout RPCS3 documents
+ * (Emu/Cell/Modules/cellSpurs.h, struct SpursKernelContext) and the lifted
+ * wwsjob PM verifiably reads. NOTE both pointers are 64-BIT:
+ *   0x1C0 be u64 spurs EA           0x1D8 be u32 wklCurrentUniqueId
+ *   0x1C8 be u32 spuNum             0x1DC be u32 wklCurrentId
+ *   0x1CC be u32 dmaTagId           0x1E0 be u32 exitToKernelAddr
+ *   0x1D0 be u64 wklCurrentAddr     0x1E4 be u32 selectWorkloadAddr
+ *        (PM base 0xA00, in the LOW word at 0x1D4)
+ *
+ * exitToKernel/selectWorkload point at two reserved LS addresses below the PM
+ * base; spu_indirect_branch intercepts them (ctx->policy_mode) and HLEs the
+ * kernel side: select = "no contention, keep running", exit = end of run.
+ */
+#include "spu_context.h"
+#include "spu_workload.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+extern int spu_run_with_halt(void (*)(spu_context*), spu_context*);
+
+/* Counters the intercepts in spu_channels.c maintain for the CURRENT run
+ * (single writer per run; reads are diagnostic). */
+volatile unsigned g_spurs_pm_polls = 0;   /* selectWorkload calls this run */
+volatile unsigned g_spurs_pm_exited = 0;  /* set when exitToKernel was taken */
+volatile unsigned g_wws_batch_gets = 0;   /* loadCommands (LS 0xC00) fetch count, spu_dma.h */
+
+/* ---- persistent PM context table ---------------------------------------
+ * One slot per (spurs_ea, wid, spu_num) triple. Scan and free-slot claim run
+ * under s_pm_claim, a LEAF spinlock held only for the table walk plus the
+ * first-contact malloc/init/publish -- never across a module run, and it
+ * never adopts a context: dispatch stays serialized per triple (one
+ * spurs_kernel_thread per instance, workers joined before the next pass),
+ * so the lock only stops two first-contact lanes taking the SAME free slot.
+ *
+ * That double-claim was NOT benign, and it is the MotorStorm attract wedge:
+ * lane 0 and the fresh spurs_pm%u workers of a NEW workload's first pass all
+ * scan concurrently, and between reading a slot empty and publishing into it
+ * sits a malloc plus a 260 KB memset -- tens of microseconds. The loser's
+ * publish overwrites the winner's triple, and the loser triple then misses
+ * on every later lookup: each dispatch allocates a FRESH context, its PM
+ * loses the claim->stage pipeline between quanta (LS 0x12A0/0x12C0/0x12F0),
+ * and a ticket it already claimed is never staged. That job never runs, the
+ * batch's completion counter never reaches the gate, and the PVS/VideoStream
+ * post gate spins forever (wedge at t~11-32 s and t~125 s, attract
+ * boundaries, 5/6 runs; the window is timing-sensitive, which is why one run
+ * ran clean). The 2026-10-09 lock+ADOPT variant failed because it ADOPTED a
+ * context another lane was still executing; this lock fixes only the table.
+ * SPURS_PM_CLAIMLOCK=0 restores the unlocked scan for A/B. */
+#if !defined(_MSC_VER)
+#include <stdatomic.h>   /* atomic_int in pm_slot.busy below */
+#endif
+enum { SPURS_PM_CTX_MAX = 96, SPURS_PM_MAX_WKL = 16 };
+struct pm_slot { uint32_t ea; uint32_t wid; uint32_t spu; spu_context* ctx; uint64_t data;
+#if defined(_MSC_VER)
+                 volatile long busy;   /* run-owner flag: one runner per triple */
+#else
+                 atomic_int busy;
+#endif
+};
+static struct pm_slot s_pm_slot[SPURS_PM_CTX_MAX];
+
+/* Claim spinlock for s_pm_slot (same idiom as spu_coherency.c's lock-line
+ * lock). Leaf: acquire, walk/claim, release -- nothing under it calls out
+ * to code that can take another lock. */
+#if defined(_MSC_VER)
+#include <intrin.h>
+static volatile long s_pm_claim_l = 0;
+static int pm_claim_on(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("SPURS_PM_CLAIMLOCK");
+                    s_on = (e && atoi(e) == 0) ? 0 : 1; }
+    return s_on;
+}
+static void pm_claim_lock(void)
+{
+    if (!pm_claim_on()) return;
+    while (_InterlockedExchange(&s_pm_claim_l, 1)) {
+        do { _mm_pause(); } while (s_pm_claim_l);
+    }
+}
+static void pm_claim_unlock(void)
+{
+    if (!pm_claim_on()) return;
+    _InterlockedExchange(&s_pm_claim_l, 0);
+}
+#else
+#include <stdatomic.h>
+static atomic_flag s_pm_claim = ATOMIC_FLAG_INIT;
+static int pm_claim_on(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("SPURS_PM_CLAIMLOCK");
+                    s_on = (e && atoi(e) == 0) ? 0 : 1; }
+    return s_on;
+}
+static void pm_claim_lock(void)
+{
+    if (!pm_claim_on()) return;
+    while (atomic_flag_test_and_set_explicit(&s_pm_claim, memory_order_acquire)) { }
+}
+static void pm_claim_unlock(void)
+{
+    if (!pm_claim_on()) return;
+    atomic_flag_clear_explicit(&s_pm_claim, memory_order_release);
+}
+#endif
+
+/* RUN EXCLUSIVITY (round 4): the claim lock above serializes the table
+ * scan/publish only -- it is never held across a module run. But a slot's
+ * spu_context (its 256KB LS) admits exactly ONE runner: a second runner on
+ * the same (spurs_ea, wid, spu_num) triple interleaves its GPR/LS mutations
+ * with the first (entry re-init, the data-change memset, the interpreter),
+ * derails the PM mid-pipeline and strands its claimed job tickets (the
+ * 174ms pathological quanta and the attract-boundary gate wedge both fit
+ * two runners on one context). Skip-if-busy, not block: both dispatchers
+ * are pass-based, so the loser simply yields this quantum and the next pass
+ * re-runs the workload -- no work is lost, no deadlock is possible.
+ * SPURS_PM_RUNLOCK=0 disables (A/B). */
+static int pm_runlock_on(void)
+{
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("SPURS_PM_RUNLOCK");
+                    s_on = (e && atoi(e) == 0) ? 0 : 1; }
+    return s_on;
+}
+#if defined(_MSC_VER)
+static int pm_slot_run_try(struct pm_slot* s)
+{
+    if (!pm_runlock_on()) return 1;
+    return _InterlockedCompareExchange(&s->busy, 1, 0) == 0;
+}
+static void pm_slot_run_end(struct pm_slot* s)
+{
+    if (!pm_runlock_on()) return;
+    _InterlockedExchange(&s->busy, 0);
+}
+#else
+static int pm_slot_run_try(struct pm_slot* s)
+{
+    if (!pm_runlock_on()) return 1;
+    return !atomic_exchange_explicit(&s->busy, 1, memory_order_acquire);
+}
+static void pm_slot_run_end(struct pm_slot* s)
+{
+    if (!pm_runlock_on()) return;
+    atomic_store_explicit(&s->busy, 0, memory_order_release);
+}
+#endif
+
+int spu_run_policy_module(spu_lifted_entry_fn entry, int image_id,
+                          const uint8_t* pm_host, uint32_t pm_size,
+                          uint64_t wkl_data, uint32_t wid, uint32_t spurs_ea,
+                          uint32_t spu_num)
+{
+    if (!entry || !pm_host || !pm_size || pm_size > SPU_LS_SIZE - 0xA00)
+        return -1;
+
+    /* Reuse one context per thread: this runs per policy dispatch (thousands
+     * per second with the SPURS workload churn live), and a fresh 260KB
+     * calloc/free each time was allocator + page-zeroing churn. The explicit
+     * memset preserves the exact fresh-zero semantics calloc provided. */
+    /* PERSISTENT context per (workload, virtual SPU): a real policy module
+     * stays RESIDENT on its SPU -- its LS carries continuation state between
+     * scheduling quanta (the wwsjob PM caches the last-seen queue line at LS
+     * 0x14B0 and its staging rings at 0x12xx; a freshly zeroed context every
+     * dispatch made it treat every re-entry as first contact and it could
+     * never progress its claim/stage pipeline). Image + context init happen
+     * once; re-entries keep LS and only refresh the entry registers and the
+     * (possibly game-updated) kernel-context fields. */
+    /* M13: the cache was keyed [wid][spu_num] only. MS1 runs TWO spurs
+     * instances whose workloads both resolve to this same wwsjob PM image --
+     * instance A's wid1 and instance B's wid1 SHARED one context: each side's
+     * dispatch re-staged the other's spurs EA into LS 0x1C0/0x1C4 and the
+     * data-change reset (their queue EAs differ) flipped the context fresh
+     * on every handoff, so the PM always claimed whichever instance staged
+     * last (boot-5: 170 wid1 claims on B's zeroed line, 0 on A, while the
+     * game kicked A). Key the slot by (spurs_ea, wid, spu_num). */
+    if (wid >= SPURS_PM_MAX_WKL || spu_num >= 6) return -1;
+    /* Claim under s_pm_claim (leaf spinlock, table walk + first-contact
+     * publish only -- never held across a module run): lane 0 and the fresh
+     * spurs_pm%u workers of a new workload's first pass hit this together,
+     * and must not take the same free slot. */
+    pm_claim_lock();
+    struct pm_slot* slot = NULL;
+    for (int i = 0; i < SPURS_PM_CTX_MAX; i++) {
+        if (s_pm_slot[i].ctx && s_pm_slot[i].ea == spurs_ea &&
+            s_pm_slot[i].wid == wid && s_pm_slot[i].spu == spu_num) {
+            slot = &s_pm_slot[i]; break;
+        }
+        if (!s_pm_slot[i].ctx && !slot) slot = &s_pm_slot[i];
+    }
+    if (!slot) { pm_claim_unlock(); return -1; } /* full: 96 live (instance,wid,spu) triples */
+    /* Single runner per triple (see pm_slot_run_try). Acquired under the
+     * claim lock so the busy bit itself cannot race first-contact publish;
+     * covers everything below that touches ctx (entry setup, the data-change
+ * reset, the interpreter) through the single return at the end. */
+    if (!pm_slot_run_try(slot)) {
+        pm_claim_unlock();
+        { static int _n = 0; if (_n++ < 8) {
+            fprintf(stderr, "[spurs-pm] slot busy (ea=0x%08X,wid=%u,spu=%u) -- skipping quantum\n",
+                    spurs_ea, wid, spu_num); fflush(stderr); } }
+        return 0;
+    }
+    spu_context* ctx = slot->ctx;
+    int first = 0;
+    /* SPURS_PM_FRESH=1: treat EVERY dispatch as first contact (zeroed LS, image
+     * reloaded). A/B against the persistent default: with persistence, the wwsjob
+     * PM's first entry attaches + claims exactly ONE ticket then yields, and every
+     * RE-entry takes a stale-state path that does NOTHING (LS 0x12A0/0x12C0/0x12F0
+     * job-pipeline slots persist; entry only partially re-inits them) -- LBP's
+     * 10-ticket loading queue stalls at lanes {1,2} forever. Fresh contexts make
+     * each dispatch run the full attach->claim->yield cycle, so repeated kernel
+     * dispatches drain the queue one ticket at a time (the persistent-LS claim
+     * that motivated the cache predates the r4 word0/word1 layout fix). */
+    static int s_fresh = -1;
+    if (s_fresh < 0) s_fresh = getenv("SPURS_PM_FRESH") ? 1 : 0;
+    /* Reset the persistent context when the workload's DATA (queue EA)
+     * changes: the game re-points a wid at a NEW job queue once the old one
+     * drains, and a real SPURS kernel reloads the policy module fresh on a
+     * workload switch. Carrying queue A's LS (header cache 0x14B0, busy
+     * masks 0x1270/0x1280, records) into queue B made the PM see stale
+     * state and claim nothing (observed: LBP's second loading queue sat at
+     * lanes {0,...} while the first drained fine). */
+    if (!ctx) {
+        /* Allocate, init, publish under the claim lock: a scanner held out
+         * by the lock sees either an empty slot or a fully published triple,
+         * so two first-contact lanes can no longer take the same free slot
+         * and orphan one triple's PM state (see the table comment above --
+         * the orphaned lane eats its claimed ticket and the batch gate never
+         * opens; the attract wedge). The lock is released before anything
+         * executes: it serializes the claim, never the run. */
+        ctx = (spu_context*)malloc(sizeof(spu_context));
+        if (!ctx) { pm_claim_unlock(); return -1; }
+        /* SPU_CTX_LOG=1: policy-module contexts are PERSISTENT and there is one
+         * per (instance, workload, spu_num) -- a workload with readyCount 8
+         * legitimately runs on several simulated SPUs, which then contend its
+         * lock lines exactly as real SPUs would. Counting only the job contexts
+         * in spu_lifted_job.h reports "two contexts" for a run that has five,
+         * and makes correct multi-SPU execution look like duplicated state. */
+        { static int s_cl = -1;
+          if (s_cl < 0) s_cl = getenv("SPU_CTX_LOG") ? 1 : 0;
+          if (s_cl) fprintf(stderr, "[spu-ctx] new POLICY context %p ea=0x%08X wid=%u spu_num=%u\n",
+                            (void*)ctx, spurs_ea, wid, spu_num); }
+        memset(ctx, 0, sizeof(*ctx));
+        spu_context_init(ctx, 0);
+        slot->ctx = ctx; slot->ea = spurs_ea; slot->wid = wid; slot->spu = spu_num;
+        first = 1;
+    }
+    pm_claim_unlock();
+    if (!first && (s_fresh || slot->data != wkl_data)) {
+        if (!s_fresh) {
+            static int _n = 0;
+            if (_n++ < 8)
+                fprintf(stderr, "[spurs-pm] ea=0x%08X wid=%u spu=%u workload data changed "
+                        "0x%llX -> 0x%llX: fresh PM context\n", spurs_ea, wid, spu_num,
+                        (unsigned long long)slot->data,
+                        (unsigned long long)wkl_data);
+        }
+        first = 1;
+        memset(ctx, 0, sizeof(*ctx));
+        spu_context_init(ctx, 0);
+    }
+    slot->data = wkl_data;
+    ctx->image_id    = image_id;
+    ctx->policy_mode = 1;      /* arm kernel stubs + img_ls_base dual-space lookups */
+    ctx->img_ls_base = 0xA00;   /* SPURS PM load base; lift labels are image-relative */
+
+    /* PM image at its load base (first entry only -- LS persists). */
+    if (first)
+        memcpy(ctx->ls + 0xA00, pm_host, pm_size);
+
+    /* M34: the PM's interrupt glue (image 0x2C-0xEC, staged RAW 0xA2C-0xAEC)
+     * saves r76-r79 to the top-of-LS kernel save area (0x3FE80+), fills a
+     * trace frame and CALLS the SPURS kernel's guidance hook with two
+     * `brasl 0x3FEC0` words (0x317FD84F at image 0x80 and 0xCC) -- absolute
+     * top-of-LS targets owned by the kernel image, zeros in this stub
+     * environment. Every dispatch died at that brasl on a zero-word stop,
+     * so the glue never reached its real work `brsl 0x1810` (RAW 0x2210 --
+     * the SN handler: RdEventStat -> WrEventAck -> WrListStallAck, which
+     * resumes a parked MFC list). NOP the hook calls: trace-only, and the
+     * frame fill that precedes them still runs. */
+    if (first) {
+        uint32_t* w = (uint32_t*)(ctx->ls + 0xA00);
+        /* staged words are big-endian; this host reads them byte-swapped:
+         * 0x317FD84F BE == 0x4FD87F31 LE, and lnop (BE 0x00200000) is
+         * written as LE 0x00002000. */
+        unsigned patched = 0;
+        for (unsigned i = 0; i < pm_size / 4; i++) {
+            if (w[i] == 0x4FD87F31u) {    /* brasl r48, 0x3FEC0 */
+                w[i] = 0x00002000u;       /* lnop */
+                patched++;
+            }
+        }
+        if (patched)
+            fprintf(stderr, "[spurs-pm] ea=0x%08X wid=%u: NOP'd %u kernel-hook "
+                    "brasl(s) in staged image\n", spurs_ea, wid, patched);
+    }
+
+    /* SpursKernelContext at LS 0x100 (fields big-endian, like all guest data). */
+    uint8_t* ls = ctx->ls;
+#define KBE32(off, v) do { uint32_t _v = (v); ls[(off)] = (uint8_t)(_v >> 24); \
+        ls[(off)+1] = (uint8_t)(_v >> 16); ls[(off)+2] = (uint8_t)(_v >> 8);   \
+        ls[(off)+3] = (uint8_t)_v; } while (0)
+    /* wklCurrentAddr is a 64-BIT pointer (vm::bcptr<void,u64>), so it occupies
+     * 0x1D0..0x1D7 and everything after it sits 4 bytes higher than a u32 would
+     * put it. Writing it as a u32 shifted the whole tail of the struct:
+     * exitToKernelAddr landed on selectWorkloadAddr's slot and selectWorkloadAddr
+     * fell off into moduleId, leaving 0x1E4 zero. The wwsjob PM reads both --
+     * `lqa $2,0x1e0; bisl $0,$2` at LS 0x3588 calls exitToKernel, and
+     * `lqa $7,0x1e0; rotqbyi $6,$7,4; bisl $0,$6` at LS 0x35A0 calls
+     * selectWorkload -- so it called our exit intercept for every poll and
+     * branched to 0 for every select. It also tests wklCurrentId (0x1DC) against
+     * 1, which only reads sensibly at the correct offset. */
+    KBE32(0x1C0, 0);                    /* spurs EA hi32 (u64 ptr)  */
+    KBE32(0x1C4, spurs_ea);             /* spurs EA lo32            */
+    KBE32(0x1C8, spu_num);              /* spuNum (virtual SPU / lane row) */
+    KBE32(0x1CC, 8);                    /* dmaTagId (kernel's tag)  */
+    KBE32(0x1D0, 0);                    /* wklCurrentAddr hi32 (u64 ptr) */
+    KBE32(0x1D4, 0xA00);                /* wklCurrentAddr lo32 = PM load base */
+    KBE32(0x1D8, wid);                  /* wklCurrentUniqueId       */
+    /* M16 correction of the M14 theory: the claim chain reads line byte
+     * (staged & 0xF), NOT (staged-3)&0xF. Chain: r14 = r3-3 is only the
+     * ROTATE amount for rotqby(r18,r14); the result's preferred word holds
+     * line bytes [r14 .. r14+3] and andi(r17,255) keeps SPU byte 3 of it
+     * = line byte (r14+3)&0xF = staged&0xF. The -3 and +3 cancel. So the
+     * raw wid was ALWAYS the correct claim byte (game kicks instance+wid),
+     * and the M14 wid+3 staging moved every lane's read to byte (wid+3):
+     * M15 boot3 measured claimRet14D0=0 despite the wid1 GETLLAR seeing
+     * byte1=5 -- the read byte had shifted to 4. Reverted to raw wid;
+     * the pre-M12/M13 "never consumed" symptom was the persistent-LS
+     * state wedge (see SPURS_PM_FRESH), not the byte index. */
+    KBE32(0x1DC, wid);                  /* wklCurrentId = claim byte */
+    KBE32(0x1E0, SPURS_PM_EXIT_TO_KERNEL_LS);
+    KBE32(0x1E4, SPURS_PM_SELECT_WORKLOAD_LS);
+#undef KBE32
+
+    /* Entry registers per cellSpursModuleEntry. Round 29: with
+     * SPU_PM_PC_RESUME a walk-in jobmod survives the quantum boundary
+     * (spu_run_with_halt resumes at ctx->pc instead of the PM entry), so
+     * these MUST NOT be re-set while wi_state says a module is mid-flight
+     * -- they are the module's live register file. Only the interpreted
+     * PM can resume mid-run; the lifted entry always starts fresh. */
+    { static int s_pcr = -1, s_pi = -1, s_flow = -1;
+      if (s_pcr < 0) { const char* e = getenv("SPU_PM_PC_RESUME");
+                       s_pcr = (e && e[0] == '0') ? 0 : 1; }
+      if (s_pi < 0)  s_pi = getenv("SPU_PM_INTERP") ? 1 : 0;
+      if (s_flow < 0) { const char* e = getenv("SPU_PM_FLOW_RESUME");
+                        s_flow = (e && e[0] == '0') ? 0 : 1; }
+      /* Round 33: skip on flow-resume too -- a pass cut inside the PM's
+       * retire->rebuild->launch window resumes at ctx->pc with the PM's
+       * LIVE registers; re-setting the entry regs would corrupt them.
+       * pm_designed is read here BEFORE spu_run_with_halt consumes it, so
+       * it still reflects the PREVIOUS pass's exit class. */
+      if (!(s_pi && ((s_pcr && ctx->wi_state)
+                     || (s_flow && !ctx->pm_designed)))) {
+    ctx->gpr[0]._u32[0] = SPURS_PM_EXIT_TO_KERNEL_LS;  /* return-to-kernel link */
+    ctx->gpr[1]._u32[0] = 0x3FFB0;                     /* stack (PM reloads its own) */
+    ctx->gpr[3]._u32[0] = 0x100;                       /* context */
+    /* r4 layout is LO-WORD-IN-PREFERRED, not a big-endian u64: verified
+     * against the authentic wwsjob PM bytes (entry 0x2BF0 `stqa r4,0x14E0`,
+     * attach 0x2720 `brz r4`/`wrch MFC_EAL, r4` -- it treats r4's PREFERRED
+     * WORD as the 32-bit queue EA, and `shlqbyi r4,4`'s next word as the aux
+     * half). Passing {hi,lo} put 0 in the preferred slot, so the queue attach
+     * early-returned on every run: tickets got claimed via the shifted copy
+     * but the job-list header never DMA'd in, and the PM wedged forever in
+     * its staged-job wait (LBP's post-intro loading freeze). */
+    /* ...and the CLAIM path reads the EA from the shlqbyi(r4,4) copy (LS
+     * 0x13F0, via func_3038 -> 2418), i.e. r4's SECOND word. Both word 0
+     * (attach) and word 1 (claim) must carry the 32-bit EA; the hi half
+     * rides in words 2-3. */
+    ctx->gpr[4]._u32[0] = (uint32_t)wkl_data;          /* attach reads word0  */
+    ctx->gpr[4]._u32[1] = (uint32_t)wkl_data;          /* claim reads word1   */
+    ctx->gpr[4]._u32[2] = (uint32_t)(wkl_data >> 32);
+    ctx->gpr[4]._u32[3] = (uint32_t)(wkl_data >> 32);
+    ctx->gpr[5]._u32[0] = 0;                           /* poll status */
+      } }
+
+    g_spurs_pm_polls  = 0;
+    g_spurs_pm_exited = 0;
+
+    /* RUN/END tracing: thousands of policy dispatches per second made these
+     * unconditional fprintf+fflush pairs a real fraction of movie playback.
+     * Default off; SPURS_PM_TRACE=1 restores them (first 64 + every 4096th
+     * so an enabled trace can't flood either). */
+    static int s_trace = -1;
+    if (s_trace < 0) s_trace = getenv("SPURS_PM_TRACE") ? 1 : 0;
+    static unsigned long s_runs = 0;
+    unsigned long runno = ++s_runs;
+    int log_this = s_trace && (runno <= 64 || (runno & 0xFFF) == 0);
+    if (log_this) {
+        fprintf(stderr, "[spurs-pm] RUN#%lu wid=%u data=0x%llX spurs=0x%08X image=%d entry=0xA00 size=%u\n",
+                runno, wid, (unsigned long long)wkl_data, spurs_ea, image_id, pm_size);
+        fflush(stderr);
+    }
+
+    /* SPURS_PM_FLOW=1: capture this run's cross-function transfer trail (drain
+     * hook in spu_drain.c) and dump it IF the run performed a PUTLLC (= a queue
+     * claim) -- reconstructs the post-claim decision path that ends in a bare
+     * exit-to-kernel instead of job staging. Only spu_num 0 is traced (the
+     * concurrent lanes would interleave the buffer). */
+    extern uint32_t g_pm_flow_buf[]; extern volatile unsigned g_pm_flow_n;
+    extern void* volatile g_pm_flow_ctx;
+    extern volatile unsigned g_spu_putllc_count;
+    extern volatile unsigned g_spu_putllc_sync_hit;
+    extern volatile uint32_t g_barrier_sync_watch;
+    static int s_flow = -1;
+    if (s_flow < 0) s_flow = getenv("SPURS_PM_FLOW") ? 1 : 0;
+    unsigned putllc_before = g_spu_putllc_sync_hit;
+    (void)g_spu_putllc_count;
+    /* Trace ONLY the stalled queue's own runs: wkl_data == the sync EA the PPU
+     * barrier/ticket probes armed (ticket-pub arms it at first publish, before
+     * the PM's first work pass). Idle re-runs of this wid matter as much as the
+     * claim run -- the empty-cursor path returns without any PUTLLC. */
+    /* SPURS_PM_FLOW_ALL=1: trace EVERY spu_num-0 run of this workload without
+     * requiring the PPU-side barrier probe to have armed g_barrier_sync_watch.
+     * Needed to answer "does the job's buffer-binding routine (pm 0x3098, the
+     * only writer of logicalToBufferNumArray@0x11B0 + jobState@0x12C0) ever
+     * execute?" on a run that never reaches the barrier at all -- the RPCS3
+     * guest dump shows a working SPU has 0x11B0 bound and runJobNum=0, ours
+     * has 0x11B0 == 0 and runJobNum == -1. */
+    static int s_flow_all = -1;
+    if (s_flow_all < 0) s_flow_all = getenv("SPURS_PM_FLOW_ALL") ? 1 : 0;
+    int tracing = (s_flow && spu_num == 0 && g_pm_flow_ctx == 0 &&
+                   (s_flow_all ||
+                    (g_barrier_sync_watch &&
+                     (uint32_t)wkl_data == g_barrier_sync_watch)));
+    static volatile unsigned long long s_flow_arm_ms;
+    extern unsigned long long ps3_ms_now(void);
+    if (tracing) {
+        g_pm_flow_n = 0; g_pm_flow_ctx = ctx;
+        s_flow_arm_ms = ps3_ms_now();
+        { static int _a = 0; if (_a++ < 8) {
+            fprintf(stderr, "[pm-flow] ARM wid=%u spu=%u (watch=0x%08X)\n",
+                    wid, spu_num, g_barrier_sync_watch); fflush(stderr); } }
+        /* Watchdog: the traced run has been observed to HANG the jobmanager
+         * kernel thread (the claim run never returns -> no later dispatch can
+         * report). A detached thread dumps the partial trail after 5s; the
+         * trail's LAST pc names the looping lifted function. */
+        { static int s_wd_started = 0;
+          if (!s_wd_started) { s_wd_started = 1;
+            extern void spurs_pm_flow_watchdog_start(void);
+            spurs_pm_flow_watchdog_start(); } }
+    }
+
+    /* SPURS_PM_PIPE=1: trace how the WWS job PIPELINE state evolves across
+     * kernel dispatches. Prints the pipeline counters (loadJobState@0x12A0
+     * preferred hword, nextLoadJobNum@0x12C0, loadJobNum@0x12D0, runJobNum@
+     * 0x12E0, storeJobNum@0x12F0) before and after each PM run, plus the pc
+     * spu_run_with_halt halted at. Answers: does re-entry advance the pipeline
+     * or reset/stall it? Only wid<=1 (jobmanager) traced, first 4000 runs. */
+    static int s_pipe = -1;
+    if (s_pipe < 0) s_pipe = getenv("SPURS_PM_PIPE") ? 1 : 0;
+    /* trace ALL workloads (the jobmanager is wid=12, not <=1); 4000-run cap bounds volume */
+    int pipe_this = s_pipe && spu_num == 0;
+    uint32_t st_before = 0;
+    if (pipe_this) {
+        const uint8_t* L = ctx->ls;
+        #define HW(o) ((L[(o)+2]<<8)|L[(o)+3])   /* preferred hword (bytes 2-3) */
+        st_before = HW(0x12A0);
+        (void)st_before;
+        #undef HW
+    }
+
+    /* SPURS_PM_CLAIMLOG=1: per-run claim-vs-stage summary for BOTH lanes.
+     * The loading freeze's signature is a dispatch that CLAIMS a ticket
+     * (sync-PUTLLC hit) but never STAGES its job (no loadCommands GET): the
+     * claimed ticket is eaten and the batch's barrier can never release
+     * (observed: 4-job batch, counter=4, lanes {2,1}). Diffing the sync-PUTLLC
+     * and 0xC00-GET counters across each run names that dispatch and shows the
+     * LS pipeline state it left behind. */
+    static int s_claimlog = -1;
+    if (s_claimlog < 0) s_claimlog = getenv("SPURS_PM_CLAIMLOG") ? 1 : 0;
+    unsigned batch_before = g_wws_batch_gets;
+    unsigned claim_before = g_spu_putllc_sync_hit;
+
+    /* Round-5 slow-quantum capture (diagnostic only): a healthy PM quantum
+     * is a few ms. One that exceeds 50 ms, or burns >200 iret bails (the
+     * alternating-pc spin class iret_idle_count cannot catch), is a PM
+     * polling guest memory nobody produces. Dump its resting state: halt
+     * pc, recent-pc trace, the guest-read ring, and the staged-image count
+     * -- the dead producer is the EA the ring keeps re-reading. First 4
+     * triggers only, so the log stays sane. */
+    extern volatile unsigned g_spu_iret_bails;
+    extern volatile unsigned g_spu_jobmod_staged;
+    extern unsigned long long ps3_ms_now(void);
+    extern void spu_gread_arm(void);
+    extern void spu_gread_disarm(void);
+    extern void spu_gread_dump(const char*, uint32_t, uint32_t);
+    unsigned long long _t0 = ps3_ms_now();
+    unsigned _bails0 = g_spu_iret_bails, _staged0 = g_spu_jobmod_staged;
+    spu_gread_arm();
+    const int pm_halted = spu_run_with_halt(entry, ctx);
+    spu_gread_disarm();
+    /* Round-8: sample the per-quantum ring every 512th quantum (capped 32
+     * dumps). At the wedge this shows the header bytes the PM read on its
+     * final passes -- does it read 0x40044480 at all, and what values --
+     * separating "PM polls a stale-empty cached copy" from "guest list is
+     * genuinely empty". */
+    { static unsigned long s_qn = 0;
+      if ((++s_qn % 512u) == 0) {
+          static int s_qd = 0;
+          if (s_qd++ < 32) {
+              fprintf(stderr, "[pm-ring] q=%lu wid=%u spu=%u halted=%d pc=0x%05X\n",
+                      s_qn, wid, spu_num, pm_halted,
+                      (uint32_t)ctx->pc & SPU_LS_MASK);
+              spu_gread_dump("[pm-ring]", wid, spu_num);
+          } } }
+    { unsigned _dt = (unsigned)(ps3_ms_now() - _t0);
+      unsigned _bails = g_spu_iret_bails - _bails0;
+      unsigned _staged = g_spu_jobmod_staged - _staged0;
+      static volatile long s_slowq;
+      if (__atomic_add_fetch(&s_slowq, 1, __ATOMIC_RELAXED) <= 4 &&
+          (_dt > 50 || _bails > 200)) {
+          fprintf(stderr, "[pm-slow] QUANTUM wid=%u spu=%u dt=%ums bails=%u "
+                  "staged=%u halted=%d status=0x%X pc=0x%05X lr=0x%05X r3=0x%08X\n",
+                  wid, spu_num, _dt, _bails, _staged, pm_halted, ctx->status,
+                  (uint32_t)ctx->pc & SPU_LS_MASK,
+                  ctx->gpr[0]._u32[0] & SPU_LS_MASK, ctx->gpr[3]._u32[0]);
+          extern unsigned spu_recent_pcs(uint32_t*, unsigned);
+          uint32_t _rp[32]; unsigned _rn = spu_recent_pcs(_rp, 32);
+          fprintf(stderr, "[pm-slow] recent:");
+          for (unsigned _k = 0; _k < _rn; _k++)
+              fprintf(stderr, " %05X", _rp[_k]);
+          fprintf(stderr, "\n");
+          spu_gread_dump("[pm-slow]", wid, spu_num);
+          fflush(stderr);
+      } }
+    /* A lane's run should only end through exitToKernel. Anything else strands
+     * the jobs it had claimed (GH3's once-per-~10-songs freeze): say how. */
+    if (((uint32_t)ctx->pc & SPU_LS_MASK) != SPURS_PM_EXIT_TO_KERNEL_LS) {
+        extern unsigned spu_recent_pcs(uint32_t*, unsigned);
+        uint32_t r[32]; unsigned n = spu_recent_pcs(r, 32);
+        static volatile long s_pe; if (__atomic_add_fetch(&s_pe, 1, __ATOMIC_RELAXED) <= 512) {
+            fprintf(stderr, "[pm-end] lane %u ctx=%p halted=%d status=0x%X pc=0x%05X lr=0x%05X r3=0x%08X depth=%u recent:",
+                    spu_num, (void*)ctx, pm_halted, ctx->status, (uint32_t)ctx->pc & SPU_LS_MASK,
+                    ctx->gpr[0]._u32[0] & SPU_LS_MASK, ctx->gpr[3]._u32[0], ctx->host_depth);
+            for (unsigned k = 0; k < n; k++) fprintf(stderr, " %05X", r[k]);
+            { static int _g = 0; if (_g++ < 12) {  /* M23: the PPU poster spins on this header */
+              extern uint8_t* vm_base;
+              if (vm_base) {
+                fprintf(stderr, "\n[pm-end] guest 0x4023F240:");
+                /* M40: one more row (0x4023F280..0x4023F2A0) covers the
+                 * wklReadyCount bytes AND the ticket fields PpuConsumer
+                 * pinned at obj+0x38 (u16 seq @0x4023F288) / obj+0x3C
+                 * (u32 @0x4023F28C). */
+                for (uint32_t a = 0x4023F240; a < 0x4023F2A0; a += 4)
+                    fprintf(stderr, " %02X%02X%02X%02X", vm_base[a], vm_base[a+1], vm_base[a+2], vm_base[a+3]);
+            } } }
+            fprintf(stderr, "\n"); fflush(stderr); } }
+
+    if (s_claimlog) {
+        unsigned claims = g_spu_putllc_sync_hit - claim_before;
+        unsigned stages = g_wws_batch_gets - batch_before;
+        if (claims || stages) {
+            static unsigned s_cl = 0;
+            if (s_cl++ < 64) {
+                const uint8_t* L = ctx->ls;
+                #define W(o)  ((L[(o)]<<24)|(L[(o)+1]<<16)|(L[(o)+2]<<8)|L[(o)+3])
+                fprintf(stderr, "[pm-claim] wid=%u spu=%u first=%d claims=%u stages=%u%s halt_pc=0x%05X "
+                        "nextLoad=0x%X loadJob=0x%X runJob=0x%X storeJob=0x%X q13F0=%08X q14E0=%08X "
+                        "claimRet14D0=%08X qHeader1420=%08X\n",
+                        wid, spu_num, first, claims, stages,
+                        (claims && !stages) ? " <-- CLAIM EATEN" : "",
+                        ctx->pc & SPU_LS_MASK,
+                        W(0x12C0), W(0x12D0), W(0x12E0), W(0x12F0),
+                        W(0x13F0), W(0x14E0), W(0x14D0), W(0x1420));
+                /* M38: dump the GUEST queue the claim just polled (its EA
+                 * sits at LS 0x13F0) -- shows whether the posted job pair
+                 * {00500001, desc} is visible at claim time while the PM
+                 * still reports nothing staged. */
+                { extern uint8_t* vm_base;
+                  uint32_t qe = W(0x13F0);
+                  if (vm_base && qe > 0x10000u && qe < 0xF0000000u) {
+                      const uint8_t* g = vm_base + qe;
+                      fprintf(stderr, "[pm-claim] guest q@0x%08X:", qe);
+                      for (unsigned o = 0; o < 0x20; o += 4)
+                          fprintf(stderr, " %02X%02X%02X%02X",
+                              g[o],g[o+1],g[o+2],g[o+3]);
+                      fprintf(stderr, "\n"); fflush(stderr);
+                  } }
+                fflush(stderr);
+                #undef W
+            }
+        }
+    }
+
+    if (pipe_this) {
+        /* PER-WID cap: a shared cap gets exhausted by idle wid=0/1 before the
+         * jobmanager (wid=12) ever runs in a long/good run. Give each wid its
+         * own budget so wid=12's pipeline is always captured. */
+        static unsigned long s_pn_wid[16] = {0};
+        unsigned long s_pn = ++s_pn_wid[wid & 15];
+        if (s_pn < 300) {
+            const uint8_t* L = ctx->ls;
+            #define HW(o) ((L[(o)+2]<<8)|L[(o)+3])
+            #define W(o)  ((L[(o)]<<24)|(L[(o)+1]<<16)|(L[(o)+2]<<8)|L[(o)+3])
+            fprintf(stderr, "[pm-pipe] wid=%u run#%lu first=%d halt_pc=0x%05X "
+                    "loadState=%u->%u nextLoad=0x%X loadJob=0x%X runJob=0x%X storeJob=0x%X "
+                    "lastStore=0x%X\n",
+                    wid, s_pn, first, ctx->pc & SPU_LS_MASK,
+                    st_before, HW(0x12A0), W(0x12C0), W(0x12D0), W(0x12E0),
+                    W(0x12F0), W(0x1300));
+            /* WHY-NO-JOB1 probe: AllocateJob (via TryChangeFreeToLoadJob) stores
+             * its result at g_WwsJob_jobHeader(0x1420) + g_WwsJob_jobIndex(0x1410).
+             * jobHeader low-hword: 0=none(PPU hasn't published)/1=exists/3=nop.
+             * Also dump the joblist header in RAM (eaWorkLoad@0x13F0) to see the
+             * PPU-published numJobs + claimed jobIndex -- decides whether the PM
+             * stops because the header is unpublished (PPU-side) or because our
+             * load path bails after claiming. */
+            {
+                extern uint8_t* vm_base;
+                uint32_t eaWL = W(0x13F0);
+                fprintf(stderr, "         jobIndex=0x%X jobHeader=0x%08X(cmd=%u) eaWL=0x%08X\n",
+                        W(0x1410), W(0x1420), HW(0x1420), eaWL);
+                /* Dump the joblist header region eaWL+0x00..0x9F so we can see the
+                 * ticket/counter rows AND where the PPU actually wrote the job
+                 * headers (ref AllocateJob reads eaWL+0x20; oracle layout puts
+                 * jobHeaders at +0x80). If +0x20 is 0 but +0x80 has 0x00xx0001
+                 * entries, our AllocateJob reads the WRONG offset. */
+                if (vm_base && eaWL) {
+                    for (uint32_t o = 0; o < 0xA0; o += 0x10) {
+                        const uint8_t* r = vm_base + eaWL + o;
+                        #define RW(i) ((r[i]<<24)|(r[i+1]<<16)|(r[i+2]<<8)|r[i+3])
+                        fprintf(stderr, "         jl+%02X: %08X %08X %08X %08X\n",
+                                o, RW(0), RW(4), RW(8), RW(12));
+                        #undef RW
+                    }
+                }
+            }
+            /* M10 probe: at the first runs in state 2 (kExecuteCommands), dump
+             * the RAW state quad (0x12A0 -- the pm-pipe "loadState" reads bytes
+             * 2-3 but the lifted dispatcher tests a different hword lane; the
+             * 2->2 idle rings show 0x20C8 taking the DEFAULT path, so the state
+             * the dispatcher sees may not be 2), the fetched cmdlist (0xC00,
+             * the job's command stream), the op jump table (0x1590), and the
+             * buffer tables (0x11B0 logicalToBufferNum -- 0 in our LS vs BOUND
+             * in RPCS3's working dump; 0xDF0 bufferSetArray). Cap 4. */
+            if (HW(0x12A0) == 2) {
+                static int s_m10 = 0;
+                if (s_m10++ < 4) {
+                    fprintf(stderr, "         [m10] state quad 0x12A0: %08X %08X %08X %08X (hw0=%04X hw1=%04X hw2=%04X hw3=%04X)\n",
+                            W(0x12A0), W(0x12A4), W(0x12A8), W(0x12AC),
+                            (L[0x12A0]<<8)|L[0x12A1], (L[0x12A2]<<8)|L[0x12A3],
+                            (L[0x12A4]<<8)|L[0x12A5], (L[0x12A6]<<8)|L[0x12A7]);
+                    fprintf(stderr, "         [m10] cmdlist 0xC00 (fetched job cmds):\n");
+                    for (uint32_t o = 0xC00; o < 0xC50; o += 0x10)
+                        fprintf(stderr, "           %04X: %08X %08X %08X %08X\n",
+                                o, W(o), W(o+4), W(o+8), W(o+12));
+                    fprintf(stderr, "         [m10] jmptable 0x1590: %08X %08X %08X %08X | buf 0x11B0: %08X %08X 0xDF0: %08X %08X ret1540=%08X\n",
+                            W(0x1590), W(0x1594), W(0x1598), W(0x159C),
+                            W(0x11B0), W(0x11B4), W(0xDF0), W(0xDF4), W(0x1540));
+                }
+            }
+            fflush(stderr);
+            #undef HW
+            #undef W
+        }
+    }
+
+    if (tracing) {
+        g_pm_flow_ctx = 0;
+        static int s_dumps = 0;
+        /* Only dump once the PPU is actually spinning on a job barrier
+         * (g_barrier_sync_watch armed by the barrier probe): boot-time idle
+         * runs also PUTLLC (queue-check protocol) and would burn the cap. */
+        /* Only dump runs that actually had a JOB STAGED. A boot-time idle run
+         * has empty loadCommands(0xC00)/bufferSetArray(0xDF0) and its trail says
+         * nothing about the Load->Run gate -- with SPURS_PM_FLOW_ALL tracing
+         * every run, the dump budget was being spent entirely on idle runs. */
+        int has_job = 0;
+        for (uint32_t _i = 0xDF0; _i < 0xE10 && !has_job; _i++)
+            if (ctx->ls[_i]) has_job = 1;
+        for (uint32_t _i = 0xC00; _i < 0xC60 && !has_job; _i++)
+            if (ctx->ls[_i]) has_job = 1;
+        if (has_job && s_dumps < 6) {
+            s_dumps++;
+            unsigned n = g_pm_flow_n; if (n > 8192) n = 8192;
+            fprintf(stderr, "[pm-flow] dump#%d wid=%u %u transfers (sync-PUTLLC delta %u):",
+                    s_dumps, wid, n, g_spu_putllc_sync_hit - putllc_before);
+            uint32_t last = 0xFFFFFFFFu; unsigned rep = 0;
+            for (unsigned i = 0; i < n; i++) {
+                uint32_t pc = g_pm_flow_buf[i] & SPU_LS_MASK;
+                if (pc == last) { rep++; continue; }
+                if (rep) { fprintf(stderr, "*%u", rep + 1); rep = 0; }
+                fprintf(stderr, "%s%05X", (i % 16) ? " " : "\n  ", pc);
+                last = pc;
+            }
+            if (rep) fprintf(stderr, "*%u", rep + 1);
+            fprintf(stderr, "\n");
+            /* Pipeline LS state right after this traced run: same regions the
+             * hung-run watchdog dumps -- shows what the 5 type-1 passes built
+             * (records/ring) and why the type-2 loads never dispatch. */
+            { static const struct { uint32_t a, len; const char* tag; } R[] = {
+                  { 0xC00, 0x60, "cmds" }, { 0xDF0, 0x40, "rec" },
+                  { 0xEB0, 0x60, "ring" }, { 0x11B0, 0x20, "mark" },
+                  { 0x1270, 0x20, "busy" }, { 0x12A0, 0x10, "st12A0" },
+                  { 0x12C0, 0x40, "state" } };
+              for (unsigned r = 0; r < sizeof R / sizeof R[0]; r++) {
+                  fprintf(stderr, "[pm-ls] %-6s 0x%04X:", R[r].tag, R[r].a);
+                  for (uint32_t o = 0; o < R[r].len; o += 4) {
+                      if (o && (o & 15) == 0) fprintf(stderr, " |");
+                      fprintf(stderr, " %02X%02X%02X%02X",
+                              ctx->ls[R[r].a+o], ctx->ls[R[r].a+o+1],
+                              ctx->ls[R[r].a+o+2], ctx->ls[R[r].a+o+3]);
+                  }
+                  fprintf(stderr, "\n");
+              } }
+            fflush(stderr);
+        }
+    }
+
+    if (log_this) {
+        fprintf(stderr, "[spurs-pm] END wid=%u status=0x%X pc=0x%05X polls=%u exited=%u\n",
+                wid, ctx->status, ctx->pc, g_spurs_pm_polls, g_spurs_pm_exited);
+        fflush(stderr);
+    }
+
+    pm_slot_run_end(slot);
+    return g_spurs_pm_exited ? 0 : -2;
+}
+
+/* ---------------------------------------------------------------------------
+ * Real taskset-policy probe (Option 2, A/B vs spurs_pm_build_context).
+ *
+ * Runs the REAL lifted SPURS taskset policy (tsp_spu_func_00000A00, extracted
+ * from libsre vaddr 0x23680) far enough to build the SpursTasksetContext at LS
+ * 0x2700, then copies that region out for comparison against the C reimpl. The
+ * policy's raw bytes (its data tables at LS 0x27B0-0x2840, read via lqr) come
+ * from the embedded array so there is no dependency on libsre's guest load
+ * address. The policy will eventually `bi` to the selected task's entry (an
+ * address in the task image's LS range, unregistered under image id 100) and
+ * halt as branch-to-0 -- by then LS 0x2700 holds the authentic context.
+ *
+ * image_id 100 is reserved for the policy's own indirect-branch table (the
+ * lifted policy registers its 130 funcs there via tsp_spu_recomp_register()
+ * under spu_begin_image(100)).  Returns the SPU status at halt.
+ * ------------------------------------------------------------------------- */
+extern const unsigned char g_taskset_policy_bytes[];
+extern const unsigned g_taskset_policy_size;
+extern void tsp_spu_func_00000A00(spu_context*);
+
+/* pm-flow hang watchdog: dump the traced run's partial transfer trail + live
+ * ctx state 5s after arm if the run hasn't returned (g_pm_flow_ctx still set).
+ * Reads of the running ctx are racy by design -- diagnostic only. */
+#ifdef _WIN32
+#include <windows.h>
+static DWORD WINAPI spurs_pm_flow_watchdog(LPVOID p)
+{
+    (void)p;
+    extern uint32_t g_pm_flow_buf[]; extern volatile unsigned g_pm_flow_n;
+    extern void* volatile g_pm_flow_ctx;
+    Sleep(5000);
+    spu_context* ctx = (spu_context*)g_pm_flow_ctx;
+    if (!ctx) { fprintf(stderr, "[pm-flow] watchdog: run returned (no hang)\n"); return 0; }
+    unsigned n = g_pm_flow_n; if (n > 8192) n = 8192;
+    fprintf(stderr, "[pm-flow] HUNG-RUN PARTIAL: %u transfers, live pc=0x%05X "
+            "LS12A0=%02X%02X LS12C0=%02X%02X LS12F0=%02X%02X%02X%02X LS1300=%02X%02X:",
+            n, ctx->pc & SPU_LS_MASK,
+            ctx->ls[0x12A0], ctx->ls[0x12A1],
+            ctx->ls[0x12C0], ctx->ls[0x12C1],
+            ctx->ls[0x12F0], ctx->ls[0x12F1], ctx->ls[0x12F2], ctx->ls[0x12F3],
+            ctx->ls[0x1300], ctx->ls[0x1301]);
+    /* Pipeline-state hex dump: batch commands (0xC00), per-slot records (0xDF0),
+     * staging ring (0xEB0), FFFF markers (0x11B0), scheduler vars (0x1270-0x1340),
+     * queue caches (0x13B0-0x1520). One shot -- everything the state-2 cycle's
+     * stage decision reads, so the divergent condition can be hand-simulated. */
+    { static const struct { uint32_t a, len; const char* tag; } R[] = {
+          { 0xC00, 0x60, "cmds" }, { 0xDF0, 0x40, "rec" }, { 0xEB0, 0x40, "ring" },
+          { 0x11B0, 0x20, "mark" }, { 0x1270, 0x40, "sched" }, { 0x12C0, 0x50, "state" },
+          { 0x13B0, 0x30, "qvar" }, { 0x14A0, 0x30, "qcache" }, { 0x1440, 0x40, "batchrec" } };
+      for (unsigned r = 0; r < sizeof R / sizeof R[0]; r++) {
+          fprintf(stderr, "\n[pm-ls] %-8s 0x%04X:", R[r].tag, R[r].a);
+          for (uint32_t o = 0; o < R[r].len; o += 4) {
+              if (o && (o & 15) == 0) fprintf(stderr, " |");
+              fprintf(stderr, " %02X%02X%02X%02X",
+                      ctx->ls[R[r].a+o], ctx->ls[R[r].a+o+1],
+                      ctx->ls[R[r].a+o+2], ctx->ls[R[r].a+o+3]);
+          }
+      }
+      fprintf(stderr, "\n"); }
+    uint32_t last = 0xFFFFFFFFu; unsigned rep = 0; unsigned col = 0;
+    for (unsigned i = 0; i < n; i++) {
+        uint32_t pc = g_pm_flow_buf[i] & SPU_LS_MASK;
+        if (pc == last) { rep++; continue; }
+        if (rep) { fprintf(stderr, "*%u", rep + 1); rep = 0; }
+        fprintf(stderr, "%s%05X", (col++ % 16) ? " " : "\n  ", pc);
+        last = pc;
+    }
+    if (rep) fprintf(stderr, "*%u", rep + 1);
+    fprintf(stderr, "\n"); fflush(stderr);
+    return 0;
+}
+void spurs_pm_flow_watchdog_start(void)
+{
+    HANDLE h = CreateThread(NULL, 0, spurs_pm_flow_watchdog, NULL, 0, NULL);
+    if (h) CloseHandle(h);
+}
+#else
+void spurs_pm_flow_watchdog_start(void) {}
+#endif
+
+int spurs_run_taskset_policy_probe(uint32_t taskset_ea, uint32_t taskid,
+                                   uint32_t spurs_ea, uint64_t wkl_data,
+                                   uint32_t wid, uint8_t* out_2700, uint32_t out_len)
+{
+    spu_context* ctx = (spu_context*)calloc(1, sizeof(spu_context));
+    if (!ctx) return -1;
+    spu_context_init(ctx, 0);
+    ctx->image_id    = 100;      /* policy's own indirect-branch table */
+    ctx->policy_mode = 1;
+
+    /* Policy module image at its load base LS 0xA00 (code + data tables). */
+    /* size 0 = this port linked the default stub blob (spurs_policy_blob_weak.c),
+     * i.e. it has no lifted taskset policy image -- don't run an empty LS. */
+    if (!g_taskset_policy_size ||
+        g_taskset_policy_size > SPU_LS_SIZE - 0xA00) { free(ctx); return -1; }
+    memcpy(ctx->ls + 0xA00, g_taskset_policy_bytes, g_taskset_policy_size);
+
+    /* SpursKernelContext at LS 0x100 (same layout as spu_run_policy_module). */
+    uint8_t* ls = ctx->ls;
+#define KBE32(off, v) do { uint32_t _v = (v); ls[(off)] = (uint8_t)(_v >> 24); \
+        ls[(off)+1] = (uint8_t)(_v >> 16); ls[(off)+2] = (uint8_t)(_v >> 8);   \
+        ls[(off)+3] = (uint8_t)_v; } while (0)
+    KBE32(0x1C0, 0);                    KBE32(0x1C4, spurs_ea);
+    KBE32(0x1C8, 0);                    KBE32(0x1CC, 8);
+    KBE32(0x1D0, 0);                    KBE32(0x1D4, 0xA00);
+    KBE32(0x1D8, wid);                  KBE32(0x1DC, wid);
+    KBE32(0x1E0, SPURS_PM_EXIT_TO_KERNEL_LS);
+    KBE32(0x1E4, SPURS_PM_SELECT_WORKLOAD_LS);
+    /* taskset EA also planted at the SpursKernelContext taskset slot the policy
+     * reads for its taskset DMA (mirrors the cri-r4 injection at LS 0x27B8). */
+#undef KBE32
+
+    ctx->gpr[0]._u32[0] = SPURS_PM_EXIT_TO_KERNEL_LS;
+    ctx->gpr[1]._u32[0] = 0x3FFB0;
+    ctx->gpr[3]._u32[0] = 0x100;
+    ctx->gpr[4]._u32[0] = (uint32_t)(wkl_data >> 32);
+    ctx->gpr[4]._u32[1] = (uint32_t)wkl_data;
+    ctx->gpr[5]._u32[0] = 0;
+
+    g_spurs_pm_polls = 0; g_spurs_pm_exited = 0;
+
+    fprintf(stderr, "[real-pm] RUN taskset=0x%08X task=%u spurs=0x%08X wkl=0x%llX wid=%u\n",
+            taskset_ea, taskid, spurs_ea, (unsigned long long)wkl_data, wid);
+    fflush(stderr);
+
+    spu_run_with_halt(tsp_spu_func_00000A00, ctx);
+
+    fprintf(stderr, "[real-pm] END status=0x%X pc=0x%05X polls=%u exited=%u\n",
+            ctx->status, ctx->pc, g_spurs_pm_polls, g_spurs_pm_exited);
+    fflush(stderr);
+
+    if (out_2700 && out_len) {
+        uint32_t n = out_len;
+        if ((uint32_t)0x2700 + n > SPU_LS_SIZE) n = SPU_LS_SIZE - 0x2700;
+        memcpy(out_2700, ctx->ls + 0x2700, n);
+    }
+    int st = (int)ctx->status;
+    { extern void spu_coh_unregister(spu_context*); spu_coh_unregister(ctx); }
+    free(ctx);
+    return st;
+}

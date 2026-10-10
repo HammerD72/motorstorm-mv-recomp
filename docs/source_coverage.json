@@ -1,0 +1,322 @@
+[
+  {
+    "note": "atomic-2026-10-08-coh-overflow.md",
+    "owner": "docs/research/RUNTIME.md",
+    "sha256": "839e83a1c64934bda37911eebe7f2ce4420d8451b536d9a3136d31865c569356"
+  },
+  {
+    "note": "atomic-2026-10-08-interp-contracts.md",
+    "owner": "docs/research/RUNTIME.md",
+    "sha256": "a4fbfe5a13b786550c0f0235a5fc917a052f6fce5d7b0e7b135adfec38336bde"
+  },
+  {
+    "note": "atomic-2026-10-08-mfc-overflow.md",
+    "owner": "docs/research/RUNTIME.md",
+    "sha256": "f65bd766f96663042dc98e1eaec28139d5b202d338a0c86fb2f9275b2457e5d7"
+  },
+  {
+    "note": "atomic-2026-10-08-policy-snapshot.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "e71a2f9cc9549f372b115e798a81e925159728720110aadd9e91ec63b0f2f2ca"
+  },
+  {
+    "note": "atomic-2026-10-08-ppu-wait.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "80dadc6a1b57b2e4616f5a8f3fa092f8af8ebf430547f1fbd999a5f3ab80bde9"
+  },
+  {
+    "note": "atomic-2026-10-08-wait-target.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "5c67ae71e3f0997b622281ad5bae9e7171687be9528140cef4c91dd175c36576"
+  },
+  {
+    "note": "atomic-2026-10-09-compiler-provenance.md",
+    "owner": "docs/research/TRANSLATION.md",
+    "sha256": "74b82dccc3c4596f6890655933b0290eb8ce1b42eb922c351955bbe831fb61d5"
+  },
+  {
+    "note": "atomic-2026-10-09-interrupt-boundaries.md",
+    "owner": "docs/research/RUNTIME.md",
+    "sha256": "dccebda2fc7db9beb99e1674f07314a86f1efa068aad44fabc59a61b3a4cba74"
+  },
+  {
+    "note": "atomic-2026-10-09-notification-serialization.md",
+    "owner": "docs/research/RUNTIME.md",
+    "sha256": "1f22a620a1f305e668510f8fffbdd16b43854f497a4172ad22bf6540bee9c971"
+  },
+  {
+    "note": "atomic-2026-10-09-online-analysis-tools.md",
+    "owner": "docs/research/TRANSLATION.md",
+    "sha256": "9c301ca35192628fd8d05beb0b1d144c0a97e57c2d7b94f66344a0198dc4f75b"
+  },
+  {
+    "note": "atomic-2026-10-09-owner-read-gate.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "455c69633f779e10ede7703f2a68c82f7c469f1e1daab3cb17c053f15be6c06b"
+  },
+  {
+    "note": "atomic-2026-10-09-pm-cpu-span.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "299ee37c1145c7b309c3cf70c6058cfedeed067c838f9348a08285e9af585acf"
+  },
+  {
+    "note": "atomic-2026-10-09-pm-ownership-stores.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "73a84ee1c8491b334fc404218b5a8663070097e0d5563700b43d1f7a31723eb3"
+  },
+  {
+    "note": "atomic-2026-10-09-pm-page-mask.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "1ff9f5ecac8e0db741c9bf6fd5aa81e7c11fca40d648635d87044b584b3864f0"
+  },
+  {
+    "note": "atomic-2026-10-09-pm-reserve-predicate.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "442f69dcafb6f94d75071b5debef66d07f57bd88a7b3aa6e2c31beb39434e0ff"
+  },
+  {
+    "note": "atomic-2026-10-10-debug-pack01-quarantine.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "389f2b9e6ea931ad33b635a5db4966965f7ad0776a810e9983d65816605d0cd8"
+  },
+  {
+    "note": "atomic-2026-10-10-debug-package-toc.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "95ee0181c9a0ba4e6fe8df90ae94cc36c2e0ab5727eccf6a2d86a490b567e761"
+  },
+  {
+    "note": "atomic-2026-10-10-fp-failures.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "6d3496309cd52330c539618d8517f432e411978a4cac849578026d3cbf696c20"
+  },
+  {
+    "note": "atomic-2026-10-10-havok-capture.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "d7d6adc0edf11f4484372bcdc1b4c00b4fa278c42094835d720db9dfd4d356a8"
+  },
+  {
+    "note": "atomic-2026-10-10-havok-race-load.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "ba651f25d43501da56a7e30ee9842fbfa32d4bb2b304f476a379520efef99e03"
+  },
+  {
+    "note": "atomic-2026-10-10-havok-raw-fatal.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "dc7a6b1fe0931bcf259ad853787d8cf57eeb0e7809d8d0702cbe49a0c820c9e6"
+  },
+  {
+    "note": "atomic-2026-10-10-havok-reference-hardware.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "28dd084e710d57b3e603877e234195f22fe00d21d95250b5aa1eefdafae0626a"
+  },
+  {
+    "note": "atomic-2026-10-10-havok-retail-parity.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "462449397fe0f9ae58df5ca2f3105e58cd47f941cb6bd939c4573c4aae212bde"
+  },
+  {
+    "note": "atomic-2026-10-10-native-wedge-launcher-hygiene.md",
+    "owner": "docs/OPERATIONS.md",
+    "sha256": "98ab9d414cc45c3209f86f8d240f1ef9c9c03ed4a8502df0c52baebd285796b2"
+  },
+  {
+    "note": "atomic-2026-10-10-play-stall-snapshot.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "1f79d0c9d384542ed64e303d7e53a0083c26b9b580b42118d52c76c2977e18d3"
+  },
+  {
+    "note": "atomic-2026-10-10-rpcs3-compiler-cache.md",
+    "owner": "docs/research/TRANSLATION.md",
+    "sha256": "cc0ba3e571bc887fc344e071556ba35236d9c08a7faf0f0ce6c51593ef3c0d7e"
+  },
+  {
+    "note": "atomic-2026-10-10-rpcs3-matched-reference.md",
+    "owner": "docs/research/HAVOK_REFERENCE.md",
+    "sha256": "5feb2c3aa04ad937b14d1bc4bfbb02e95201feee8b6ca6de4486ee4310b63af6"
+  },
+  {
+    "note": "atomic-2026-10-10-upstream-recon.md",
+    "owner": "docs/VENDOR.md",
+    "sha256": "922d1766201cf016cc9d8959524a22fae49b1fec837fce079c83b2ae35e0911f"
+  },
+  {
+    "note": "atomic-2026-10-10-upstream-reuse.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "3a3a96d6f62db1cdafca0a9d390c0586a63ef3760bc5452b145214ab8958d526"
+  },
+  {
+    "note": "FREEZE_STATUS.md",
+    "owner": "docs/research/PARKED_MSTREAM.md",
+    "sha256": "8424ba04dc6bab1492ae337262e020de2d994c224bde374700fd09a2d25b51ef"
+  },
+  {
+    "note": "HANDOFF_audio.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "ee116505acf4a83378b605c698d26e4fff096250ec357481062113af7e9e5962"
+  },
+  {
+    "note": "HANDOFF_BootAdvance.md",
+    "owner": "docs/OPERATIONS.md",
+    "sha256": "0934d194427c57fe87d366b69555f901d6527240b52b3777a0f6ac9c992aed02"
+  },
+  {
+    "note": "HANDOFF_EVENT_WAKE.md",
+    "owner": "docs/OPERATIONS.md",
+    "sha256": "b2411bcc7807a6f70153e06826d4547abe6117221e889ea2a080daab3cc411d6"
+  },
+  {
+    "note": "HANDOFF_liftboot.md",
+    "owner": "docs/BUILDING.md",
+    "sha256": "88e85c5361df45137e896f3e62a9c77ff3e36d0b83a7c487f9060a3edba1782d"
+  },
+  {
+    "note": "HANDOFF_menu_nav.md",
+    "owner": "docs/OPERATIONS.md",
+    "sha256": "a0413ea194397f5aef283678a25a78be2807ef039b62d0aa8d463232cf4e61e9"
+  },
+  {
+    "note": "HANDOFF_pad_input.md",
+    "owner": "docs/OPERATIONS.md",
+    "sha256": "634b2705c5b4b982af4f3cd22fae6b15bf18958ae1974f901f2d0a0f47b674eb"
+  },
+  {
+    "note": "HANDOFF_ppu_consumer.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "f1773f0c72d4dd1600985ebe17767a7155e946726d6e242c1e63bece66f6a49b"
+  },
+  {
+    "note": "HANDOFF_prompt_2026-10-10_evening.md",
+    "owner": "HANDOFF.md",
+    "sha256": "7bd9e520465792c73bad9ab7d607cf46a687b2402cef6077d77930436d7675d3"
+  },
+  {
+    "note": "HANDOFF_RecompBootstrap.md",
+    "owner": "docs/BUILDING.md",
+    "sha256": "df13dee543edc18d462c862544e64b07d3fd9bb45e9c62dd229ed4112189c4a2"
+  },
+  {
+    "note": "HANDOFF_rsx_readiness.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "77a1e8d7c99adc991dadea5435407d9fd5bb6c45e3c1fb01641575910a967c8c"
+  },
+  {
+    "note": "HANDOFF_save_data.md",
+    "owner": "docs/BUILDING.md",
+    "sha256": "88e85c5361df45137e896f3e62a9c77ff3e36d0b83a7c487f9060a3edba1782d"
+  },
+  {
+    "note": "HANDOFF_SPURS_COMPOSITE.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "963b3d8c150b6716c1f0b9037915bcd24eee5c2ff3c2c5ea60d5cf9db45eff18"
+  },
+  {
+    "note": "HANDOFF_yourlane.md",
+    "owner": "docs/BUILDING.md",
+    "sha256": "88e85c5361df45137e896f3e62a9c77ff3e36d0b83a7c487f9060a3edba1782d"
+  },
+  {
+    "note": "m1_park_fence.md",
+    "owner": "docs/research/PARKED_MSTREAM.md",
+    "sha256": "ee9afd5199633c42c0dd1322df3d301410f7ebe3aed8a2ee49ac30a6f6c0266d"
+  },
+  {
+    "note": "m33-ppu-consumer.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "81982a02135922febb81ebec707006d9737b26fb01096273934ff96bd2d3f38a"
+  },
+  {
+    "note": "m33-rsx-readiness.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "049f89ab916a3d700d8352b9a92001fd93d521941c2ee54e60851109ad0eb0c6"
+  },
+  {
+    "note": "m33_asset_pipeline.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "552a95d4bff13fd4a8cb75a6bb0ab3cbf24fb3030afc389ba2443c3d25ffae64"
+  },
+  {
+    "note": "m33_ppu_consumer.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "81982a02135922febb81ebec707006d9737b26fb01096273934ff96bd2d3f38a"
+  },
+  {
+    "note": "m33_rsx_readiness.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "049f89ab916a3d700d8352b9a92001fd93d521941c2ee54e60851109ad0eb0c6"
+  },
+  {
+    "note": "m37-ppu-kick-answers.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "c32b8be6b350b14ba43f9ca355e0ace2da14d8351df67f720b4fc6490e106ed3"
+  },
+  {
+    "note": "m39-spin-exit-decode.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "c453b6126775646d7bc0472ee461f7533b0591f66444bcf894b2f633566c9edb"
+  },
+  {
+    "note": "m39b-ppu-park-decode.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "4aedbfc59dfaa57ef0a85263701ddce01b299dc5c9eb527da0fefb120d23ff69"
+  },
+  {
+    "note": "m40-caller-loop-verdict.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "d3b640f18cc60f395eb4e259b51637be229a4939c052e617530716c1fd8c44a7"
+  },
+  {
+    "note": "m46_boot_progress.md",
+    "owner": "docs/BUILDING.md",
+    "sha256": "ab0f5cca80fde626a80852536888c5271489f6fe3b08de7de70a3985ec97b258"
+  },
+  {
+    "note": "m4_audio.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "4bcd591f9ceff2e8598d254b19f1922e02f5108b36e78264d4eb59aeeeebe6da"
+  },
+  {
+    "note": "m4_textures.md",
+    "owner": "docs/research/GRAPHICS_AUDIO.md",
+    "sha256": "32d434863dd15c00d5fb034d1922a6c3147c78ff2743943ef3fe632695eb3cfc"
+  },
+  {
+    "note": "m4_title_tracer.md",
+    "owner": "HANDOFF.md",
+    "sha256": "89a88e82b4131efbde3bc99c67a76ff323d024f5c509e3012c9ff73929dfd73f"
+  },
+  {
+    "note": "MASTER_HANDOFF.md",
+    "owner": "docs/research/PARKED_MSTREAM.md",
+    "sha256": "15b3a2a6554ff12b1653895d55888fbeedb98ff08d1d193e6ece50a04352e9a3"
+  },
+  {
+    "note": "NAMED_BUILD_FEASIBILITY.md",
+    "owner": "docs/research/TRANSLATION.md",
+    "sha256": "f9163e669ff75e26c6dbb914b4354a3902293a03726094dbd2ddf7d7c6495c69"
+  },
+  {
+    "note": "NATIVE_PORT_BOUNDARY.md",
+    "owner": "HANDOFF.md",
+    "sha256": "4c0d5b51c0d633a58c84228d975ce7c500873b81d77babfadf1b7249c33f2a52"
+  },
+  {
+    "note": "next-20-steps-2026-10-10.md",
+    "owner": "docs/NEXT_STEPS.md",
+    "sha256": "9c8987ec2a22fdcd2c3cb0e6f3e50f06fd7f4719e712fd1f2483fba9a49fe129"
+  },
+  {
+    "note": "probeoff-2026-10-08.md",
+    "owner": "docs/OPERATIONS.md",
+    "sha256": "72ebd3b7fbc202f86233534f07dee876f87198f8da4f386878c162917d2ebe9e"
+  },
+  {
+    "note": "sol-handoff-2026-10-07.md",
+    "owner": "HANDOFF.md",
+    "sha256": "ff26cb79e0795a8528e39521d8f7739f6bdd94e6fd26087682c18b1ba99dd4a0"
+  },
+  {
+    "note": "wws-stall-dossier-2026-10-07.md",
+    "owner": "docs/research/SPURS.md",
+    "sha256": "a1e0f8e9853f599406e6d5265c80a8ddd5deb11ba68c5fcef03c03f720a34ddc"
+  }
+]

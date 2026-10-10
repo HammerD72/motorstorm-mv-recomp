@@ -1,0 +1,21 @@
+# Vendor provenance and upstream
+
+Source: [sp00nznet/ps3recomp](https://github.com/sp00nznet/ps3recomp), snapshot base268336af3a9f736835181ec09a7d88f695795e06 plus preserved local dirty runtime/lifter fixes. This is not a claim that local changes were accepted upstream. Full old checkout/history remains private at temp/legacy/recomp/vendor/ps3recomp; source-copy/exclusion hashes at temp/migration.
+
+Retain vendor/LICENSE and per-component notices. Root MIT preserves Ned Heller/sp00nznet credit. Standalone ATRAC source in third_party/at3_standalone remains LGPL2.1 with COPYING.LGPLv2.1; stb_truetype has its own MIT/public-domain notice; shared FFmpeg is external and its license obligations apply. Algorithmic AES/SHA/CRC/JPEG/ATRAC tables are implementation data, not game textures or firmware images. Behavioral RPCS3 reference does not authorize copying GPL implementation.
+
+The NID hash suffix, import IDs, syscall constants and diagnostic addresses are interoperability/research metadata. They are not the separately removed decryption keys or captured instruction fixtures. Automated signatures supplement manual provenance review; they do not certify rights to every future contribution.
+
+The public snapshot excludes nested Git/history, firmware/resource binaries, captured programs, generated lifts, unreviewed instruction fixtures and bundled platform keys. Tests are disabled with an explicit error if requested; see [setup](BUILDING.md). Runtime diagnostic target identifiers are research metadata, not game payloads.
+
+Historical upstream reference documents and the hardcoded private PRX helper are retained in ignored temp/legacy/vendor_reference/ rather than duplicated as current project instructions. The original source licenses, CONTRIBUTING and CONTRIBUTORS remain public.
+
+Public vendor tools are limited to 14 generation/extraction dependencies, enforced by `VENDOR_TOOLS` in the staged-source auditor. Other research/port helpers, baselines, diagnostic output and generic templates remain in the same ignored reference archive, with verified move hashes. They are not required by the documented build/generation workflow. Any reused helper must receive a separate provenance review before publication.
+
+Clean upstream observed5244db92669b54831c6d3ebb7a96d58c4dbfa6df (v0.13) versus local v0.11 base. Reuse selectively, preserve fixes and attribution. Snapshot18openPR/7issues is time-specific: recheck before contributing.
+
+Existing [draftPR230](https://github.com/sp00nznet/ps3recomp/pull/230), codex/d3d12-fp-source-capacity, commit75a32692a6a4cb8f5a9217b78a0ab047c521d6c9: generic synthetic4096-byte/256instruction shader expands57382HLSLbytes; caller capacity red36pass/3fail→green39/0, FXCps_5_0/O3 pass, Release runtime build0, CTest5/5, diff-check0. Last saved status OPEN/draft, empty check rollup: not CI success/merge approval. No game payloads in the PR. Local analogous fix is in graphics evidence.
+
+PR213 overlaps signal/event/context work; do not duplicate it. Issue214 KZ3 findings, PR215 real video candidate, PR226 null-read diagnostics are triage candidates, not adopted fixes. User authorized useful comments on213 and modular draft contributions; current migration itself is solo. Private upstream research artifacts remain temp/legacy/recomp/out/research/.
+
+No releases/binaries/dependencies are redistributed by the initial source commit. A separate distribution needs its own complete component/license audit.

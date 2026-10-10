@@ -1,0 +1,20 @@
+# Documentation index
+
+Each subject has one canonical owner. Begin with [current handoff](../HANDOFF.md); chronological notes remain private evidence, not competing current instructions.
+
+| Subject | Owner |
+|---|---|
+| Dependencies, private inputs/keys, generation/build | [Building](BUILDING.md) |
+| Owned process guards, input, capture, cleanup | [Operations](OPERATIONS.md) |
+| Ordered diagnosis and acceptance gates | [Next steps](NEXT_STEPS.md) |
+| Failing native resource, controls, reference compatibility | [Havok/reference](research/HAVOK_REFERENCE.md) |
+| Shared PPU/SPU fixes and regression scope | [Runtime](research/RUNTIME.md) |
+| Ownership/CPU spans and allocation chronology | [SPURS](research/SPURS.md) |
+| Rendering/video/audio pipeline evidence | [Graphics/audio](research/GRAPHICS_AUDIO.md) |
+| Paused retail starvation and exonerated suspects | [Parked mstream](research/PARKED_MSTREAM.md) |
+| Compiler/cache/symbol research and methods | [Translation](research/TRANSLATION.md) |
+| Source provenance, licenses, upstream contribution | [Vendor](VENDOR.md) |
+| Git boundary, audit and legal-certainty limits | [Repository](REPOSITORY.md) |
+| All migrated notes and private evidence locations | [Source coverage](SOURCE_COVERAGE.md) |
+
+Canonical pages qualify historical successes against newer evidence. Public research records findings/identifiers, not original guest instruction or asset payloads.
