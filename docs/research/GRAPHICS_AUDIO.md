@@ -399,3 +399,63 @@ no exposure substitution or forced constant was applied.
   Preserve its provenance if reusing any implementation.
 - Observers remain private and default off; tracked runtime files were restored.
   Menu graphics and playable-race acceptance remain unresolved.
+
+
+## Typed GPU surface visibility candidate and placement follow-up (2026-10-12)
+
+- Fork-first implementation queues typed PPU/HLE reads of device-owned pages to
+  the renderer. A separate allocator/list/fence copies actual offscreen pixels
+  before the unchanged read. Draw-time DMA identity, pitch and format are retained;
+  FP16/FP32 bit patterns and guest endianness are preserved. Dirty generations
+  avoid redundant copies. Unsupported layouts, failed events/fences and pending
+  renderer-thread reads raise tagged errors rather than returning invented data.
+- Actual fast-accessor regression: old header fails `fast guest half read sees
+  device 1.0`; candidate passes. Actual fork HLE header repeats red/green. Authored
+  fixtures cover 8/16/32/64-bit access, negative/infinity/NaN bits, row padding,
+  differing pitches and invalid lengths. Run `python scripts/check_rsx_cpu_surface.py`;
+  fixture is `scripts/fixtures/rsx_cpu_surface_memory.c`. These are primitive tests,
+  not native visual acceptance or a performance measurement.
+- Combined native proof run `20261012T190951.505938Z`, private EXE SHA-256
+  `a90225402d7b083917224aedbb4b0d54d184be12c162bcdffbad2b88d5487dd1`:
+  fenced GPU center half and latest PPU half at `C2A34580` both equal `3C00` (1.0),
+  with 146 observed reads. The identical private comparator previously returned
+  failure for GPU `3C00` versus guest `0000`; it now passes. Private observation
+  blocks were removed from tracked source after the diagnostic EXE was copied.
+- Ordinary candidate SHA-256
+  `450c2a0d2ae8a567d53782b07bd7caddd7d28aeac9b95a615d36f7fb6391e715`,
+  run `20261012T192751.538171Z`, reaches the replay target; original ticket art and
+  moving intro content are visible. User independently reports real video and
+  assets confined to the lower third. Video content also appears in internal
+  frames, including frame 45. This is progress, not correct layout or playable
+  race acceptance. Band geometry and placement remain visibly wrong.
+- The old blank-intro replay checkpoint is invalid now. Private replay instead
+  compares a genuinely observed Sony intro region; this can wait for a matching
+  animated frame. Remaining inputs and target use established text checkpoints.
+- Placement hypotheses: reversed dimensions in the guest producer; incorrect
+  viewport/composite mapping; incorrect vertex position arithmetic. Private
+  readonly FIFO run `20261012T193554.660724Z` shows initial clip/viewport
+  `1280x720`, then full-scene `720x1280`, with matching scales/offsets. The portrait
+  values exist before the renderer decoder. Trace the producer and final composite
+  before introducing a dimension swap. No geometry substitution has been applied.
+- Current scope is typed CPU reads of registered legacy D3D12 offscreen color
+  surfaces. Bulk-pointer/SPU writes and complete bidirectional ownership are not
+  established by these tests. Normal PLAY race, layout, sound, saves and minimum
+  60 FPS remain unverified. Retail mstream stays parked.
+
+Placement producer checkpoint (2026-10-12): the private read probe
+`20261012T195415.330090Z` observes the GC buffer metadata before command emission:
+its dimension fields already contain 720 and 1280. Writer probe
+`20261012T195635.820779Z` identifies `GcRenderBuffer::Create` as the initializer;
+value-filtered probe `20261012T200234.486324Z` preserves the relevant caller chain
+through `evo::renderer::PixelBuffer::Init(IStream*, unsigned)`. The SDK command
+writer copies these dimensions into the FIFO. Initial display setup remains
+1280x720. Next inspect how the PixelBuffer resource obtains/computes its dimensions
+and compare its source descriptor; renderer decoding alone has not been shown
+responsible. Private generated excerpts and register/stack dumps remain ignored.
+
+User-authorized current capture from the writer probe shows SELECT A BIKE with
+readable UI/logo, missing bike art and a narrow central object. This adds native
+observation of the remaining defect, not geometry or race acceptance. The owned
+writer/read probes were closed explicitly before each next launch. The current
+value probe uses normal input and lets the now-visible intro play naturally;
+exact animated-image equality was an unreliable skip checkpoint.
