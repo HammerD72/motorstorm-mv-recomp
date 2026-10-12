@@ -330,3 +330,73 @@ the ordinary build completed with EXE SHA256
 `d070786a4cee10ccfe925e13ba65ade0bd71031b7078174ec950682d3d1e5186`,
 logs `temp/builds/20261011T163331.364781Z`. Diagnostic trees, installers,
 strict auditors, binaries and test result/hash manifests remain private.
+
+### Executed guest malloc failure, 2026-10-11
+
+The user navigated normal PLAY and attempted race start in the muted, visible
+native run `temp/runs/20261011T204610.305634Z`. They reported that loading stayed
+black. PID26228/create1791751570.4203024 used diagnostic EXE SHA256
+`2f0a46058f43ca0eca55f243771e1ca4fdb1cfa8e60361e4935a444b03e09646`,
+with the unchanged original ELF identity above. It exited naturally after
+170.797s, host return0, with the original fatal177. This fails race acceptance.
+An accidentally occluded desktop screenshot is explicitly invalid as native
+rendering evidence; the user's black-screen report is separate evidence.
+
+The same ResourceID000A8A45293A530C, object4E0860F0 and thread28812 are present
+through36 executed observations. The original request42496 enters mallocC1CCB4
+with TOCE9A128 and initialized heap1021E808. Its heap-extension path executes
+syscall348 atC1D3F8: size1048576, flags400, outputEA0FEFE6B0. AtC1D3FC the
+returned status is sign-extended CELL_ENOMEM80010004. The original guest
+failure branch loads FFFFFFFF from its stack output atC1D40C, takesC1D67C and
+returns0 atC1CED8 to small-call return4F9174. Virtual return72EF60 and the
+constructor/payload buffer retain0. No guest failure was overridden.
+
+Read-only, unlocked runtime snapshots around that syscall show the cursor
+moving4E100000 to50000000, the old virtual arena end. All31 candidate1MiB
+positions below that end conflict with recorded aliases. Both snapshots show
+34 active slots totaling147849216bytes (141MiB), below the advertised213MiB
+pool and1024-slot limit. The runtime's collision walk and subsequent arena
+limit check explain the returned ENOMEM. These are observations around the
+call, not an atomic allocator-internal snapshot or working-reference proof.
+
+The original auditor correctly rejected two malloc return records. The
+second occurs after the block read, belongs to a separate32-byte reader
+allocation and returns nonzero. A separate primary-call audit bounds records
+between the executed before-small-call and after-small-call hooks, requires
+exactly one matching entry/return and return address4F9174, and retains the
+later return separately. Identity, readability, syscall arguments, actual
+failure branch and downstream null checks remain required. The initial
+rejection and all raw records are preserved privately.
+
+This completes the interior-null diagnosis in [#54](https://github.com/robbe1912/motorstorm-mv-recomp/issues/54).
+[The generic runtime correction (#7)](https://github.com/robbe1912/motorstorm-mv-recomp/issues/7)
+can now trial the narrow fork capacity change against this demonstrated seam.
+The same synthetic regression on this project's unmodified runtime fails
+allocation7 with69MiB advertised available; registered aliases also fail
+above the old alias boundary. After the fork hunks, eight24MiB allocations
+and all alias checks pass, while genuine physical exhaustion on request9
+retains ENOMEM, the output sentinel and21MiB availability. Reproduce with
+`python scripts/check_memory_capacity.py`; no game input is needed.
+Private red/green evidence is in `temp/checks/memory-20261011T205218.740466Z`
+and `memory-20261011T205234.022775Z`. Native allocation/race acceptance for
+the candidate is recorded below; #1/#3 reference gaps remain independent.
+
+The user repeated normal PLAY/vehicle selection in native trial
+`temp/runs/20261011T205310.337110Z`, PID29220/create1791751990.446359,
+EXE SHA256 `4d3f53750131c217020e7e0ff88fe626124d981a2d217d9a3042e1fd67c8267c`.
+For the same ResourceID/object, thread8760 executes successful heap extension
+and malloc returns52D00010 to4F9174. The virtual return, constructor field,
+aligned block destination and reader-constructor return retain52D00010 with
+resource length42480. Its readable64-byte header exactly matches the original
+resource header from the baseline. The private green auditor requires the
+original call interval and retains all55 observations. No fatal177 is captured
+or logged in this trial; GAMEFLOWMANAGER::Construct executes later. This passes
+the previously failing allocation boundary, not Havok finishing/race rendering.
+The user's report establishes vehicle selection and an open window, not a
+visible race. File reads/presents later stop advancing in the retained trace.
+At the user's shift to menu-asset work, an identity-checked owned stop marker
+ends the run at379.515s/guard return1. The wrapper restores ordinary generated
+selection and rebuilds candidate runtime EXE
+`2744656598efc6d3c6529bc40daf00c1d3c88615c19f89b4fff01713cccd52e9`.
+Both Windows and Linux CI capacity checks pass in [PR57](https://github.com/robbe1912/motorstorm-mv-recomp/pull/57).
+Issues #7/#13 remain scoped to their own acceptance; overall DoD is unfinished.
