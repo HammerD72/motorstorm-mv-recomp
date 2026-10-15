@@ -6631,6 +6631,11 @@ static void submit_record_capacity(void* context, int present)
 {
     (void)context;
     if (present) abort();
+    /* A timeout from wait_for_gpu must not allow reuse of GPU slots. */
+    if (!vp_upload_retire(NULL)) {
+        fprintf(stderr, "[D3D12] Record capacity GPU retirement failed\n");
+        abort();
+    }
     int saved = s_present_this_frame;
     s_present_this_frame = 0;
     render_frame();
