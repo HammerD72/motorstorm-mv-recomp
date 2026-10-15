@@ -20,6 +20,7 @@
 #include "rsx_d3d12_backend.h"
 #include "rsx_index_strip.h"
 #include "rsx_upload_buffer.h"
+#include "rsx_record_batch.h"
 #include "rsx_primitives.h"
 #include "rsx_vertex_fetch.h"
 #include "rsx_texture_layout.h"
@@ -4422,6 +4423,8 @@ static void off_rt_transition(int slot, D3D12_RESOURCE_STATES to)
  * render-to-texture pass) must still run -- it is what fills the texture a
  * later batch samples -- but presenting it would show a half-built frame. */
 static int s_present_this_frame = 1;
+static rsx_record_batch s_record_batch;
+static u64 s_record_capacity_drains;
 
 /* Resolve a DRAW_*_TEX value: a hex raw offset, or the literal "duck" for the
  * content-identified duck texture. */
@@ -5428,6 +5431,8 @@ static void render_frame(void)
     /* Set render target + depth */
     s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(s_d3d.cmd_list, 1, &rtv_handle, FALSE, &dsv_handle);
 
+    /* A capacity drain continues the same backing image. */
+    if (rsx_record_batch_begin(&s_record_batch)) {
     /* Clear color and depth */
     s_d3d.cmd_list->lpVtbl->ClearRenderTargetView(
         s_d3d.cmd_list, rtv_handle, s_d3d.clear_color, 0, NULL);
@@ -5435,6 +5440,7 @@ static void render_frame(void)
         s_d3d.cmd_list, dsv_handle,
         D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
         s_d3d.clear_depth, s_d3d.clear_stencil, 0, NULL);
+    }
 
     /* Set viewport and scissor */
     D3D12_VIEWPORT viewport = {0, 0, (float)s_d3d.width, (float)s_d3d.height, 0.0f, 1.0f};
@@ -5547,6 +5553,7 @@ static void render_frame(void)
             u32 start_vert = dr->vb_byte_offset / VERTEX_STRIDE;
             s_d3d.cmd_list->lpVtbl->DrawInstanced(
                 s_d3d.cmd_list, dr->vertex_count, 1, start_vert, 0);
+            if (dr->rt_off == 0) rsx_record_batch_display_write(&s_record_batch);
         }
     }
 
@@ -5980,6 +5987,7 @@ static void render_frame(void)
                 cpu_surface_written(cur_rt,cur_m);
                 s_d3d.cmd_list->lpVtbl->DrawInstanced(s_d3d.cmd_list,
                     dr->vertex_count, 1, dr->vb_byte_offset / 256, 0);
+                if (dr->rt_off == 0) rsx_record_batch_display_write(&s_record_batch);
                 phase_gpu_draw(is_small, 1);
                 /* VP_SUBMIT=<N>: prove the VP pass actually reaches the GPU.
                  * "records exist" and "draws were submitted" are different
@@ -6464,7 +6472,12 @@ skip_dump_consider: ;
 
     /* Present */
     if (s_present_this_frame) {
-        s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0); /* vsync */   /* skipped for an offscreen-only batch */
+        HRESULT present_hr = s_d3d.swap_chain->lpVtbl->Present(s_d3d.swap_chain, 1, 0); /* vsync */
+        if (FAILED(present_hr)) {
+            fprintf(stderr, "[D3D12] Present failed: 0x%08X\n", (unsigned)present_hr);
+            abort();
+        }
+        rsx_record_batch_presented(&s_record_batch);
         /* FPS_STATS=1: stamp AFTER the (vsync-blocking) Present so the frame
          * delta measures the real on-screen cadence, not submit time. */
         rsx_fps_stats_on_present();
@@ -6612,6 +6625,29 @@ static int blink_dbg(void)
     return v;
 }
 
+/* The queued records own constant/SRV slots and uploaded geometry until the
+ * submission below. Drain before writing any part of the next record. */
+static void submit_record_capacity(void* context, int present)
+{
+    (void)context;
+    if (present) abort();
+    int saved = s_present_this_frame;
+    s_present_this_frame = 0;
+    render_frame();
+    s_present_this_frame = saved;
+    ++s_record_capacity_drains;
+    if (s_record_capacity_drains <= 8)
+        fprintf(stderr, "[RSXBATCH] capacity drain %llu\n",
+                (unsigned long long)s_record_capacity_drains);
+}
+static void ensure_draw_record_capacity(void)
+{
+    if (!rsx_record_batch_room(&s_d3d.draw_count, MAX_DRAWS, NULL, submit_record_capacity)) {
+        fprintf(stderr, "[D3D12] Record capacity drain failed (count=%u)\n", s_d3d.draw_count);
+        abort();
+    }
+}
+
 static void d3d12_present(void* ud, u32 buffer_id)
 {
     (void)ud;
@@ -6627,7 +6663,7 @@ static void d3d12_present(void* ud, u32 buffer_id)
      * it would strobe the bare backbuffer clear. Keep accumulating -- the
      * composite draw that targets the display presents the whole chain, in
      * order, in one command list. Empty batches still present (boot/idle). */
-    int flip_has_display = (s_d3d.draw_count == 0);
+    int flip_has_display = (s_d3d.draw_count == 0) || s_record_batch.display_written;
     for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++)
         if (!s_d3d.draws[_i].is_clear && s_d3d.draws[_i].rt_off == 0) {
             flip_has_display = 1;
@@ -6649,6 +6685,7 @@ static void d3d12_present(void* ud, u32 buffer_id)
 static void record_surface_clear(u32 rt, u32 width, u32 height, const u32 mrt[3],
     const float color[4], u32 flags, float depth, u8 stencil)
 {
+    ensure_draw_record_capacity();
     if (s_d3d.draw_count >= MAX_DRAWS) {
         fprintf(stderr, "[D3D12] Clear record capacity exceeded\n");
         exit(1);
@@ -6674,6 +6711,7 @@ static void record_surface_clear(u32 rt, u32 width, u32 height, const u32 mrt[3]
 static void d3d12_clear(void* ud, u32 flags, u32 color, float depth, u8 stencil)
 {
     (void)ud;
+    ensure_draw_record_capacity();
 
     /* Convert RSX ARGB u32 to float[4] RGBA */
     float cc[4];
@@ -7542,6 +7580,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
 
     if (!s_d3d.pipeline_ready || !s_d3d.vb_mapped) return;
     if (count == 0 || count > MAX_VERTICES) return;
+    ensure_draw_record_capacity();
 
     /* QUADS (prim 8) have no D3D12 topology; expand to a triangle list.
      * dbgfont draws all text as quads. Prefer the real vertex-program path
@@ -7819,6 +7858,7 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
     }
     if (!s_d3d.pipeline_ready) return;
     if (count == 0 || count > MAX_VERTICES) return;
+    ensure_draw_record_capacity();
     if (!s_d3d.vp_vb_mapped || !s_d3d.vp_root_sig) return;
 
     /* Expand through the VP path (indices resolved CPU-side): QUADS -> two
@@ -8332,7 +8372,7 @@ void rsx_d3d12_backend_present(void)
      * empty present is a flip/drain race and wipes the screen for a frame
      * (wave: black flashes and layout flicker between frames). */
     static int s_seen_content = 0;
-    int has_display = (s_d3d.draw_count == 0 && !s_seen_content);
+    int has_display = (s_d3d.draw_count == 0 && !s_seen_content) || s_record_batch.display_written;
     for (u32 _i = 0; _i < s_d3d.draw_count && _i < MAX_DRAWS; _i++)
         if (!s_d3d.draws[_i].is_clear && s_d3d.draws[_i].rt_off == 0) {
             has_display = 1;
