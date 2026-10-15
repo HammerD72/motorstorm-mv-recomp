@@ -128,3 +128,29 @@ and stale-cleanup damage; corrected source passes. Fixtures use empty authored
 VM/header data and host adapters, with no original instructions. Logs and
 source/fixture/executable hashes are retained under `temp/checks`; source-only
 lifetimes do not establish executed game work or native race entry.
+
+The authored scalar-u64 policy-entry regression,
+`python scripts/check_spurs_policy_arguments.py`, compiles the actual four r4
+stores with authored register/context adapters. Five zero/low/high/mixed/all-ones
+cases check the preferred high32/low32 pair. Production also clears the trailing
+words; that clearing is not an assertion in this fixture. Old packing fails
+three preferred-pair cases. This checks entry representation, not guest execution
+or native menu/race acceptance; hashes and logs remain private.
+
+
+`python scripts/check_spu_iret_progress.py` compiles the actual interpreter and
+`scripts/fixtures/spu_iret_progress.c`, an authored CPU program that increments
+a register and IRETs to one continuation seven times before its own STOP. The
+old curated idle classifier halts after five increments; the corrected runtime
+reaches eight and STOP. Unused channel/lift/recovery hooks trap. This tests
+productive returns, not native assets/race acceptance; source/executable hashes
+and full build/run logs remain in ignored `temp/checks/iret-progress-*`.
+
+On Windows, `python scripts/check_rsx_texture_alias.py` uses actual production
+packed-XY16F shader adaptation and authored texels for D3D float readback.
+Unpatched sampling must fail; WARP must pass. `--device hardware` explicitly
+selects hardware without fallback. The fixture covers signed half pairs,
+decoding before filtering, clamp/wrap, remapping, named units and LOD/bias;
+it also rejects insufficient source capacity and cube overlap. Logs and hashes
+remain in ignored `temp/checks/rsx-alias-*`. This is a sampling-contract test,
+not native race or performance acceptance.

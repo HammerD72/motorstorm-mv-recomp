@@ -48,13 +48,30 @@ File clears on consumption; stdout acknowledges [cellPad] PAD_FILE press. Defaul
 
 For a known menu checkpoint, use `python scripts/run.py --menu-replay PRIVATE_PROFILE.json`. The supported launcher captures game-internal backbuffers and drives normal input without desktop capture, focus or input. Schema 1 profiles contain the selected ELF SHA256, observed reference BMPs/ROIs/labels, single-button steps with 1..8 polls, and a target with optional additional checks. Profiles and reference images remain private. Text comparisons use white-glyph overlap; exact RGB comparison requires an unchanged observed ROI. A heading alone can match a help overlay: include a distinguishing target check.
 
+PAD_FILE replacement retries a sharing violation at most six times, rechecking
+ownership immediately before each attempt. A revoked run or persistent sharing
+error preserves the existing command and removes the pending file. The actual-send
+regression in `scripts/check_menu_replay.py` covers transient/permanent sharing,
+revocation during the delay, and a real Windows handle without delete sharing.
+This does not explain the separate historical replay-ownership failure.
+
 Continuation profiles must include screen-gated intro skips in `optional_actions`.
 Each uses the same observed reference/ROI/label/button/polls as a required step,
 plus `after_step` (the number of required steps already acknowledged). An action
 sends once when observed; an absent intro does not block the route. The target
 is checked first. Use `mode: "contrast"` for colored or fading intro captions:
 normalized grayscale correlation retains the 0.95 match threshold and rejects
-flat references/observations. Avoid blank-screen skip gates. The regression
+flat references/observations. For visibly verified fades, `reference_variants`
+lists additional private BMP paths using the same ROI/mode. They belong to the
+same action: any matching variant selects the reference used for the acknowledged
+send, then consumes that action once. Keep the 0.95 threshold; do not duplicate
+skip actions for alternate images. Avoid blank-screen skip gates. The regression
+for issue104 rejects ignoring an observed variant and reusing an action on a
+second variant. Native runs `20261014T233820.319968Z` and
+`20261014T233859.335448Z` each acknowledge one CROSS8 on the Sony caption and
+reach visually inspected PLAY frame11; both close at about 38.5 seconds. They
+use EXE `d9b1af564150eb048ede3cfaa39ae809035433917ddc0c5adb8618cb1e96c33b`.
+These are intro/menu receipts, without a graphics or race verdict. The regression
 checks faded captions, wrong screens, absent/repeated intros and target priority.
 
 Native trial `20261013T134536.081481Z` (EXE
@@ -88,6 +105,12 @@ capture of this clipping candidate; no freshness/ownership threshold changed.
 This verifies replay beyond the ordering boundary, not bike or race correctness.
 
 ## Capture discipline
+
+The Havok observer check allows 120 seconds for its compiler/linker and 15
+seconds for the synthetic observer executable. It prints compiler duration and
+exit status; compiler errors, timeouts and observer assertion failures remain
+fatal. The separate compile budget addresses repeated 30-second deadlines on
+cold hosted Windows builds (issue108); it changes no native runtime limits.
 
 The private baseline contains ten PPU sources, 24 SPU images and five capture hooks; it is instrumented. Original EXE/PDB are retained under build/preserved/, and rebuilt identities are in build/native/build_identity.json. Build success is not gameplay proof.
 
@@ -167,3 +190,27 @@ The merged source tree was compared with the tested integration tree and
 matched exactly before these documentation updates. This is one diagnostic
 run, not a performance comparison, clean regeneration proof or acceptance
 of assets, sound, saves, driving, opponents or minimum 60 FPS.
+
+## Bounded capture at an input event (issue 110)
+
+Use `--capture-menu --capture-burst-frames 64 --capture-on-pad 0x10` to capture
+the first matching UP command consumed by native PAD_FILE code. The input
+still requires the ordinary inspected-screen gate and receipt. A shared atomic
+notification arms a once-only renderer burst; no guest addresses, menu names
+or forced transitions are encoded in the runtime. The budget is 1..120
+presented batches with recorded operations, with unique indices shared with
+sparse navigation captures. Each manifest records reason and presenting flag.
+The burst cannot restart in the same process. Invalid budgets/masks fail
+before launch. Default capture behavior is unchanged.
+
+Without `--capture-on-pad`, an owned controller may create the run-local
+`capture-burst.arm` marker after checking ownership and the observed scene.
+For continued observation after reaching a menu, use a capture-only bounded
+launcher and a separate normal `menu_replay.replay` controller. Do not retain
+a stale target gate to avoid the normal replay launcher's target shutdown.
+Native event/manifest evidence is required in addition to selector tests.
+
+`python scripts/check_rsx_capture_schedule.py` compiles the actual selector
+and event latch with an authored game-free fixture, then checks launch
+preflight. It runs on Ubuntu and Windows. Capture readback perturbs timing;
+these runs do not prove normal frame rates or correct vehicle rendering.

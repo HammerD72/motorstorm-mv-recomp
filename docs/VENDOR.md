@@ -30,6 +30,11 @@ are historical; inspect current source and PR state before a trial.
 
 ## Combined fork testing
 
+The off-main policy workload-argument trial selectively ports own-fork atomic
+`680f097`. Its observed descriptor-write difference and black-background native
+regression are recorded in [SPURS evidence](research/SPURS.md#policy-workload-argument-trial-2026-10-14-issue-8).
+This trial has not been promoted to the native main branch.
+
 The owner authorized a continuous integration branch in our own fork while
 retaining atomic implementation branches for later upstream proposals.
 [`combined`](https://github.com/robbe1912/ps3recomp/tree/combined) merges the
@@ -61,7 +66,39 @@ not establish the cause of the current PVS wait. Scheduler PR291 remains
 untried. Original menu assets, the missing bike, normal PLAY and sustained
 performance still require native proof under their existing issues.
 
+## Boundary-history diagnostic trial
+
+Generic opt-in interpreter boundary capture was developed and tested on own-fork
+`codex/spu-boundary-history`, commits `e9954e3` and `c619594`. Its source, reader,
+fixtures and configuration guide remain in that separate diagnostic branch,
+not the combined correctness baseline. The temporary curated overlay was only
+the shared header and two interpreter insertions; both were removed after the
+native probe and the supported noninstrumented build passed. Captured GPR/LS
+payloads stay private. [Native evidence and limits](research/SPURS.md#filtered-boundary-history-2026-10-14-issue-8)
+record the bounded ordered witness, overwritten history, strict archived-image
+admission and remaining PVS wait. No upstream PR or native acceptance is claimed.
+
 ## Fork-first workflow
+
+Packed XY16F render-target sampling is authored on own-fork atomic branch
+`codex/rsx-xy16-rtt-view`. The new `rsx_texture_alias.h` helper and its D3D
+float-readback fixture are identical in the curated integration; the older
+fork backend has a selective adapter for its four-unit draw record and cache.
+Curated integration uses its current 16-unit records and complete negative
+cache identity. Seven authored cases fail unpatched and pass on WARP/hardware;
+Windows runtime and supported native builds pass. The first muted native view
+improves hill ghosting but retains terrain stipple and no bike. See
+[graphics evidence](research/GRAPHICS_AUDIO.md#packed-render-target-sampling-and-residual-stipple-2026-10-14-issue-94).
+This is fork-only; no external PR was opened.
+
+Productive interrupt-return regression: own-fork `codex/spu-iret-progress`,
+commit `719ea0d`, is included in combined `20b1384`. The fork already lacks the
+curated IRET idle heuristic. The curated overlay removes only that heuristic;
+equal continuation PCs cannot establish idleness across productive execution.
+The actual-interpreter authored fixture fails old curated code and passes both
+corrected curated code and fork. It does not test complete IRQ restoration.
+[Native evidence](research/SPURS.md#productive-iret-incorrectly-classified-as-idle-2026-10-14-issue-8)
+does not establish bike/race acceptance. No external PR was opened.
 
 Task lifecycle diagnostics are authored first on own fork branch
 `codex/task-lifecycle-trace`, commit
@@ -255,3 +292,14 @@ pixel-readback fixture is authored and contains no captured game payload.
 [Native limitations](research/GRAPHICS_AUDIO.md#preserve-homogeneous-clip-w-issue-24)
 include the remaining bike-loading emblem and stippled ground. No external PR
 was opened.
+
+### Event-triggered capture burst (issue 110)
+
+The generic capture selector and atomic PAD_FILE event latch were authored
+first on own-fork `codex/rsx-capture-burst` at `272bdd1`, based on
+depth-contract `18061de`.
+The curated copy preserves the same helper/event sources and authored fixture;
+only the surrounding backend integration differs. No RPCS3 implementation or
+game payload was copied. The fork CTest target and curated portable checker
+exercise the actual helpers; native event-trigger evidence remains separate.
+No external PR is authorized or opened by this work.

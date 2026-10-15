@@ -728,4 +728,364 @@ A private wrapper previously replaced `sys.argv`, causing it to ignore supplied
 replay profiles. Those earlier wrapper results do not prove the requested full
 intro route. Use supported `scripts/run.py` and inspect its recorded profile.
 The current profile lets the intro play normally, with the main menu around
-four minutes; exact animated-image equality remains an unsuitable skip gate.
+four minutes; exact animated-image equality remains an unsuitable unattended skip gate.
+
+## Packed render-target sampling and residual stipple (2026-10-14, issue 94)
+
+The user reports pixelated/blurry motion and a translucent foreground hill;
+these are unresolved visual defects. Muted baseline run
+`20261014T130115.408755Z`, EXE
+`0c9997e061264243efeb62e99e769653987bdd9c4f959f875b5046e9ad32c156`,
+reaches MOHAWK through acknowledged normal menu inputs, including one manually
+observed internal intro-frame skip. It stops explicitly at 138.687 seconds.
+No PPU watch or bike observer is enabled. Full RSX captures retain color
+targets and draw/texture manifests; BMPs drop alpha and cannot prove raw HDR
+or packed values. The final scene target shows a solid hill, whereas display
+output shows hill ghosting and pronounced terrain stipple.
+
+Frame 65's geometry renders RGBA8 to `00D00000` plus MRT1 `01F90000`.
+Display op328 samples MRT1 as format `BF`, 1440x1280, remap `29E4`;
+the enum/layout independently identifies guest Y16_X16_FLOAT, two half floats
+per four-byte texel. The backend instead binds the matched target's RGBA8
+resource format and identity remap. That is a typed-sampling contract mismatch.
+Ranked alternatives are AA-coordinate scaling, stale history inputs, then
+depth state; a still does not identify a temporal filter by itself.
+
+Fork-first candidate decodes the packed guest ARGB bytes to half floats before
+filtering, applies the requested remap, and keys PSOs on alias state. It matches
+the backend's current one-mip static point/clamp unit0 and linear/wrap other
+units. Other formats and guest sampler policies are outside this correction.
+`python scripts/check_rsx_texture_alias.py` executes that production adapter
+on an authored RGBA8 texture: unpatched sampling fails seven float-readback
+cases; adapted WARP and hardware pass positive/negative pairs, clamp/wrap,
+pre-filter decoding, named textures, remap and LOD/bias cases. No game data.
+Own-fork full Windows runtime library and the supported native build pass.
+
+Candidate run `20261014T131633.495135Z`, EXE
+`e75da09611d4e54dce68f728c542fb131ebd2a81c0675f7d732b14e823713af0`,
+uses the same named-US target, capture settings and ordinary menu route.
+Its main menu appeared before the attempted intro observation, so no skip was
+sent; the existing observed PLAY controller continued. A bounded owned-process
+pause always resumed. Final frame37 shows a solid hill with visible rocks and
+flag, but fine terrain stippling and absent bike remain. Explicit-stop terminal:
+98.656 seconds, return1, visible owned window verified. This is partial native
+visual improvement, not issue94 closure, race entry, complete motion correctness
+or a frame-time measurement. Issues #24/#13 remain open; retail stays parked.
+Dense temporal comparison and locating the first pass with residual stipple
+remain necessary. Original captures, shaders and target bytes stay private.
+
+### Vertex-color terrain blending and sampler mismatch (2026-10-14, issue 94)
+
+The user specifically requested checking vertex painting, including future race
+landscapes. Retained native run `temp/runs/20261014T132520.253865Z` (EXE
+`e75da09611d4e54dce68f728c542fb131ebd2a81c0675f7d732b14e823713af0`)
+reached MOHAWK by acknowledged ordinary input and stopped explicitly after
+110.593 s. Its owned material snapshot validates process/EXE/guest base and
+records ten sequential bounded texture reads with hashes. CPU BC1 decoding shows
+detailed original diffuse and normal maps; the earlier startup texture observer
+exhausted its 32-capture quota, so absence there does not establish missing art.
+
+Copied private shader evidence into that run before future FP_PICK overwrites:
+`terrain-vp.hlsl`, `terrain-pick.hlsl`, `terrain-pick.bin`. The binary is a live
+program read, not independently admitted as the SET-time snapshot. The captured
+HLSL for FP `05B6DC81`/VS26 (frame46, ten selected draws) establishes:
+
+- Vertex input attribute3 goes directly to output1/COLOR0 (VP lines34-35,185).
+- FP line200 reads COLOR0 R/B/A into half-register1 x/z/w. Line211 uses B in
+  `h6.xyz = B * constant6.xyz + constant5.xyz`, then saturates derived terms.
+- Texture1 is sampled at line294. Lines305,324,335 form a material blend with
+  R: `h2 = R * (sample1.xyw * constant10.xxy - prior + constant11.xxy) + prior`.
+  This is vertex-color-controlled material/detail blending, not merely a final
+  RGB tint. It does not identify the artist's painting tool or establish that
+  all terrain materials or race tracks share this shader. Alpha is loaded;
+  its eventual role has not been established.
+
+Preserve attribute3 normalization, channel order, interpolation and the
+half/full-register alias semantics when investigating flat terrain. A complete
+hill mesh/vertex-color span and an isolated pixel replay remain needed; the
+shader is shared by multiple draws, so first vertices alone do not prove full
+foreground coverage. Race landscape COLOR0 and material blending need their own
+native draw/asset binding before acceptance.
+
+A separate read-only metadata candidate retained sampler address/filter/control0
+and mip counts at draw time (no sampler rendering change). Run
+`temp/runs/20261014T133222.152229Z`, EXE
+`bd23b6b14eba9ad409d36f3db582be4543ae2bc579d432ddadb14c1e163d0644`,
+frame60 shows FP05B6DC81 t0 BC1 1024-square, address60010121, filter02043F80,
+control080078010, 11 mips; related 256-square maps have9 mips. FP04DE6701 uses
+address60010101/filter02043F34 and 11-12 mips. These request repeat S/T and linear
+min/mag; the current D3D12 root signature hardcodes unit0 point/clamp for fonts.
+The display XY16F alias instead requests address60030303/filter01012000,
+point/clamp, matching its existing adapter policy. Native upload resources still
+have one mip, so the evidence rejects selecting a low uploaded mip as the direct
+explanation, but missing mip filtering remains a distinct potential source of
+motion shimmer. No sampler fix or native hill/graphics acceptance from this run.
+The owned visible muted run stopped explicitly after128.719 s, return1; one
+observed intro CROSS4 was acknowledged13:33:55.836287Z, frame48 SHA
+a6443130e5b588ec45b473c7d0fa018955aa3486aacfaf2345c7f043b5c23847.
+
+Authored sampler GPU reducer uses the production descriptor decoder: old fixed
+states fail five of seven cases, candidate WARP passes all seven. Controls retain
+point/clamp font behavior; coverage includes repeat, linear interpolation, mixed
+S/T, a high texture unit, border and mirror. Decoder checks anisotropy, signed
+LOD bias, LOD bounds and explicit unsupported-address rejection. Evidence:
+`temp/checks/rsx-sampler-20261014T133640.242508Z`. Backend binding integration
+and native verification are still required; this does not establish hill causality.
+
+## Preview depth-surface identity trial (2026-10-14, issue 94)
+
+The curated D3D12 backend creates one D24S8 depth resource. It binds that
+resource for every guest surface. It also clears depth and stencil when the
+color target or MRT set changes. `surface_zeta_offset` does not select the
+attachment. This loses depth when a later color pass reuses the guest zeta.
+It also lets an unrelated surface clear the scene depth.
+
+The candidate uses an address-keyed D24S8 cache. It records the zeta offset
+for draws and ordered clears. A color or MRT change no longer clears depth.
+The frame waits for earlier GPU work before it prepares or grows resources.
+Batch merging requires the same zeta offset. Allocation failure is fatal.
+This trial does not add depth-as-texture sampling or validate other zeta
+formats, memory locations, or content preservation after resource growth.
+
+Game-free D3D12 readbacks pass all six original cases on WARP and hardware.
+They cover color-target changes, separate depth addresses, a smaller clip,
+a return to the scene, stencil preservation, and an explicit selected-surface
+clear. The authored legacy single-buffer control fails four cases. It is a
+control, not a native replay of the old renderer. The candidate source
+compiles separately in the own fork. These results do not establish a
+visible MotorStorm correction.
+
+The first isolated build has EXE SHA256
+`cc1faf37a571b201a0baa60774f472177c38bc931cfb7d128e915228aa3bd6c0`.
+Run `20261014T191239.969343Z` in the convolution-capture worktree follows
+normal screen-gated input to MOHAWK. The launcher stops after the text
+checkpoint. The final completed frame15 is black behind the menu text. Its
+manifest has 104 records and two scene-overlay draws, but no preview terrain
+geometry. Thus this run stops too early to compare flag occlusion or the
+foreground hill. The private replacement checkpoint requires an observed
+distant ridge as well as the MOHAWK text. It rejects the label-only black
+frame offline. The restored main executable remains separate. PR98 remains
+unaccepted.
+
+Run `20261014T191720.231032Z` with the same candidate reaches the selection
+scene, but the user observes correct flag draw order with a missing sky and
+retained pixels behind it. Its manifest records every far-plane clear as
+z=0.99998480 s=255. That equals the packed value 0xFFFFFF00 decoded with
+reversed fields: the curated `rsx_commands.c` read z24 from the low 24 bits
+and stencil from the top byte. See the next subsection.
+
+### Packed z24 clear decode regression and fix (2026-10-14, issue 94)
+
+RPCS3 decodes NV4097_SET_ZSTENCIL_CLEAR_VALUE for D24S8 as z24 in bits 31:8
+and stencil in bits 7:0. The own fork scaffold has carried that order since
+its first commit, so the curated vendor copy is the outlier. The reversed
+order cleared depth to 0.9999848 with stencil 255 at the far plane. The sky
+quad then failed the depth test, and the color target kept the previous
+frame pixels because the game clears depth, not color, for that pass.
+
+The game-free contract now lives on fork branch `codex/depth-clear-contract`
+(commit 18061de). Six added packed-clear cases drive the production
+rsx_process_method decode into the address-keyed cache. The reversed order
+fails all six on WARP and hardware and leaves the prior-frame color
+untouched. The z24-high order passes twelve of twelve cases while the legacy
+control fails four. Evidence: `temp/issue94-depth/20261014T194936`
+(red) and `20261014T194940` (green) in the fork.
+
+The curated decoder now reads z24 from bits 31:8 and stencil from the low
+byte. Candidate EXE SHA256
+`ed33612e4fb8040858919fb3132fff63b1dae528f8f3aaf4bbb159dbc32dae76`.
+Owned muted replay `20261014T200115.394376Z` reaches the selection scene.
+The sky band y20-140 returns to blue-dominant `(65.4, 72.9, 82.5)` against
+the baseline signature `(53.6, 64.4, 82.1)`; the broken candidate showed the
+warm retained smear `(95.2, 88.7, 77.8)`. The user confirms the skybox.
+
+Remaining observed defects on the same scene stay open on issue 94:
+a blurry backdrop, a grey platform and no persistent preview vehicle. The user
+confirms that white camper vans are correct original props; they are not evidence
+of missing textures. UP/DOWN livery changes reportedly show the vehicle for one
+frame with the wrong material, then it disappears; a dense native witness and
+draw/material/state trace are still required. Limits: the decode covers
+D24S8 only; Z16 clear packing, other zeta formats and post-growth content
+remain untested; no depth-as-texture sampling.
+
+### Recovery audit (2026-10-15, issue 94)
+
+Fresh authored fixture compilation at own-fork `18061de` passes 12/12 readbacks
+on WARP and hardware; the legacy control fails 4/12. Private source hashes,
+build log and readbacks: main `temp/audit-20261015/depth-20261014T233451Z`.
+This exercises the real cache helper and command decoder. The fixture simulates
+backend binding/recording, so it does not prove the entire production backend.
+
+The local ownership retries, SELF_FB experiment and environment passthrough
+were reverted in `aed81af`, `e412834`, `1c86529` and `9bcb8a3`. Earlier PR text
+claiming that ownership retries deterministically fixed replay is withdrawn:
+run `20261014T213856.719775Z` reported lost ownership while rendering continued.
+The cause remains unresolved. The separate PAD_FILE sharing retry remains a
+candidate; it has no authored actual-send sharing/ownership-loss regression yet.
+
+The inherited `to-preview-5s.json` skip reference was an autosave warning, not
+a cinematic. Its timed claim and CROSS2 gate are rejected. The corrected private
+route uses one acknowledged CROSS8 after LANGUAGE on the inspected Sony caption,
+ROI `[740,490,400,15]`, contrast threshold 0.95. Muted owned run
+`20261014T233356.731003Z`, EXE SHA256
+`d9b1af564150eb048ede3cfaa39ae809035433917ddc0c5adb8618cb1e96c33b`,
+acknowledges the skip at 23:34:26.811852 UTC (score 0.957759), then reaches PLAY
+in frame11, visually inspected. The launcher closes at 38.484 seconds.
+The wider Sony ROI missed at 0.9499 in the preceding explicitly stopped run;
+the threshold was retained and the caption crop corrected. This proves one
+corrected early-caption skip, without establishing race or scene correctness.
+The prior Evolution-caption skip also reached PLAY. Repeated-hold causality for
+the separate Havok 8320-byte allocation failure remains unproved.
+
+Repeat run `20261014T233507.334993Z` missed a different Sony fade (score 0.864),
+so the single-reference gate is not accepted as reliable. Issue104 adds explicit
+observed `reference_variants` under the same optional action, without lowering
+the threshold. With that tooling, consecutive runs `20261014T233820.319968Z`
+and `20261014T233859.335448Z` each acknowledge exactly one caption CROSS8
+(scores 0.992368 and 1.0), reach visually inspected PLAY frame11 and close at
+about 38.5 seconds. Private `temp/audit-20261015/intro-only.json` and the normal
+preview route use the corrected gate. These are intro receipts, not race proof.
+
+### Public rendering references
+
+[Drakengard 3 Recompiled](https://github.com/soyjxck/dod3-recomp) reports
+native Windows D3D12 and macOS Metal gameplay. It uses the ps3recomp
+runtime family. This is project-reported native evidence, not a local
+gameplay verification.
+
+[Merged upstream PR236](https://github.com/sp00nznet/ps3recomp/pull/236)
+tracks color/depth writes by address and reads depth back through guest
+texture formats. Its depth readback hook has a Vulkan implementation. It is
+not a drop-in fix for the curated legacy D3D12 backend.
+
+[Open upstream PR280](https://github.com/sp00nznet/ps3recomp/pull/280)
+fixes live-draw depth snapshots, same-address color/depth preference, and
+sampling the bound zeta with depth writes off. Its reported test uses Proton
+and a test-only shader change. It does not prove native MotorStorm behavior.
+No wholesale backend replacement or upstream branch trial is accepted here.
+
+## One-frame livery vehicle captured at native input (issues 24 / 110)
+
+Run `20261015T001556.521391Z`, native EXE SHA256
+`6442b20f4bbbafef96c8d916ad37a6e6ea50e5ebdd55d0151987db3f81fe9b8f`,
+followed normal LANGUAGE / observed-caption skip / PLAY / ticket / bike-class
+inputs. The original ELF identity stayed unchanged. After visually inspecting
+the selection scene, one screen-gated UP hold of four polls was acknowledged
+at `00:17:26.759008Z`. Native PAD_FILE consumption triggered the renderer
+capture directly, without a guest address condition or forced transition.
+
+All 64 complete backbuffers/manifests have consecutive frame counts
+2522..2585, capture indices 22..85, burst reason and presenting flag. The
+ignored run contains `capture-event-proof.json` with input, launch/final
+identities and hashes. It is pinned with `.keep`; original captures remain
+private. The bounded launcher ended at 141.063 seconds, with guard termination
+and return 1. This is not a race or performance acceptance run.
+
+The user's transient vehicle witness is now directly reproduced:
+
+| Capture | Guest-render frame counter | Recorded operations | Observation |
+| --- | --- | --- | --- |
+| 32 | 2532 | 376 | Loading emblem; no bike |
+| 33 | 2533 | 667 | Recognizable bike, malformed stippled/flat materials |
+| 34 | 2534 | 381 | Bike and loading emblem absent |
+
+The visible frame has 657 DRAW records and 10 CLEAR records, versus 372/4
+before and 377/4 after. It includes 125 draws using run-local VS32 into
+RT `0x02B90000`, and 141 using VS33 into RT `0x00D00000`. Neither shader group
+appears in the captured operations of frames 32, 34 or 35. These are observed
+groups, not recovered semantic shader names. A private differential records
+the remaining FP/material signatures.
+
+Next probes distinguish three explanations: cached/replayed RSX commands
+stop reaching draw recording; guest scene/visibility logic stops generating
+the bike batches; or a submission/present boundary places the batches outside
+the captured list. Compare the guest command producer, decoded draw callbacks
+and recorded batch boundaries around the same livery event. A GPU-only
+material/depth rejection cannot by itself explain the missing shader groups
+in the next captured list. The malformed material in the visible frame also
+remains unresolved. This does not establish correctly rendered assets.
+
+The earlier rebuilt run `20261015T000411.867467Z` missed the intro gate:
+its inspected Sony-caption frame 12 scored 0.80938 against the best previous
+reference. The movie continued playing; it was not a demonstrated native
+video stall. That genuine caption was added as another observed private
+reference with the same 0.95 threshold and once-only optional action. Run
+`20261015T000830.431354Z` then skipped once and reached inspected PLAY at
+40.484 seconds. Subsequent normal-route runs also skipped once. These are
+specific receipts, not universal reliability proof for all caption phases.
+
+
+## Container allocation ABI and native shape preservation (2026-10-15)
+
+[Issue 119](https://github.com/robbe1912/motorstorm-mv-recomp/issues/119)
+now has a production-path reproduction and a generic allocator correction.
+The curated syscall 350 handler decoded r3/r4 as container ID/size; the LV2
+ABI is size/container ID/flags/output in r3..r6. The
+[RPCS3 declaration](https://github.com/RPCS3/rpcs3/blob/2003f2404fc3db469c1b95478051be1109421522/rpcs3/Emu/Cell/lv2/sys_memory.h)
+and implementation independently establish that order. The unchanged C unit,
+called through its registered syscall, took a 6 MiB request with CID 1 and
+tracked only 1 MiB; its following ordinary allocation overlapped the requested
+extent. The corrected production unit reserves all 6 MiB. The authored fixture
+also checks page flags, IDs, physical/container/VA/slot budgets, free accounting,
+busy-container destruction and failed-commit rollback.
+
+The generic implementation is saved on the own-fork
+[container-allocation branch](https://github.com/robbe1912/ps3recomp/tree/codex/memory-container-allocation),
+implementation commit `9c72279`, CI wiring `44c5ed0`. Its native port is in the
+active worktree's curated `runtime/syscalls/sys_memory.c/.h`. It shares the
+ordinary allocator's physical budget and alias-aware VA selection; no game
+routine, memcpy, pointer or resource-lifetime bypass was added.
+
+The supported optimized build produced EXE SHA-256
+`44f7b3997e888dd4765a8d8b9bbb4c529895fd569f6368494c12348baf692826`,
+PDB `984642640a55d38951e9f5c0f495cb5427c14397cb186950d934a86fce3a28e7`,
+using the unchanged named-US ELF. Native run `20261015T163536.232616Z` used
+8 observed/acknowledged ordinary CROSS inputs, muted/windowed ownership and
+an explicit owned stop. A PDB/loaded-CodeView-bound read-only metadata snapshot
+records CID 1's allocation at `4D700000`, size `600000`, bump `4DD00000`.
+The original resource ID `000AE0A6:74683664`, size `530CB0`, fits that extent.
+The later ID `000A4B1E:E18E2AF8` now reads into `4E0BFF80..4E0D8F60`, outside
+the original buffer, rather than the former overlapping `4DBBFF80` buffer.
+Sequential snapshots alone remain insufficient for a complete free history.
+
+The deferred source/shape watch completed 85.031 seconds, 9 hits and 6 bounded
+dumps, with no failure or cleanup errors. After initialization, the watched
+shape head remains `10070CC800000001` in all recorded subsequent writes; the
+old zeroing/name-copy overwrite did not recur in this watched interval.
+The resource observer recorded 195 constructors, compared with 131 at the old
+fault. No unresolved-indirect or garbage-vcall message appeared; all 16
+incomplete fragment-program warnings remain visible. The actual-data verifier
+passes, while an explicit old-1-MiB expectation fails at that assertion.
+Private raw data/checkers/dumps stay under the run and `temp/issue119-source`.
+
+The separate 300-second control run `20261015T162223.899508Z` likewise passed
+the former corruption point, but the captured view became black. Four owned
+read-only stack snapshots in the later run distinguish ongoing loading from a
+proven permanent wait: the late main-thread sample at 16:37:54 UTC waits through
+`B15714/A012E8`, while the 16:37:59 sample executes `C5C424/87D278/6C379C` and
+other guest functions. A physics deadlock is not established by these samples.
+The next race-entry investigation must correlate progress/physics completion
+and actual backbuffers before changing semantics. Native race/graphics
+acceptance, controls/opponents/audio/saves, sustained 30 FPS and the final
+editable C/Rust plus Windows/Linux game packages remain open. This diagnostic
+run is not a frame-time benchmark; retail mstream remains parked.
+
+
+The curated regression is `python scripts/check_memory_container.py`. It compiles
+`src/memory_container_check.c` against the actual curated syscall implementation
+without original game inputs. Its authored alias adapter tests conflict avoidance;
+`check_memory_capacity.py` separately exercises the real alias registry. Both
+pass locally. Compiling the same container fixture against the preserved old
+production source fails at the 6 MiB allocation-size assertion. Source-audit CI
+runs the regression on Linux and Windows. The selected port's syscall source
+matches the native-tested hash above; this is not a clean full-game build from
+this review branch or proof of Linux game execution.
+
+
+Capture qualification correction: in run `20261015T163536.232616Z`, frame 25
+is explicitly `presenting=0` (frame count 3001), so its black backbuffer cannot
+establish visible black race graphics. The most recent presented capture is
+frame 24 (`presenting=1`, frame count 2881), visually inspected as the original
+track-loading map/instructions. The metadata/source-watch conclusions above
+are unchanged; completed race presentation remains unverified. Future screen
+and race evidence must distinguish presented captures from offscreen work.
