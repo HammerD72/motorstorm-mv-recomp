@@ -490,6 +490,11 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         state->blend_dirty = 1;
         return 0;
     }
+    if (method == NV4097_SET_BLEND_ENABLE_MRT) {
+        state->blend_enable_mrt = data;
+        state->blend_dirty = 1;
+        return 0;
+    }
     if (method == NV4097_SET_BLEND_FUNC_SFACTOR) {
         state->blend_sfactor = data;
         state->blend_dirty = 1;

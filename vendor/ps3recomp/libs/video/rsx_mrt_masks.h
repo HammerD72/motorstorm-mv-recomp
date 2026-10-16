@@ -14,4 +14,17 @@ static uint32_t rsx_mrt_color_masks(uint32_t primary, uint32_t mrt)
     }
     return out;
 }
+/* Packed blend factors use bits1..26; bits27..29 retain MRT1..3 enables. */
+static uint32_t rsx_mrt_blend_enables(int primary, uint32_t secondary)
+{
+    return (primary ? 1u : 0u) | (secondary & 14u);
+}
+static uint32_t rsx_mrt_blend_key_bits(uint32_t enables)
+{
+    return (enables & 1u) | ((enables & 14u) << 26);
+}
+static uint32_t rsx_mrt_blend_key_enables(uint32_t key)
+{
+    return (key & 1u) | ((key >> 26) & 14u);
+}
 #endif

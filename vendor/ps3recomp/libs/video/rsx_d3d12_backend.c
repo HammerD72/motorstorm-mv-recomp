@@ -2234,17 +2234,19 @@ static u32 rsx_blend_key(const rsx_state* st, int enable)
         if (!f && ns<32) { seen[ns++]=sk;
             fprintf(stderr, "[BLEND] enable=%d sfactor=0x%X dfactor=0x%X%c", enable,
                     st?st->blend_sfactor:0, st?st->blend_dfactor:0, 10); } } }
-    if (!enable) return 0;
+    const u32 enables = rsx_mrt_blend_enables(enable, st ? st->blend_enable_mrt : 0);
+    const u32 enable_bits = rsx_mrt_blend_key_bits(enables);
+    if (!enables) return 0;
     /* Factors never programmed: keep the legacy straight-alpha behaviour
      * (dbgfont-style text enables blending without setting factors). */
     if (!st || (st->blend_sfactor == 0 && st->blend_dfactor == 0))
-        return 1u
+        return enable_bits
              | ((u32)D3D12_BLEND_SRC_ALPHA     << 1)
              | ((u32)D3D12_BLEND_INV_SRC_ALPHA << 6)
              | ((u32)D3D12_BLEND_ONE           << 11)
              | ((u32)D3D12_BLEND_INV_SRC_ALPHA << 16)
              | ((u32)D3D12_BLEND_OP_ADD << 21) | ((u32)D3D12_BLEND_OP_ADD << 24);
-    return 1u
+    return enable_bits
          | ((u32)gl_blend_factor_d3d(st->blend_sfactor,       0) << 1)
          | ((u32)gl_blend_factor_d3d(st->blend_dfactor,       0) << 6)
          | ((u32)gl_blend_factor_d3d(st->blend_sfactor >> 16, 1) << 11)
@@ -2850,13 +2852,15 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     /* Blend per the guest's packed key (see rsx_blend_key): dbgfont text needs
      * straight alpha; demosaic's effect passes blend OFF; DeferredShading's
      * light accumulation is additive ONE,ONE. */
+    const u32 blend_enables = rsx_mrt_blend_key_enables(blend);
+    const int any_blend = blend_enables != 0;
     pd.BlendState.RenderTarget[0].BlendEnable    = (blend & 1) ? TRUE : FALSE;
-    pd.BlendState.RenderTarget[0].SrcBlend       = (blend & 1) ? (D3D12_BLEND)((blend >> 1)  & 0x1F) : D3D12_BLEND_ONE;
-    pd.BlendState.RenderTarget[0].DestBlend      = (blend & 1) ? (D3D12_BLEND)((blend >> 6)  & 0x1F) : D3D12_BLEND_ZERO;
-    pd.BlendState.RenderTarget[0].BlendOp        = (blend & 1) ? (D3D12_BLEND_OP)((blend >> 21) & 0x7) : D3D12_BLEND_OP_ADD;
-    pd.BlendState.RenderTarget[0].SrcBlendAlpha  = (blend & 1) ? (D3D12_BLEND)((blend >> 11) & 0x1F) : D3D12_BLEND_ONE;
-    pd.BlendState.RenderTarget[0].DestBlendAlpha = (blend & 1) ? (D3D12_BLEND)((blend >> 16) & 0x1F) : D3D12_BLEND_ZERO;
-    pd.BlendState.RenderTarget[0].BlendOpAlpha   = (blend & 1) ? (D3D12_BLEND_OP)((blend >> 24) & 0x7) : D3D12_BLEND_OP_ADD;
+    pd.BlendState.RenderTarget[0].SrcBlend       = any_blend ? (D3D12_BLEND)((blend >> 1)  & 0x1F) : D3D12_BLEND_ONE;
+    pd.BlendState.RenderTarget[0].DestBlend      = any_blend ? (D3D12_BLEND)((blend >> 6)  & 0x1F) : D3D12_BLEND_ZERO;
+    pd.BlendState.RenderTarget[0].BlendOp        = any_blend ? (D3D12_BLEND_OP)((blend >> 21) & 0x7) : D3D12_BLEND_OP_ADD;
+    pd.BlendState.RenderTarget[0].SrcBlendAlpha  = any_blend ? (D3D12_BLEND)((blend >> 11) & 0x1F) : D3D12_BLEND_ONE;
+    pd.BlendState.RenderTarget[0].DestBlendAlpha = any_blend ? (D3D12_BLEND)((blend >> 16) & 0x1F) : D3D12_BLEND_ZERO;
+    pd.BlendState.RenderTarget[0].BlendOpAlpha   = any_blend ? (D3D12_BLEND_OP)((blend >> 24) & 0x7) : D3D12_BLEND_OP_ADD;
     pd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pd.SampleMask = UINT_MAX;
     pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -2874,6 +2878,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     { static int _cf = -1; if (_cf < 0) _cf = getenv("CMASK_FORCE") ? 1 : 0;
       if (_cf) cmask = 0xFFFF; }
     rsx_d3d12_write_masks(&pd.BlendState, (unsigned)nrt, cmask);
+    rsx_d3d12_blend_enables(&pd.BlendState, (unsigned)nrt, blend_enables);
     pd.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
     /* Guest depth/stencil, decoded from the NV4097 command stream (packed by
      * rsx_depth_stencil_key). Previously hardcoded LEQUAL/ALL/stencil-off,
@@ -7571,6 +7576,8 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
                 arefnow = s_d3d.current_rsx_state->alpha_ref;
             if (pv->is_vp && pv->topology == RSX_TOPOLOGY_TRIANGLES &&
                 pv->fp_addr == fpnow &&
+                pv->blend_key == rsx_blend_key(s_d3d.current_rsx_state,
+                    s_d3d.current_rsx_state ? s_d3d.current_rsx_state->blend_enable : 1) &&
                 pv->cmask == rsx_record_color_masks(s_d3d.current_rsx_state) && pv->fp_ctrl == fpctrlnow &&
                 pv->alpha_ctl == alphanow && pv->alpha_ref_raw == arefnow &&
                 pv->zeta_off == (s_d3d.current_rsx_state
@@ -7731,6 +7738,8 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
                     ? s_d3d.current_rsx_state->shader_program : 0;
         if (pv->is_vp && pv->topology == RSX_TOPOLOGY_TRIANGLES &&
             pv->fp_addr == fpnow &&
+            pv->blend_key == rsx_blend_key(s_d3d.current_rsx_state,
+                s_d3d.current_rsx_state ? s_d3d.current_rsx_state->blend_enable : 1) &&
             pv->cmask == rsx_record_color_masks(s_d3d.current_rsx_state) &&
             pv->zeta_off == (s_d3d.current_rsx_state
                 ? s_d3d.current_rsx_state->surface_zeta_offset : 0) &&

@@ -6,4 +6,8 @@ static void rsx_d3d12_write_masks(D3D12_BLEND_DESC* b, unsigned nrt, unsigned ma
     b->IndependentBlendEnable = nrt > 1 ? TRUE : FALSE;
     for (unsigned r=0;r<nrt;r++) b->RenderTarget[r].RenderTargetWriteMask=(UINT8)((masks>>(r*4))&15u);
 }
+/* Enables are independent; common factors/equations remain caller-owned. */
+static void rsx_d3d12_blend_enables(D3D12_BLEND_DESC* b, unsigned nrt, unsigned enables) {
+    for (unsigned r=0;r<nrt;r++) b->RenderTarget[r].BlendEnable=(enables&(1u<<r))?TRUE:FALSE;
+}
 #endif
