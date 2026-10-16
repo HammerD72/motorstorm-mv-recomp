@@ -171,6 +171,7 @@ extern "C" {
 
 /* Color mask */
 #define NV4097_SET_COLOR_MASK                   0x00000324
+#define NV4097_SET_COLOR_MASK_MRT               0x00000370
 
 /* Alpha test */
 #define NV4097_SET_ALPHA_TEST_ENABLE            0x00000304
@@ -291,6 +292,7 @@ typedef struct rsx_state {
 
     /* Color mask — bits: [0] B, [8] G, [16] R, [24] A */
     u32 color_mask;
+    u32 color_mask_mrt; /* Raw secondary ARGB nibbles; reset zero. */
     int color_mask_dirty;
 
     /* Alpha test */

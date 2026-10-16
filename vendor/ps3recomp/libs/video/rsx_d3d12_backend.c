@@ -43,6 +43,13 @@
 #include <dxgi1_4.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
+#include "rsx_mrt_masks.h"
+#include "rsx_d3d12_mrt.h"
+static u32 rsx_record_color_masks(const rsx_state* state)
+{
+    return state ? rsx_mrt_color_masks(state->color_mask, state->color_mask_mrt) : 15u;
+}
+
 
 /* We need these GUIDs — define them here to avoid uuid.lib dependency */
 #include <initguid.h>
@@ -112,7 +119,7 @@ typedef struct {
                          * faces on most solid geometry; rendering everything
                          * double-sided lets a shell's interior faces show
                          * through and shade unlit (black). */
-    u32 cmask;          /* D3D write mask from SET_COLOR_MASK at draw time
+    u32 cmask;          /* Packed RT0..3 D3D write masks at draw time
                          * (wave's sim passes write single lanes of the height
                          * maps; ignoring the mask stomped persistent state) */
     /* Per-unit textures (t0-t15): decompiled FPs may sample any of the NV40's
@@ -2860,18 +2867,13 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
          * every MRT-B write would be masked off. Mirror RT0's blend state. */
         pd.BlendState.RenderTarget[_r] = pd.BlendState.RenderTarget[0];
     }
-    /* Guest colour write mask (RGBA nibble, already D3D-ordered). cmask is 0xF
-     * by default (unset colour_mask register decodes to all-on); a literal 0
-     * therefore means the guest EXPLICITLY masked every channel -- a depth-only
-     * pass (e.g. DeferredShading's shadow-map generation). Honour it: forcing 0
-     * back to 0xF splatters the depth pass's fragment colour onto the target. */
+    /* Packed RGBA nibbles for RT0..3, retained in records and PSO identity. */
     /* CMASK_FORCE=1: ignore the guest colour mask (write RGBA on every draw).
      * A mis-decoded mask makes geometry rasterize correctly and write nothing,
      * which is indistinguishable from "the draw never happened". */
     { static int _cf = -1; if (_cf < 0) _cf = getenv("CMASK_FORCE") ? 1 : 0;
-      if (_cf) cmask = 0xF; }
-    for (int _r = 0; _r < nrt; _r++)
-        pd.BlendState.RenderTarget[_r].RenderTargetWriteMask = (UINT8)(cmask & 0xF);
+      if (_cf) cmask = 0xFFFF; }
+    rsx_d3d12_write_masks(&pd.BlendState, (unsigned)nrt, cmask);
     pd.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
     /* Guest depth/stencil, decoded from the NV4097 command stream (packed by
      * rsx_depth_stencil_key). Previously hardcoded LEQUAL/ALL/stencil-off,
@@ -7454,14 +7456,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
                 dr->fp_ctrl = s_d3d.current_rsx_state ? s_d3d.current_rsx_state->shader_control : 0;
                 dr->cull = rsx_cull_key(s_d3d.current_rsx_state);
                 dr->begin_epoch = s_d3d.current_rsx_state ? s_d3d.current_rsx_state->begin_epoch : 0;
-                dr->cmask = 0xF;
-                if (s_d3d.current_rsx_state) {
-                    u32 _cm = s_d3d.current_rsx_state->color_mask;
-                    dr->cmask = ((_cm & 0x00010000) ? 1u : 0u)   /* R */
-                              | ((_cm & 0x00000100) ? 2u : 0u)   /* G */
-                              | ((_cm & 0x00000001) ? 4u : 0u)   /* B */
-                              | ((_cm & 0x01000000) ? 8u : 0u);  /* A */
-                }
+                dr->cmask = rsx_record_color_masks(s_d3d.current_rsx_state);
                 dr->alpha_ctl = 0;
                 dr->alpha_ref_raw = 0;
                 if (s_d3d.current_rsx_state) {
@@ -7575,7 +7570,8 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
                          | (s_d3d.current_rsx_state->alpha_ref & 0xFFu),
                 arefnow = s_d3d.current_rsx_state->alpha_ref;
             if (pv->is_vp && pv->topology == RSX_TOPOLOGY_TRIANGLES &&
-                pv->fp_addr == fpnow && pv->fp_ctrl == fpctrlnow &&
+                pv->fp_addr == fpnow &&
+                pv->cmask == rsx_record_color_masks(s_d3d.current_rsx_state) && pv->fp_ctrl == fpctrlnow &&
                 pv->alpha_ctl == alphanow && pv->alpha_ref_raw == arefnow &&
                 pv->zeta_off == (s_d3d.current_rsx_state
                     ? s_d3d.current_rsx_state->surface_zeta_offset : 0) &&
@@ -7600,14 +7596,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
             dr->fp_ctrl = s_d3d.current_rsx_state ? s_d3d.current_rsx_state->shader_control : 0;
             dr->cull = rsx_cull_key(s_d3d.current_rsx_state);
             dr->begin_epoch = s_d3d.current_rsx_state ? s_d3d.current_rsx_state->begin_epoch : 0;
-            dr->cmask = 0xF;
-            if (s_d3d.current_rsx_state) {
-                u32 _cm = s_d3d.current_rsx_state->color_mask;
-                dr->cmask = ((_cm & 0x00010000) ? 1u : 0u)   /* R */
-                          | ((_cm & 0x00000100) ? 2u : 0u)   /* G */
-                          | ((_cm & 0x00000001) ? 4u : 0u)   /* B */
-                          | ((_cm & 0x01000000) ? 8u : 0u);  /* A */
-            }
+            dr->cmask = rsx_record_color_masks(s_d3d.current_rsx_state);
             dr->alpha_ctl = 0;
             dr->alpha_ref_raw = 0;
             if (s_d3d.current_rsx_state) {
@@ -7742,6 +7731,7 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
                     ? s_d3d.current_rsx_state->shader_program : 0;
         if (pv->is_vp && pv->topology == RSX_TOPOLOGY_TRIANGLES &&
             pv->fp_addr == fpnow &&
+            pv->cmask == rsx_record_color_masks(s_d3d.current_rsx_state) &&
             pv->zeta_off == (s_d3d.current_rsx_state
                 ? s_d3d.current_rsx_state->surface_zeta_offset : 0) &&
             pv->begin_epoch == (s_d3d.current_rsx_state
@@ -7764,14 +7754,7 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
         dr->fp_ctrl = s_d3d.current_rsx_state ? s_d3d.current_rsx_state->shader_control : 0;
         dr->cull = rsx_cull_key(s_d3d.current_rsx_state);
         dr->begin_epoch = s_d3d.current_rsx_state ? s_d3d.current_rsx_state->begin_epoch : 0;
-        dr->cmask = 0xF;
-        if (s_d3d.current_rsx_state) {
-            u32 _cm = s_d3d.current_rsx_state->color_mask;
-            dr->cmask = ((_cm & 0x00010000) ? 1u : 0u)   /* R */
-                      | ((_cm & 0x00000100) ? 2u : 0u)   /* G */
-                      | ((_cm & 0x00000001) ? 4u : 0u)   /* B */
-                      | ((_cm & 0x01000000) ? 8u : 0u);  /* A */
-        }
+        dr->cmask = rsx_record_color_masks(s_d3d.current_rsx_state);
         dr->alpha_ctl = 0;
         dr->alpha_ref_raw = 0;
         if (s_d3d.current_rsx_state) {

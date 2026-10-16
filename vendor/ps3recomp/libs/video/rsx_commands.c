@@ -441,6 +441,12 @@ int rsx_process_method(rsx_state* state, u32 method, u32 data)
         return 0;
     }
 
+    if (method == NV4097_SET_COLOR_MASK_MRT) {
+        state->color_mask_mrt = data;
+        state->color_mask_dirty = 1;
+        return 0;
+    }
+
     /* Alpha test */
     if (method == NV4097_SET_ALPHA_TEST_ENABLE) {
         state->alpha_test_enable = data ? 1 : 0;
