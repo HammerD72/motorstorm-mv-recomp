@@ -1,7 +1,7 @@
 /*
  * ps3recomp - SPU instruction semantics helpers
  *
- * Pure-C, header-only implementation of the per-instruction semantics used
+ * Instruction value implementation of the per-instruction semantics used
  * by lifter-generated code. Extracted from spu_lifter.py so the helpers
  * have one source of truth and can be unit-tested directly (see
  * runtime/spu/tests/test_spu_helpers.c).
@@ -17,6 +17,7 @@
 #include <string.h>
 #include <math.h>
 #include "spu_float.h"
+#include "spu_float_simd.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -266,8 +267,8 @@ static inline u128 spu_rotqbii(u128 a, int sh) { sh&=7; if(!sh) return a;
     u128 r; r._u32[0]=(uint32_t)(nhi>>32); r._u32[1]=(uint32_t)nhi; r._u32[2]=(uint32_t)(nlo>>32); r._u32[3]=(uint32_t)nlo; return r; }
 
 /* ---- single-precision float (4 lanes) ---- */
-static inline u128 spu_fa(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_add(a._u32[i],b._u32[i]); return r; }
-static inline u128 spu_fs(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_add(a._u32[i],b._u32[i]^0x80000000u); return r; }
+static inline u128 spu_fa(u128 a, u128 b) { u128 r; if(spu_sf_simd_binary(r._u32,a._u32,b._u32,0)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_add(a._u32[i],b._u32[i]); return r; }
+static inline u128 spu_fs(u128 a, u128 b) { u128 r; if(spu_sf_simd_binary(r._u32,a._u32,b._u32,1)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_add(a._u32[i],b._u32[i]^0x80000000u); return r; }
 
 /* RI8 scale: float-to-int uses 2^(173-i8), int-to-float 2^(i8-155).
  * The canonical immediates 173 and 155 are identity conversions. */
@@ -279,10 +280,10 @@ static inline u128 spu_csflt(u128 a, int i8){ u128 r; double f=exp2((double)(i8-
     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._s32[i]*f); return r; }
 static inline u128 spu_cuflt(u128 a, int i8){ u128 r; double f=exp2((double)(i8-155));
     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._u32[i]*f); return r; }
-static inline u128 spu_fm(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_mul(a._u32[i],b._u32[i]); return r; }
-static inline u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i],0); return r; }
-static inline u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i]^0x80000000u,0); return r; }
-static inline u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i],0x80000000u); return r; }
+static inline u128 spu_fm(u128 a, u128 b) { u128 r; if(spu_sf_simd_binary(r._u32,a._u32,b._u32,2)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_mul(a._u32[i],b._u32[i]); return r; }
+static inline u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; if(spu_sf_simd_fused(r._u32,a._u32,b._u32,c._u32,0,0)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i],0); return r; }
+static inline u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; if(spu_sf_simd_fused(r._u32,a._u32,b._u32,c._u32,0,0x80000000u)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i]^0x80000000u,0); return r; }
+static inline u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; if(spu_sf_simd_fused(r._u32,a._u32,b._u32,c._u32,0x80000000u,0)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i],0x80000000u); return r; }
 static inline u128 spu_fceq(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=(a._f32[i]==b._f32[i])?0xFFFFFFFFu:0; return r; }
 static inline u128 spu_fcgt(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=(a._f32[i]>b._f32[i])?0xFFFFFFFFu:0; return r; }
 
