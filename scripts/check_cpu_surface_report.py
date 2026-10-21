@@ -107,6 +107,17 @@ class CpuSurfaceReportChecks(unittest.TestCase):
         self.assertEqual(direct['latencies']['return']['ticks']['max'], 0)
         self.assertEqual(direct['latencies']['service']['ticks']['max'], 20)
 
+    def test_accepts_emitter_impossible_combinations(self):
+        # Documented policy: validation checks arithmetic, not emitter reachability.
+        accepted = [
+            changed(LINES[1], copies=0),  # copy bytes with no copy requests
+            changed(LINES[1], client=2),  # client == renderer with queue=100
+            changed(LINES[1], bytes=0),
+            changed(LINES[1], **{'returned_at': 9223372036854775807, 'total': 9223372036854775687, 'return': 9223372036854775557}),
+        ]
+        for line in accepted:
+            self.assertEqual(self.from_text(line)['status'], 'ok', line)
+
     def test_explicit_window_never_clips_crossing_requests(self):
         result = self.cli(OVERLAP, '--window', 110, 300, '--format', 'json')
         self.assertEqual(result.returncode, 0, result.stderr)

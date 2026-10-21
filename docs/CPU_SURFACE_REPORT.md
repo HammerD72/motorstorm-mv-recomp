@@ -53,6 +53,11 @@ does not require a trailing newline. Native ASCII fields are read as UTF-8
 (optional BOM); undecodable bytes are replaced and fail validation if present
 in candidate fields. UTF-16 logs must be converted before use.
 
+The reporter analyzes a finished log. A torn final record, from a capture
+still being written, fails validation like any other malformed candidate:
+the whole run exits 2 with a `PATH:LINE:` diagnostic. Wait for the capture
+to finish; there is no partial or best-effort mode.
+
 `address` requires eight hexadecimal digits; other fields require unsigned
 decimal integers within their native 32-bit or 64-bit ranges. Frequency must
 be positive and identical across **all** records, including excluded ones.
@@ -61,6 +66,13 @@ Queue, service, return and total must match their boundary differences. The
 five measured stages plus `other` must sum exactly to service; `hits + copies`
 must not exceed `matched`, matching the production contract. Zero-duration
 service (including shutdown completion) and zero queue/return are valid.
+
+Validation checks arithmetic consistency, not emitter reachability. The
+reporter accepts combinations the current emitter does not produce when no
+statistic depends on them: `copies=0` with nonzero `host_bytes` or
+`guest_bytes`, `client == renderer` with nonzero queue latency, `bytes=0`,
+and `returned_at` up to 2^64-1. Rejecting them would tie offline analysis
+to one emitter revision.
 
 `--window START END` uses absolute integer QPC ticks, with
 `0 <= START < END < 2^64`; it is half open, `[START,END)`. Classification uses
@@ -118,5 +130,5 @@ exit 2. Consumers can use `status` to require usable samples.
 The standalone regression command above is intended for separate CI integration.
 It covers the authored serial/overlap oracle, direct and zero-service requests,
 half-open windows, large QPC values, percentile ranks, malformed/truncated records,
-accounting/frequency errors, empty observations and deterministic read-only CLI
+accepted-but-unemitted combinations,
 output. It requires no third-party dependencies and does not change shared CI.
