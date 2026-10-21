@@ -30,6 +30,12 @@ jobs:
         run: python scripts/check_spu_fingerprint_cache.py
       - name: Resident SPU compiled lookup ownership
         run: python scripts/check_spu_resident_lookup.py
+      - name: Native world transforms and independent FP oracle
+        run: python scripts/check_native_world_transforms.py
+      - name: Verified native game binding and input isolation
+        run: python scripts/check_native_game_binding.py
+      - name: Native scene transaction and original fallback
+        run: python scripts/check_native_scene.py
       - name: Actual indexed strip restart regression
         run: python scripts/check_rsx_restart.py
       - name: Actual indexed vertex reuse regression
@@ -105,6 +111,12 @@ jobs:
         run: python scripts/check_spu_fingerprint_cache.py
       - name: Resident SPU compiled lookup ownership
         run: python scripts/check_spu_resident_lookup.py
+      - name: Native world transforms and independent FP oracle
+        run: python scripts/check_native_world_transforms.py
+      - name: Verified native game binding and input isolation
+        run: python scripts/check_native_game_binding.py
+      - name: Native scene transaction and original fallback
+        run: python scripts/check_native_scene.py
       - name: Texture snapshot regression
         run: python scripts/check_texture_capture.py
       - name: Memory capacity contract
