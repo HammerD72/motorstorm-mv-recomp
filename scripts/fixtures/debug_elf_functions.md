@@ -20,16 +20,18 @@ there are no copied game instructions, symbols or generated translations.
 
 The checks cover:
 
-- Executable `.text`, `.cold` and `.init` sections, including section encounter
-  order that differs from ascending virtual addresses.
+- Executable `.text`, `.cold`, `.init` and `.wide` sections, including section
+  and symbol encounter order that differs from ascending virtual addresses.
 - Sized functions, aliases with different sizes, mixed zero/sized aliases,
   zero-sized groups bounded by the next function or section end, and gaps.
 - Non-executable `.opd` and data symbols, non-function symbols, undefined and
   absolute symbols, and valid empty results.
 - Missing/malformed symbol tables, truncated ELF metadata, invalid section
   indices, starts outside their claimed executable section, empty/wrapped
-  section ranges, and sized extents crossing another function or the section end.
-- The exact boundary-array shape, ascending numeric order, unchanged summary
+  section ranges, and sized extents crossing another function or the section
+  end, including one-byte overhangs.
+- The exact boundary-array shape, ascending numeric order across different hex
+  widths, unchanged summary
   fields/counts, repeatability and reordered inputs. JSON text retains the CLI's
   existing platform newline convention.
 - Nonzero failure with a diagnostic identifying the input file, no success

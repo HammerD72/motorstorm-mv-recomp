@@ -20,7 +20,9 @@ try:
 except ImportError:
     raise SystemExit('Install the test dependency: python -m pip install "pyelftools>=0.31"')
 
-from fixtures.debug_elf_fixture import EXPECTED, SECTIONS, SYMBOLS, Section, Symbol, build_elf
+from fixtures.debug_elf_fixture import (EXPECTED, SECTIONS, SYMBOLS, TEXT_FIRST_EXPECTED,
+                                        TEXT_FIRST_SYMBOLS, WIDE_EXPECTED, WIDE_SECTIONS,
+                                        WIDE_SYMBOLS, Section, Symbol, build_elf)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/analysis/debug_elf_functions.py'
@@ -111,6 +113,10 @@ class DebugElfChecks(unittest.TestCase):
             with self.subTest(order=[s.name for s in sections]):
                 self.assert_success(self.cli(build_elf(sections, symbols).data), EXPECTED, 4)
 
+    def test_symbol_encounter_order_and_mixed_width_starts_sort_numerically(self):
+        self.assert_success(self.cli(build_elf(SECTIONS, TEXT_FIRST_SYMBOLS).data), TEXT_FIRST_EXPECTED, 1)
+        self.assert_success(self.cli(build_elf(WIDE_SECTIONS, WIDE_SYMBOLS).data), WIDE_EXPECTED, 1)
+
     def test_alias_max_size_and_zero_group_section_end(self):
         image = build_elf([Section('.init', 0x80, 0x20)],
                           [Symbol('short', '.init', 0x84, 4), Symbol('long', '.init', 0x84, 8),
@@ -129,7 +135,9 @@ class DebugElfChecks(unittest.TestCase):
 
     def test_sized_extent_crosses_next_function_or_section_end(self):
         for name, size, diagnostic in [('hot_main', 12, 'next executable function'),
-                                        ('hot_tail', 0x24, 'section end')]:
+                                       ('hot_main', 9, 'next executable function'),
+                                       ('hot_tail', 0x24, 'section end'),
+                                       ('hot_tail', 0x21, 'section end')]:
             with self.subTest(name=name):
                 symbols = [replace(s, size=size) if s.name == name else s for s in SYMBOLS]
                 self.assert_invalid(build_elf(SECTIONS, symbols).data, diagnostic)
@@ -153,6 +161,8 @@ class DebugElfChecks(unittest.TestCase):
 
     def test_malformed_symbol_table_headers(self):
         image = build_elf(SECTIONS, SYMBOLS)
+        # entry_size and offset damage reaches pyelftools' own parser; its
+        # message text varies across versions, so only 'error:' is pinned.
         for values, diagnostic in [({'kind': 1}, '.symtab is not a symbol table'),
                                     ({'size': 0}, 'empty .symtab'),
                                     ({'size': 25}, 'multiple'),
@@ -163,6 +173,7 @@ class DebugElfChecks(unittest.TestCase):
 
     def test_malformed_or_truncated_elf_and_existing_output(self):
         image = build_elf(SECTIONS, SYMBOLS)
+        # Truncated files fail inside pyelftools; message text varies by version.
         for data in (b'', b'authored non-ELF input', image.data[:32], image.data[:-20]):
             with self.subTest(size=len(data)):
                 self.assert_invalid(data, 'error:')

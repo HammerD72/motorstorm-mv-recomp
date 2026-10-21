@@ -115,3 +115,17 @@ EXPECTED = [{'start': '0x1000', 'end': '0x100c'},
             {'start': '0x3000', 'end': '0x3008'},
             {'start': '0x3008', 'end': '0x3010'},
             {'start': '0x3010', 'end': '0x3030'}]
+
+# Symbol encounter order inserts .text into the analyzer's per-section mapping
+# before .cold; output must still list the .cold bound first by address.
+TEXT_FIRST_SYMBOLS = (Symbol('hot_main', '.text', 0x3000, 8),
+                      Symbol('cold_entry', '.cold', 0x1000, 0))
+TEXT_FIRST_EXPECTED = [{'start': '0x1000', 'end': '0x1020'},
+                       {'start': '0x3000', 'end': '0x3008'}]
+
+# Starts on both sides of 0x10000: lexicographic and numeric order differ.
+WIDE_SECTIONS = (Section('.wide', 0x10000, 0x10), Section('.cold', 0x9000, 0x20))
+WIDE_SYMBOLS = (Symbol('wide_main', '.wide', 0x10000, 0x10),
+                Symbol('cold_entry', '.cold', 0x9000, 0))
+WIDE_EXPECTED = [{'start': '0x9000', 'end': '0x9020'},
+                 {'start': '0x10000', 'end': '0x10010'}]

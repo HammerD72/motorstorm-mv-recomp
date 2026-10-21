@@ -48,6 +48,8 @@ def function_bounds(elf):
         if not 0 <= index < elf.num_sections():
             raise ValueError(f"invalid section index {index} for function {symbol.name!r}")
         section = elf.get_section(index)
+        # check_debug_elf_functions.py rewrites this exact predicate in its
+        # admission-mutant test; keep the line verbatim.
         if not section["sh_flags"] & 4:
             continue
         section_start = section["sh_addr"]
@@ -80,8 +82,6 @@ def function_bounds(elf):
             else:
                 end = following
                 zero_sized += 1
-            if end <= start:
-                raise ValueError(f"empty function at {start:#x}")
             functions.append({"start": hex(start), "end": hex(end)})
     functions.sort(key=lambda item: int(item["start"], 16))
     return functions, zero_sized
