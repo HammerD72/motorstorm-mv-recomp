@@ -22,10 +22,15 @@ Select the compiler path actually installed on your host. On Linux:
 
 ```sh
 CXX=c++ python3 scripts/check_native_world_properties.py
-CXX=c++ python3 scripts/check_native_world_transforms.py
 ```
 
-The new runner's `--compiler-style gnu` also supports Windows MinGW clang++.
+`scripts/check_native_world_transforms.py` is the older gate. It is validated
+with `clang-cl` under `MV_CLANG` on Windows only; GNU-style compilers are not
+supported there (it passes MSVC-only `/Fo` and `/Fe` flags and requires the
+MSVC standard library). The new runner's `--compiler-style gnu` applies to
+`check_native_world_properties.py` only, and also supports Windows MinGW
+clang++.
+
 `MV_CLANG` takes precedence over `CXX`; each variable names one compiler
 executable, without embedded shell flags. The runner retains the existing gate's
 strict settings: `/O2 /arch:AVX2 /fp:strict` on Windows, or
