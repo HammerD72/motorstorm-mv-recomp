@@ -1,0 +1,7 @@
+Authored offline example, not a native capture. Frequency is 1000 ticks/second.
+Request lifetimes: [100,200), [120,260), [300,320). First two overlap.
+[CPUSURFACE_PROFILE] address=00020120 bytes=2 client=1 renderer=2 queued_at=100 started_at=160 finished_at=190 returned_at=200 frequency=1000 queue=60 service=30 return=10 total=100 allocation=2 prior_fence=3 commands=5 copy_fence=7 packing=11 other=2 matched=2 hits=1 copies=1 host_bytes=256 guest_bytes=8
+[CPUSURFACE] unrelated line must be ignored
+[CPUSURFACE_PROFILE] address=00020122 bytes=4 client=3 renderer=2 queued_at=120 started_at=220 finished_at=250 returned_at=260 frequency=1000 queue=100 service=30 return=10 total=140 allocation=3 prior_fence=4 commands=6 copy_fence=8 packing=7 other=2 matched=3 hits=2 copies=1 host_bytes=512 guest_bytes=16
+Direct renderer request: client=renderer, zero queue and return.
+[CPUSURFACE_PROFILE] address=00020124 bytes=8 client=2 renderer=2 queued_at=300 started_at=300 finished_at=320 returned_at=320 frequency=1000 queue=0 service=20 return=0 total=20 allocation=1 prior_fence=2 commands=3 copy_fence=4 packing=6 other=4 matched=1 hits=0 copies=1 host_bytes=128 guest_bytes=4
