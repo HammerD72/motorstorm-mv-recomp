@@ -93,7 +93,7 @@ def main():
         retire_template = (fixtures / 'rsx_vp_retire.c.in').read_text(encoding='utf-8')
         retire_body = function(text, 'static int vp_upload_retire(')
         build_run('retirement', retire_template.replace('@RETIRE_FUNCTION@', retire_body))
-        mutant = out / 'parity-mutant'
+        mutant = out / 'parity-mutant-include'
         mutant.mkdir()
         needle = '(unsigned char*)next.memory + (size_t)new_bytes,'
         if header.count(needle) != 1:
