@@ -10,6 +10,13 @@ Compile this operation separately with AVX2/FMA and strict floating-point behavi
 
 Run `python scripts/check_native_world_transforms.py` on an x86-64 AVX2/FMA host with a C++ compiler. Windows accepts `MV_CLANG`; other hosts accept `CXX`. The authored fixture checks independent rounding, fusion, rotation, translation, roots, dirty flags, rejected inputs and caller FP state. A deliberately wrong-rounding implementation must fail the independent product oracle. Build products remain under ignored `build/self-tests/`.
 
+Run `python scripts/check_native_world_properties.py` for the separate
+[independent forest properties](NATIVE_WORLD_PROPERTIES.md): 512 fixed-seed forests,
+alternate valid orderings, an exact integer point oracle, dirty/no-op/input/FP-state
+checks, minimized reproducers and two implementation mutants. This finite-domain
+gate complements the dedicated rounding/fusion tests; it does not establish SPU
+equivalence, runtime integration or a measured speedup.
+
 ## Build and scene bridge
 
 `python scripts/project.py build --optimize --jobs 1` enables native hierarchy and job-wait bindings by default for the verified original debug-US ELF. Both `--no-native-world-transforms --no-native-job-wait` retain the unbound reference build. Direct CMake configuration uses `PORT_NATIVE_WORLD_TRANSFORMS=ON`, `PORT_NATIVE_JOB_WAIT=ON` and `PORT_TARGET_ELF` pointing to the selected original ELF. This does not change the required PM interpretation for unreplaced work.
