@@ -1,5 +1,88 @@
 # Native game operations
 
+## Particle threshold scan (#204, acceptance pending)
+
+The next bounded operation under [#155](https://github.com/robbe1912/motorstorm-mv-recomp/issues/155)
+is the particle module's threshold scan, tracked in [#204](https://github.com/robbe1912/motorstorm-mv-recomp/issues/204).
+`threshold_scan.cpp` operates on typed float records and four thresholds. It reduces
+complete records once, handles partial cyclic views, and retains an already-set
+failure flag. The game adapter marshals the ABI and preserves every scratch lane;
+the core contains no guest registers, opcodes, dispatch or scheduler operations.
+The verified span is LS `0x12338..0x12400`: r6/r84 supply aligned begin/end,
+r10's preferred offset is 44, r11 supplies four thresholds and r8 holds the flags.
+Each back edge scans eight components in 50 original instructions. The adapter
+materializes all lanes of r2/r4/r5/r6/r7/r8/r9/r15 and the last policy PC; it writes
+no LS memory. Other offsets, wrapping extents and oversized input remain original.
+
+The build option `--native-particle-thresholds` is off by default. When enabled,
+`MS_NATIVE_PARTICLE_THRESHOLDS=reference` (also unset/`0`) retains interpretation,
+`shadow` compares complete cloned contexts and executes the original, and `1`/`native`
+selects the validated operation. Invalid mode values and parity failures abort
+visibly. Unsupported numeric ranges, extents, code identities, IRQ/DMA ownership,
+resident boundaries or instruction budgets retain original execution. Reference
+interpretation policy remains required. The generic fork-native-leaf seam is reused;
+this change adds no toolkit title exception or scheduler tuning.
+Enabled interrupts are admitted only for synchronous list-stall notification, with
+no parked list; the exact span has no channel operations that could raise it.
+Other unmasked sources retain instruction-level execution even when not yet pending.
+Expected unsupported inputs use the typed core's `noexcept` optional-result API;
+the adapter declines visibly without allocating or unwinding a C++ exception. The
+throwing API remains available for callers that treat invalid inputs as errors.
+
+`native_particle_binding.py` checks the complete original ELF and exact code span
+before generating an ignored guard. It preserves occupied/modified outputs and
+publishes a complete staged directory. Identical verified output may be reused.
+No original program bytes belong in the public repository.
+
+Offline Windows evidence uses the checked consumer's hash-pinned interpreter and
+the original span: both saved live states match all 268,960 context bytes, with
+750/250 original instructions respectively. The production adapter, actual registered
+runtime dispatch and generated exact-code guard also match reference/native/shadow
+full-context SHA-256 results across 2,804 cases per mode. These cover 2,048 varied
+inputs in four FP rounding modes, five internal/continuation stops and 751 partial,
+exact and extra instruction budgets; guarded declines preserve state. Only the LS
+self-pointer is normalized. Shadow logs prove 2,048 comparisons by that checkpoint.
+The typed scalar-oracle check covers 8,192 additional randomized cases and rejects
+four unsafe mutants; binding fixtures exercise identity and staged-failure cleanup.
+Seventeen ABI declines and six compiled adapter mutants additionally exercise code
+identity, nonpreferred lanes, terminal policy PC, exact cost, interpretation policy
+and asynchronous interrupt admission. Compilation failures do not count as mutant
+rejection.
+The complete private packet is under `temp/issue204-particle-threshold` in the native
+checkout. It does not establish exclusive frame cost or an FPS improvement.
+
+Five alternating reference/native benchmark pairs pinned their own benchmark thread
+to logical CPU 0, with 512 warmups and 8,192 measured operations per captured state.
+The timed work includes the common 268,960-byte context restore, actual API/adapter,
+completion/count/FP checks and aggregate diagnostics. Nothing is subtracted. For the
+750-instruction state, median time was 22.924 → 4.925 microseconds (reference range
+22.588–23.224; native 4.718–5.220). For 250 instructions it was 11.128 → 5.002
+microseconds (10.725–11.629; 4.811–5.162). These are warm captured-span CPU measurements;
+the operation's critical-path fraction and game frame-time effect remain unproved.
+
+Native run `20261023T072658.709962Z` used the checked DX12 executable
+`8d06e84ac316c2aa9ded791511cea58cc2685dcc64ca5de9c58d88ae5e82eb4f`, built from
+`d89a483` before the exception-free decline follow-up. Original menu assets and
+the normal PLAY route into a live race were internally observed. The last aggregate
+checkpoint recorded 1,803,264 completed native scans and 1,352,448,000 original
+instruction equivalents; it also retained 1,705,901 original fallbacks. Those
+equivalents are not executed host CPU instructions, and the unlogged tail is excluded.
+
+The copied CPU collector failed to import `native_pad` because its root remained
+one directory too shallow. The controller did not fail promptly and continued to
+its bounded owned stop after 558.89 seconds. No planned named CPU or suspending
+context window was produced. Preserved independent thread-timeline/GPU data instead
+provides 27 snapshots over 27.951 seconds after the observed HUD gate: median 3D
+engine utilization 11.543%, zero read-transfer-byte increase, and anonymous thread
+CPU deltas. These do not identify a critical dependency or prove preloading.
+All 60,517 completed wait records parsed; the failed collector is not reconstructed.
+The last 100 complete presentation intervals had median 319.8475 ms and range
+280.684–527.356 ms, with a new flip on each. One final partial CSV row is explicitly
+excluded. This uncontrolled cadence is far from sustained 30 FPS and is not a
+before/after result. The under-vehicle boxes in #137 and performance acceptance in
+#27 remain unresolved. Selected original frames, logs, failed collector source,
+recovery script and hashes are preserved outside latest-five run rotation.
+
 [Issue 177](https://github.com/robbe1912/motorstorm-mv-recomp/issues/177) owns native scene-hierarchy integration. [Issue 27](https://github.com/robbe1912/motorstorm-mv-recomp/issues/27) owns sustained 30 FPS acceptance. The public kernel, scene adapter and verified build binding are implemented and have run through observed normal PLAY.
 
 ## World transforms
