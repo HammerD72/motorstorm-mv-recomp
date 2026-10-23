@@ -1,5 +1,81 @@
 # Vendor provenance and upstream
 
+## Exact-byte fragment snapshot reuse (issue 213)
+
+The generic `rsx_fp_snapshot.h` decision helper originates on own-fork modular
+`b6b8c348f13b07e32575c69e34c7923cc70d1c02` and combined
+`b9a4c5499267e60b92eebce084dee6e8b8722a00`. Focused Windows/Linux controls passed
+on both [modular CI](https://github.com/robbe1912/ps3recomp/actions/runs/39958447051)
+and [combined CI](https://github.com/robbe1912/ps3recomp/actions/runs/39958450484).
+No upstream PR or title-specific rule is involved.
+
+The native DX12 recorder compares the complete admitted snapshot bytes first.
+Identical bytes retain the bound snapshot without decoding its structure again;
+changed inline constants refresh it, while structurally recycled or malformed
+live code retains the originally bound bytes. The existing snapshot ring,
+address resolution and recording/replay lifetimes remain unchanged. Invalid
+host snapshot metadata reports `FP_SNAPSHOT_ERROR` and aborts visibly.
+
+The actual production helper and original decision agree on authored programs,
+every-byte mutations, inline constants, structural changes, malformed live code
+and program extents. Separately compiled historical eager-hash, blind-reuse and
+refresh-recycled mutants must fail their specific behavioral/work assertions.
+Both consumer CI platforms run these controls using their actual FP parser.
+
+Five alternating checked-O2/Ob2/DebugCRT helper pairs, one million calls each,
+measured identical 4096-byte authored snapshots at median 1884.164 ns before
+(range 1878.084-1890.281) versus 92.9998 ns after (92.1099-94.2805). Verified
+checksums and real function calls remain inside timing; count instrumentation
+is absent. Structural decoding is replaced by exact byte comparison. The
+4096-byte constant-edit paths overlap in timing; the 32-byte edit path instead
+costs about 0.8 ns more. Private commands/source hashes/CPU times/results reside
+under the fork's `build/fp-snapshot-tests`; the first short-window trial is
+preserved separately. These are isolated helper measurements, not draw/frame
+cost or gameplay FPS.
+
+The archived issue209 renderer has three recovered
+`structural_hash -> vp_fp_snap_for -> indexed draw` observations among 57 saved
+stacks. This selected point evidence motivates the change without establishing
+exclusive cost.
+
+Native integration was checked in owned run `20261023T131716.848930Z`,
+PID 15456, using original assets and the existing screen-gated PAD_FILE PLAY
+route, with one observed Sony-caption skip. Original menu frame 11 and race
+frame 73 (bike/opponents/HUD) were visually observed; geometry/shadow defects
+remain. EXE `37e3483ca368443cbc61e1abc6a7354eea9587605a6e959dfd6fc22c767488df`,
+PDB `17a3c4d0f3d139e5551e2520ab851e2c3b8d03dc5fee85680189827615b525b4`.
+The five-step checked-O2/DebugCRT build restored configuration and preserved
+all previous binaries. The controller exited 0 after an explicit owned stop
+at 315.750 seconds; native return 1 is guard termination, not a natural-success
+exit. The protected private packet has 4,461 files / 2,581,036,045 bytes;
+rotation kept the latest five runs.
+
+The unsuspended CPU window has 43 samples over 44.3471711 seconds. Process
+median: 5.3905 logical CPU equivalents; `spu_async`: 39.0625 CPU seconds,
+`frame_clock`: 33.21875, five main policy workers: 20.90625-22.25 each.
+Thirty GPU 3D samples have median 23.0141%, maximum 30.4600%, no collector
+error. Common-thread counters omit transient lifetimes, and utilization is
+not causal frame-cost attribution. Fully contained main waits: 3,740 visibility
+waits / 11.4229636 seconds (two crossing waits excluded), 440 vehicle waits /
+4.9211536 seconds. The 110 two-byte CPU-surface reads total 5.8773668 seconds,
+including 4.3211376 queued and 1.4712387 prior-fence seconds. These intervals
+include scheduling/cooperation/synchronization, not exclusive CPU/GPU cost.
+
+Separate later diagnostics have 301 cycles, one recorded suspend failure,
+maximum 12.727 ms pause, 396 register-bound resident observations and 59
+unfinished-wait register correlations. Archived PE-unwind replay recovered
+305 partial walks with exact loaded PDB/CodeView identity; missing memory,
+stopped walks and current-only DLL qualification remain explicit. Full stderr
+scan found no error/fatal/failed/unhandled/unexpected/assert/overflow findings;
+assertions and DX12 validation remained enabled. Native world retained 21
+visible original fallbacks. Source/identity-bound analyses and hashes remain
+private under `temp/issue213-fp-snapshot-equality/analysis`.
+
+This is one unmatched native correctness run, not a controlled game speedup,
+displayed-FPS result or stable 30 FPS proof. No frame-time or FPS gain follows
+from the isolated helper result. #26/#27/#137 and the larger typed native game
+rewrite remain open.
+
 ## Bounded policy admission integration (issue 209)
 
 The previous joined-round consumer fails an authored actual-runtime test:
