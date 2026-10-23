@@ -17,7 +17,8 @@ Every image is mapped through its containing PT_LOAD (file = p_offset + EA -
 p_vaddr), checked against the committed identities in jobmod_meta.json and
 written to an ignored output tree. Section sh_size includes alignment padding
 and is never used as an image size. Any identity mismatch, missing symbol or
-unexpected header exits non-zero: a silently different module would register
+unexpected header exits non-zero before publishing output: a silently different
+module would register
 under a fingerprint the game never stages.
 
 Outputs (under --out):
@@ -31,12 +32,16 @@ Outputs (under --out):
 Usage:
   python scripts/spu/extract_ms1_named.py --elf EBOOT.elf --out build/extracted/named
                                           [--images build/extracted/spu]
+
+--out must be absent or empty. Existing --images policy files are preserved.
+All inputs are validated before any files are published. Failed publication
+removes only the files/directories created by this invocation.
 """
 import argparse
 import hashlib
 import json
 import os
-import shutil
+from pathlib import Path
 import struct
 import sys
 
@@ -170,6 +175,64 @@ def sweep_unnamed(elf, named_offsets):
     return extra
 
 
+def check_destinations(out, images):
+    """The named tree is never merged; class-A images keep their other files."""
+    if os.path.lexists(out):
+        if out.is_symlink() or not out.is_dir():
+            raise SystemExit(f'{out} is not an empty output directory; move it aside before regeneration')
+        if any(out.iterdir()):
+            raise SystemExit(f'{out} is not empty; move it aside before regeneration')
+    if images is not None:
+        policy = images / (PM_NAME + '.elf')
+        if os.path.lexists(policy):
+            raise SystemExit(f'{policy} already exists; preserve it before regeneration')
+
+
+def publish_outputs(out, images, files):
+    """Publish validated bytes without replacing existing files; undo owned writes.
+
+    Input/header validation must finish before this function is called. This is
+    exception-safe publication, not an atomic transaction across directories.
+    """
+    check_destinations(out, images)
+    targets = {out / name: data for name, data in files.items()}
+    if images is not None:
+        # --images may name --out itself, including through a directory alias.
+        policy = images / (PM_NAME + '.elf')
+        if policy.resolve() != (out / (PM_NAME + '.elf')).resolve():
+            targets[policy] = files[PM_NAME + '.elf']
+    created_files, created_dirs = [], []
+
+    def ensure_directory(path):
+        if path.is_dir():
+            return
+        ensure_directory(path.parent)
+        try:
+            path.mkdir()
+        except FileExistsError:
+            if not path.is_dir():
+                raise
+        else:
+            created_dirs.append(path)
+
+    try:
+        for path, data in targets.items():
+            ensure_directory(path.parent)
+            with path.open('xb') as f:
+                created_files.append(path)
+                f.write(data)
+    except BaseException:
+        # Never recursively remove a caller's existing root or another file.
+        for path in reversed(created_files):
+            path.unlink(missing_ok=True)
+        for path in reversed(created_dirs):
+            try:
+                path.rmdir()
+            except OSError:
+                pass  # A directory populated by another writer is not ours.
+        raise
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--elf', required=True, help='user-supplied named debug EBOOT (ELF64)')
@@ -178,16 +241,15 @@ def main():
     ap.add_argument('--meta', default=META, help='stable ids/names/identities (default: committed copy)')
     args = ap.parse_args()
 
-    with open(args.meta, encoding='utf-8') as f:
-        meta = json.load(f)
+    out = Path(args.out)
+    images = Path(args.images) if args.images else None
+    check_destinations(out, images)
+    meta_bytes = Path(args.meta).read_bytes()
+    meta = json.loads(meta_bytes)
     expected = meta['identities']
-    elf = Elf(open(args.elf, 'rb').read())
-    jobs_dir = os.path.join(args.out, 'jobmods')
-    if os.path.isdir(jobs_dir) and os.listdir(jobs_dir):
-        raise SystemExit(f'{jobs_dir} is not empty; move it aside before regeneration')
-    os.makedirs(jobs_dir, exist_ok=True)
+    elf = Elf(Path(args.elf).read_bytes())
 
-    errors, manifest = [], []
+    errors, manifest, files = [], [], {}
     stems = {}
     for stem, symbol, ea, sym_size in job_candidates(elf):
         off = elf.file_offset(ea)
@@ -206,8 +268,7 @@ def main():
             errors.append(f'{name}: expected {want["symbol"]} staged {want["staged_fnv"]}, '
                           f'got {symbol} {staged:016X}')
         stems[off] = name
-        with open(os.path.join(jobs_dir, name + '.bin'), 'wb') as f:
-            f.write(raw)
+        files['jobmods/' + name + '.bin'] = raw
         manifest.append(dict(name=name, kind='wwsjob', symbol=symbol, stem=stem,
                              id=meta['ids'].get(name), reg_name=meta['names'].get(name),
                              guest_ea=f'0x{ea:08X}', file_offset=f'0x{off:08X}',
@@ -244,25 +305,21 @@ def main():
                          whole_fnv=f'{fnv1a64(bootstrap):016X}'))
 
     if errors:
-        shutil.rmtree(jobs_dir)
         raise SystemExit('Named SPU extraction rejected:\n  ' + '\n  '.join(errors))
 
-    with open(os.path.join(args.out, PM_NAME + '.elf'), 'wb') as f:
-        f.write(pm)
-    if args.images:
-        os.makedirs(args.images, exist_ok=True)
-        shutil.copyfile(os.path.join(args.out, PM_NAME + '.elf'), os.path.join(args.images, PM_NAME + '.elf'))
-    with open(os.path.join(args.out, 'jobbootstrap.bin'), 'wb') as f:
-        f.write(bootstrap)
-    # lift_ms1_jobmods.py reads <jobmods>/../jobmod_meta.json and may append ids
-    # in place; keep that write inside the ignored output tree.
-    shutil.copyfile(args.meta, os.path.join(args.out, 'jobmod_meta.json'))
-    with open(os.path.join(args.out, 'named_manifest.json'), 'w', encoding='utf-8', newline='\n') as f:
-        json.dump(dict(elf_sha256=hashlib.sha256(elf.data).hexdigest(), images=manifest), f, indent=2)
-        f.write('\n')
+    files[PM_NAME + '.elf'] = pm
+    files['jobbootstrap.bin'] = bootstrap
+    # lift_ms1_jobmods.py may append ids; its copy stays in ignored output.
+    files['jobmod_meta.json'] = meta_bytes
+    files['named_manifest.json'] = (json.dumps(dict(
+        elf_sha256=hashlib.sha256(elf.data).hexdigest(), images=manifest), indent=2) + '\n').encode('utf-8')
     jobs = [m for m in manifest if m['kind'] == 'wwsjob']
-    for m in jobs:
-        print(f"  id {m['id']} {m['reg_name']:18} {m['name']:30} staged {m['staged_fnv']}")
+    # Prepare even the report before publication: malformed metadata must not
+    # turn a successful write into a late formatting failure.
+    report = [f"  id {m['id']} {m['reg_name']:18} {m['name']:30} staged {m['staged_fnv']}" for m in jobs]
+    publish_outputs(out, images, files)
+    for line in report:
+        print(line)
     print(f'PASS: {len(jobs)} job images, policy module and bootstrap match committed identities; '
           f'output {args.out}')
 

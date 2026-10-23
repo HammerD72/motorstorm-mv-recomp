@@ -7,10 +7,12 @@ scripts/spu/extract_ms1_named.py against identities computed for it. The
 committed scripts/spu/jobmod_meta.json is checked for stable, unique ids.
 Rejections cover a wrong staged identity, a header/symtab size disagreement,
 a stripped EBOOT, a committed identity absent from the input, a policy wrap
-mismatch and a non-empty output tree.
+mismatch, occupied destinations, a malformed later job and publication failure.
+Existing files and empty output directories must survive every rejection.
 """
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,7 @@ import shutil
 import struct
 import subprocess
 import sys
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 EXTRACT = ROOT / 'scripts/spu/extract_ms1_named.py'
@@ -87,7 +90,23 @@ def build_elf(path, blobs, symbols, strip=False):
     return placed
 
 
-def scenario(work, name, *, skew=0, strip=False, mutate=None):
+def run_extract(case, *, images='images'):
+    return subprocess.run([sys.executable, '-I', str(EXTRACT), '--elf', str(case / 'EBOOT.elf'),
+                           '--out', str(case / 'out'), '--images', str(case / images),
+                           '--meta', str(case / 'meta.json')],
+                          capture_output=True, text=True, timeout=60)
+
+
+def tree_snapshot(path):
+    """Include empty directories, so preservation means more than no binaries."""
+    if not path.exists():
+        return None
+    return {'.': None, **{p.relative_to(path).as_posix(): None if p.is_dir() else p.read_bytes()
+                         for p in path.rglob('*')}}
+
+
+def scenario(work, name, *, skew=0, strip=False, mutate=None, mutate_elf=None,
+             setup=None, images='images'):
     jobs = {'fakejob': job(1, 0x40, 64, skew), 'fakeJobCode': job(2, 0x80, 300)}
     template = bytes((i * 7) & 0xFF for i in range(0x2B70))
     bootstrap = bytes((i * 3) & 0xFF for i in range(0x2A0))
@@ -102,7 +121,7 @@ def scenario(work, name, *, skew=0, strip=False, mutate=None):
                ('_binary_jobbootstrap_file_size', 'abs', None, len(bootstrap))]
     case = work / name
     case.mkdir()
-    build_elf(case / 'EBOOT.elf', blobs, symbols, strip)
+    placed = build_elf(case / 'EBOOT.elf', blobs, symbols, strip)
     meta = {'ids': {}, 'names': {}, 'identities': {}}
     for i, (stem, symbol) in enumerate((('fakejob', '_binary_fakejob_wwsjob_image_start'),
                                         ('fakeJobCode', 'fakeJobCode'))):
@@ -118,10 +137,74 @@ def scenario(work, name, *, skew=0, strip=False, mutate=None):
     if mutate:
         mutate(meta)
     (case / 'meta.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
-    ran = subprocess.run([sys.executable, '-I', str(EXTRACT), '--elf', str(case / 'EBOOT.elf'),
-                          '--out', str(case / 'out'), '--images', str(case / 'images'),
-                          '--meta', str(case / 'meta.json')], capture_output=True, text=True, timeout=60)
-    return case, meta, ran
+    if mutate_elf:
+        mutate_elf(case / 'EBOOT.elf', placed)
+    if setup:
+        setup(case)
+    return case, meta, run_extract(case, images=images)
+
+
+def malformed_second_link(path, placed):
+    data = bytearray(path.read_bytes())
+    struct.pack_into('>I', data, FILE_BASE + placed['fakeJobCode'] + 0x28, 0x4001)
+    path.write_bytes(data)
+
+
+def publication_rollback(work):
+    """Exercise real publication with a partial external-policy write failure."""
+    spec = importlib.util.spec_from_file_location('named_extract_under_test', EXTRACT)
+    extractor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(extractor)
+    real_open = Path.open
+    results = []
+    for keep_empty_out in (False, True):
+        name = 'publication-rollback-' + ('empty-out' if keep_empty_out else 'new-out')
+        case = work / name
+        case.mkdir()
+        out, images = case / 'out', case / 'images'
+        if keep_empty_out:
+            out.mkdir()
+        else:
+            images.mkdir()
+            (images / 'class-a.elf').write_bytes(b'authored class-A sentinel')
+        before_out, before_images = tree_snapshot(out), tree_snapshot(images)
+        policy = images / (PM_NAME + '.elf')
+        observed = []
+
+        class InterruptedWriter:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def write(self, data):
+                self.stream.write(data[:1])
+                observed.append('partial external policy written')
+                raise OSError('authored publication failure')
+
+        def interrupted_open(path, mode='r', *args, **kwargs):
+            stream = real_open(path, mode, *args, **kwargs)
+            return InterruptedWriter(stream) if path == policy and mode == 'xb' else stream
+
+        files = {'jobmods/first.bin': b'authored job', PM_NAME + '.elf': b'authored policy',
+                 'named_manifest.json': b'{}\n'}
+        try:
+            with mock.patch.object(Path, 'open', new=interrupted_open):
+                extractor.publish_outputs(out, images, files)
+        except OSError as error:
+            assert str(error) == 'authored publication failure', error
+        else:
+            raise AssertionError(name + ' did not inject its publication failure')
+        assert observed == ['partial external policy written'], observed
+        assert tree_snapshot(out) == before_out, name + ' changed the output destination'
+        assert tree_snapshot(images) == before_images, name + ' changed the images destination'
+        results.append(dict(name=name, passed=True, injected='partial external-policy write'))
+        print(name + ': PASS (expected publication failure)')
+    return results
 
 
 def committed_meta_contract():
@@ -185,8 +268,67 @@ def main():
                           '--out', str(case / 'out'), '--meta', str(case / 'meta.json')],
                          capture_output=True, text=True, timeout=60)
     expect('non-empty-output', ran, False, 'is not empty')
-    for rejected in ('wrong-identity', 'size-disagreement', 'absent-identity', 'policy-wrap'):
-        assert not (work / rejected / 'out/jobmods').exists(), rejected + ' left partial output'
+    for rejected in ('wrong-identity', 'size-disagreement', 'stripped', 'absent-identity', 'policy-wrap'):
+        assert tree_snapshot(work / rejected / 'out') is None, rejected + ' left partial output'
+        assert tree_snapshot(work / rejected / 'images') is None, rejected + ' left policy output'
+
+    preserved = {}
+
+    def occupied_output(case):
+        (case / 'out/jobmods').mkdir(parents=True)
+        (case / 'out' / (PM_NAME + '.elf')).write_bytes(b'policy sentinel: do not replace')
+        preserved['out'] = tree_snapshot(case / 'out')
+
+    rejected, _, ran = scenario(work, 'occupied-out-policy', setup=occupied_output)
+    expect('occupied-out-policy', ran, False, 'is not empty')
+    assert tree_snapshot(rejected / 'out') == preserved['out'], 'occupied output was changed'
+    assert tree_snapshot(rejected / 'images') is None, 'occupied output published a policy copy'
+
+    def occupied_images(case):
+        (case / 'images').mkdir()
+        (case / 'images' / (PM_NAME + '.elf')).write_bytes(b'existing images policy sentinel')
+        (case / 'images/class-a.elf').write_bytes(b'authored unrelated class-A image')
+        preserved['images'] = tree_snapshot(case / 'images')
+
+    rejected, _, ran = scenario(work, 'occupied-images-policy', setup=occupied_images)
+    expect('occupied-images-policy', ran, False, 'already exists')
+    assert tree_snapshot(rejected / 'images') == preserved['images'], 'images were changed'
+    assert tree_snapshot(rejected / 'out') is None, 'policy collision left named output'
+
+    rejected, _, ran = scenario(work, 'late-header-new-out', mutate_elf=malformed_second_link)
+    expect('late-header-new-out', ran, False, 'implausible link base 0x4001')
+    assert tree_snapshot(rejected / 'out') is None, 'late rejection left the first job'
+    assert tree_snapshot(rejected / 'images') is None, 'late rejection published a policy'
+
+    def empty_output(case):
+        (case / 'out').mkdir()
+
+    rejected, _, ran = scenario(work, 'late-header-empty-out', setup=empty_output,
+                               mutate_elf=malformed_second_link)
+    expect('late-header-empty-out', ran, False, 'implausible link base 0x4001')
+    assert tree_snapshot(rejected / 'out') == {'.': None}, 'existing empty output was changed'
+    assert tree_snapshot(rejected / 'images') is None, 'late rejection published a policy'
+
+    def existing_images(case):
+        (case / 'images').mkdir()
+        (case / 'images/class-a.elf').write_bytes(b'authored unrelated class-A image')
+
+    supported, _, ran = scenario(work, 'existing-images', setup=existing_images)
+    expect('existing-images', ran, True, 'PASS: 2 job images')
+    assert (supported / 'images/class-a.elf').read_bytes() == b'authored unrelated class-A image'
+    assert (supported / 'images' / (PM_NAME + '.elf')).read_bytes() == \
+           (supported / 'out' / (PM_NAME + '.elf')).read_bytes()
+    assert sorted(p.name for p in (supported / 'images').iterdir()) == \
+           sorted(['class-a.elf', PM_NAME + '.elf']), 'unexpected images output'
+
+    _, _, ran = scenario(work, 'existing-empty-out', setup=empty_output)
+    expect('existing-empty-out', ran, True, 'PASS: 2 job images')
+    supported, _, ran = scenario(work, 'same-out-images', images='out')
+    expect('same-out-images', ran, True, 'PASS: 2 job images')
+    assert (supported / 'out' / (PM_NAME + '.elf')).is_file(), 'coalesced policy missing'
+    assert tree_snapshot(supported / 'images') is None, 'unused images directory was created'
+
+    results.extend(publication_rollback(work))
 
     (work / 'result.json').write_text(json.dumps(dict(game_inputs=False, checks=results), indent=2))
     shutil.rmtree(work / 'authored' / 'out' / 'jobmods')
