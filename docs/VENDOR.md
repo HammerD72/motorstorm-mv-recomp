@@ -1031,3 +1031,13 @@ The [cache contract](SHADER_PIPELINE_CACHE.md) describes defaults, exact input
 and compiler identity, storage bounds, source retry and authored checks.
 The new source candidate needs owner acceptance independently of prior R48
 trials. No launcher, private input, readable-span helper or R62 change is ported.
+
+
+### Compile-only FXC pool
+
+The next local own-fork component adds bounded compile-only workers and exact
+prefetch identity on the same combined base. Shared worker/prefetch/coordinator
+headers stay byte-identical; each backend retains its existing shader ABI,
+texture state and draw ordering. Local own-fork pool component a9f79d8307ce3840beb226890bd25e2a7f4e2c41 contains this integration. The existing view-resolution pass queues work, then an owner
+walk creates PSOs before command replay. Real FXC/worker tests and an authored
+owner/device spy cover the coordinator; native acceptance remains separate.

@@ -330,5 +330,5 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Exact shader disk cache and owner recovery controls
+      - name: Shader storage, worker and owner controls
         run: python scripts/check_shader_pipeline.py --cc clang-cl

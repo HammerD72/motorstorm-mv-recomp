@@ -2598,6 +2598,16 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
             }
             return s_d3d.vp_fp[i].pso;   /* may be NULL: negative entry */
         }
+    if(shader_prefetch_active){
+        struct {u32 address,control,cube,alpha,unnorm,mask,cull,blend,alias_mask;int nrt;u32 format;u64 depth,alias;u32 dims[16][2],remap[16];} recipe;
+        memset(&recipe,0,sizeof(recipe));recipe.address=fp_addr;recipe.control=fp_ctrl;recipe.cube=cube_mask;
+        recipe.alpha=alpha_key;recipe.unnorm=unnorm_mask;recipe.mask=cmask;recipe.cull=cull;recipe.blend=blend;
+        recipe.nrt=nrt;recipe.format=(u32)rtfmt;recipe.depth=ds_key;recipe.alias=alias_key;recipe.alias_mask=alias_mask;
+        for(unsigned u=0;u<16;u++)if((unnorm_mask&(1u<<u)) && unnorm_dim){recipe.dims[u][0]=unnorm_dim[u][0];recipe.dims[u][1]=unnorm_dim[u][1];}
+        memcpy(recipe.remap,alias_remap,sizeof(alias_remap));
+        unsigned char program[4096];u32 bytes=rsx_fp_canonical_program(uc,4096,program,sizeof(program));
+        if(bytes && shader_prefetch_duplicate(&recipe,sizeof(recipe),program,bytes))return NULL;
+    }
     s_perf_pso_miss++;      /* falls through to a full decompile + D3DCompile */
     /* PSOMISSDBG=1: on a miss, name the key field that differs from an existing
      * entry for the same program. "the cache misses" is not actionable; "it
@@ -2657,7 +2667,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     int n = rsx_fp_decompile_buffered_ex(uc, 4096, fp_ctrl, cube_mask,
                                          hlsl, sizeof(hlsl), &fpc_n, &fblk);
     if (n <= 0) { static int _e=0; if(_e++<16) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr);
-        vp_fp_cache_put(&key); return NULL; }
+        if(!shader_prefetch_active)vp_fp_cache_put(&key); return NULL; }
     /* The emitted cbuffer is fp_constants[fpc_n] + fp_alpha; it must fit the
      * per-draw b1 slot or replay would read into the next draw's constants.
      * Refuse (loudly, once per program) rather than clip or alias. */
@@ -2668,7 +2678,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
             printf("[FP] PSO refused (fp=0x%08X): %u inline constants exceed the"
                    " b1 slot (%u max); draw falls back to the primary PS\n",
                    fp_addr, fpc_n, (u32)VP_FPCB_MAX_CONSTS); }
-        vp_fp_cache_put(&key); return NULL;
+        if(!shader_prefetch_active)vp_fp_cache_put(&key); return NULL;
     }
     /* FP_LIST=1: every program the title actually compiles, with its size. A
      * fragment program that hangs the GPU shows up here as an implausible
@@ -2724,7 +2734,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         if (rsx_fp_apply_alpha_test_buffered(hlsl, sizeof(hlsl), func) < 0) {
             static int _ea=0; if(_ea++<16)
                 printf("[FP] alpha-test patch fail (fp=0x%08X, func=0x%X)\n", fp_addr, func);
-            vp_fp_cache_put(&key); return NULL;
+            if(!shader_prefetch_active)vp_fp_cache_put(&key); return NULL;
         }
     }
     /* Unnormalized (texel-space) texcoords: patch *float2(1/w,1/h) into the
@@ -2736,7 +2746,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         static int _eu=0; if(_eu++<16)
             printf("[FP] unnorm-scale patch fail (fp=0x%08X, mask=0x%X)\n",
                    fp_addr, unnorm_mask);
-        vp_fp_cache_put(&key); return NULL;
+        if(!shader_prefetch_active)vp_fp_cache_put(&key); return NULL;
     }
 
     if (rsx_texture_alias_apply(hlsl, sizeof hlsl, alias_mask, alias_remap, cube_mask, 1u) < 0) {
@@ -2811,12 +2821,17 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     }
     ID3DBlob* pb = NULL; ID3DBlob* e = NULL;
     HRESULT hr = fp_compile_cached(fp_addr,hlsl,&pb,&e);
+    if(shader_prefetch_active){
+        if(pb)pb->lpVtbl->Release(pb);
+        if(e)e->lpVtbl->Release(e);
+        return NULL;
+    }
     if (FAILED(hr) || !pb) {
         static int _e2=0; if (_e2++<16)
             printf("[FP] PS compile FAIL (fp=0x%08X): %s\n", fp_addr,
                    e ? (const char*)e->lpVtbl->GetBufferPointer(e) : "?");
         if (e) e->lpVtbl->Release(e);
-        vp_fp_cache_put(&key); return NULL;
+        if(!shader_prefetch_active)vp_fp_cache_put(&key); return NULL;
     }
     if (e) e->lpVtbl->Release(e);
 
@@ -2952,7 +2967,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         }
         /* Negative entry: this key is deterministic -- retrying it every draw
          * is pure cost. Eviction/generation naturally retries later. */
-        vp_fp_cache_put(&key);
+        if(!shader_prefetch_active)vp_fp_cache_put(&key);
         return NULL;
     }
     { static int _ok=0; if (_ok++<32) printf("[FP] guest FP pipeline ready (fp=0x%08X, consts=%u alpha=%u)\n", fp_addr, fpc_n, alpha_key); }
@@ -2961,7 +2976,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     key.fpc_n = (u16)fpc_n;
     if (fpc_n <= VP_FPCB_MAX_CONSTS)
         memcpy(key.k, fblk.values, (size_t)fpc_n * 16u);
-    vp_fp_cache_put(&key);
+    if(!shader_prefetch_active)vp_fp_cache_put(&key);
     /* Content-addressed cache sanity: one guest fp address can host several
      * distinct programs (address recycling). Log each address once when a
      * second distinct program lands, so a cache that thrashes between them is
@@ -4744,6 +4759,41 @@ static void guest_fb_present(u32 fi)
 }
 
 
+static void shader_compile_draw(D3D12DrawRecord* dr)
+{
+        if (dr->fp_addr) {
+            u32 udim[16][2]; u16 pso_n = 0;
+            vp_get_fp_pso(dr->vs_idx, dr->fp_addr, dr->blend_key, dr_num_rts(dr),
+                          dr_rt_dxgi(dr), dr->fp_ctrl, dr_alpha_key(dr),
+                          dr_unnorm(dr, udim), udim, dr->cmask, dr->cull,
+                          dr_cube_mask(dr), dr->ds_key, dr->fp_snap, &pso_n, dr);
+            /* If the program's structure changed after this draw was recorded
+             * (the guest rewrote ucode at the same address), the b1 snapshot's
+             * fp_constants[N] no longer matches the compiled shader -- redo it
+             * from the ucode that was just hashed. If the re-read still
+             * disagrees (the address now holds recycled memory: collect
+             * returns 0 or a different count), fall back to the constants
+             * captured when the PSO was built -- the shader reads
+             * fp_constants[pso_n] and zero-filling it renders black. */
+            if (!shader_prefetch_active && pso_n && dr->fp_const_n != (u32)pso_n) {
+                vp_record_fp_b1(dr->cb_slot, dr);
+                if (dr->fp_const_n != (u32)pso_n)
+                    vp_serve_pso_consts(dr->cb_slot, dr, pso_n);
+            }
+        }
+}
+
+/* The legacy switch controls only the optional non-pooled prepass.
+ * Pool prefetch and the explicit owner-resolution walk are required passes. */
+static void shader_prepare_draw(D3D12DrawRecord* dr,int use_pool)
+{
+    if (use_pool || !single_pso_on()) {
+        shader_prefetch_active=use_pool;
+        shader_compile_draw(dr);
+        shader_prefetch_active=0;
+    }
+}
+
 static void render_frame(void)
 {
     double _rf0 = perf_on() ? perf_now() : 0.0;
@@ -5081,6 +5131,10 @@ static void render_frame(void)
     for (int _i = 0; _i < VP_TEX_SLOTS; _i++) s_d3d.vp_tex[_i].used = 0;
     memset(s_srv_table_hash, 0, sizeof s_srv_table_hash);
     s_srv_created = s_srv_tables_reused = s_pso_binds = s_srv_binds = 0;
+    int shader_prefetch_pass=shader_pool_on();
+    if(shader_prefetch_pass){
+        shader_prefetch_generation++;rsx_prefetch_begin(&s_shader_seen);
+    }
     for (u32 _d = 0; _d < s_d3d.draw_count && _d < MAX_DRAWS; _d++) {
         D3D12DrawRecord* dr = &s_d3d.draws[_d];
         if (!dr->is_vp || dr->is_clear) continue;
@@ -5262,28 +5316,22 @@ static void render_frame(void)
         if (perf_on()) s_perf_srv += perf_now() - _sv0;
         if (phase_on()) s_phase.srv += perf_now() - _sv0;
         double _ps0 = (perf_on() || phase_on()) ? perf_now() : 0.0;
-        if (dr->fp_addr && !single_pso_on()) {
-            u32 udim[16][2]; u16 pso_n = 0;
-            vp_get_fp_pso(dr->vs_idx, dr->fp_addr, dr->blend_key, dr_num_rts(dr),
-                          dr_rt_dxgi(dr), dr->fp_ctrl, dr_alpha_key(dr),
-                          dr_unnorm(dr, udim), udim, dr->cmask, dr->cull,
-                          dr_cube_mask(dr), dr->ds_key, dr->fp_snap, &pso_n, dr);
-            /* If the program's structure changed after this draw was recorded
-             * (the guest rewrote ucode at the same address), the b1 snapshot's
-             * fp_constants[N] no longer matches the compiled shader -- redo it
-             * from the ucode that was just hashed. If the re-read still
-             * disagrees (the address now holds recycled memory: collect
-             * returns 0 or a different count), fall back to the constants
-             * captured when the PSO was built -- the shader reads
-             * fp_constants[pso_n] and zero-filling it renders black. */
-            if (pso_n && dr->fp_const_n != (u32)pso_n) {
-                vp_record_fp_b1(dr->cb_slot, dr);
-                if (dr->fp_const_n != (u32)pso_n)
-                    vp_serve_pso_consts(dr->cb_slot, dr, pso_n);
-            }
-        }
+        shader_prepare_draw(dr,shader_prefetch_pass);
         if (perf_on()) s_perf_pso += perf_now() - _ps0;
         if (phase_on()) s_phase.pso += perf_now() - _ps0;
+    }
+
+    if(shader_prefetch_pass){
+        shader_prefetch_active=0;
+        double shader_owner_begin=perf_now();
+        for(u32 d=0;d<s_d3d.draw_count && d<MAX_DRAWS;d++){
+            D3D12DrawRecord* dr=&s_d3d.draws[d];
+            if(dr->is_vp && !dr->is_clear)shader_compile_draw(dr);
+        }
+        if(perf_on())s_perf_pso+=perf_now()-shader_owner_begin;
+        if(phase_on())s_phase.pso+=perf_now()-shader_owner_begin;
+        if(shader_cache_stats())fprintf(stderr,"[FXCPOOL] queued=%u claimed=%u disk_hits=%u disk_stores=%u\n",
+            shader_queued,shader_claimed,shader_disk_hits,shader_disk_stores);
     }
 
     /* Transition render target to RENDER_TARGET state */
@@ -8161,6 +8209,7 @@ void rsx_d3d12_backend_shutdown(void)
     for(int i=0;i<s_d3d.vp_vs_n;i++){
         shader_forget_vs_source(s_d3d.vp_vs[i].disk_source);s_d3d.vp_vs[i].disk_source=NULL;
     }
+    shader_pool_finish();
     rsx_shader_cache_clear(&s_fp_bytecode,&s_fp_blob_ops);
     /* Per-draw decompiled VS cache had no teardown of its own. */
     for (int i = 0; i < s_d3d.vp_vs_n; i++)

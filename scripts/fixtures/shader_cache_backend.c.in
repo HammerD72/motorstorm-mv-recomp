@@ -34,7 +34,7 @@ static void shader_enqueue(const rsx_shader_key*k){(void)k;enqueue_calls++;}
 static int shader_claim(const rsx_shader_key*k,ID3DBlob**b){(void)k;claim_calls++;if(!claim_hit)return 0;*b=blob('W');return 1;}
 static int s_shader_disk;
 static void rsx_shader_disk_remove(int*c,const rsx_shader_key*k){(void)c;(void)k;removes++;}
-static double r36_last_fxc,r36_t_fxc_fp,r36_t_fxc_vp;static unsigned r36_n_fxc_fp,r36_n_fxc_vp;static int s_r38_prefetch;
+static double r36_last_fxc,r36_t_fxc_fp,r36_t_fxc_vp;static unsigned r36_n_fxc_fp,r36_n_fxc_vp;static int shader_prefetch_active;
 typedef struct ID3D12PipelineState ID3D12PipelineState;
 typedef struct{unsigned long(*Release)(ID3D12PipelineState*);} PsoVT;
 struct ID3D12PipelineState{PsoVT*lpVtbl;unsigned refs;};
@@ -51,7 +51,7 @@ static struct{ID3D12Device*device;int vp_vs_n;VPVSEntry vp_vs[2];}s_d3d={&dev,2,
 @WRAPPER@
 @RETRY@
 #define CHECK(x) do{checks++;if(!(x)){fprintf(stderr,"FAIL %d %s\n",__LINE__,#x);return 1;}}while(0)
-static void clear(void){rsx_shader_cache_clear(&s_fp_bytecode,&s_fp_blob_ops);disk_hit=claim_hit=compile_fail=compile_empty=device_removed=pso_failures=0;compiler_calls=stores=removes=enqueue_calls=claim_calls=creates=0;pso_error=E_FAIL;s_r38_prefetch=0;}
+static void clear(void){rsx_shader_cache_clear(&s_fp_bytecode,&s_fp_blob_ops);disk_hit=claim_hit=compile_fail=compile_empty=device_removed=pso_failures=0;compiler_calls=stores=removes=enqueue_calls=claim_calls=creates=0;pso_error=E_FAIL;shader_prefetch_active=0;}
 static HRESULT scenario(int fp_disk,int vs_disk,ID3DBlob**pb,ID3DBlob**vb,ID3D12PipelineState**pso){
  *pb=blob('D');*vb=blob('D');s_d3d.vp_vs[0].vs=*vb;s_d3d.vp_vs[0].disk_source=NULL;
  if(vs_disk){s_d3d.vp_vs[0].disk_source=(char*)malloc(3);memcpy(s_d3d.vp_vs[0].disk_source,"VS",3);s_vs_disk_source_bytes=3;}
@@ -60,9 +60,16 @@ static HRESULT scenario(int fp_disk,int vs_disk,ID3DBlob**pb,ID3DBlob**vb,ID3D12
 }
 static void cleanup(ID3DBlob*pb,ID3DBlob*vb,ID3D12PipelineState*pso){if(pb)release(pb);if(vb)release(vb);if(pso)pso_release(pso);free(s_d3d.vp_vs[0].disk_source);s_d3d.vp_vs[0].disk_source=NULL;s_vs_disk_source_bytes=0;clear();}
 int main(void){ID3DBlob*a=NULL,*b=NULL,*e=NULL;ID3D12PipelineState*pso=NULL;
- clear();CHECK(fp_compile_cached(1,"FP",&a,&e)==S_OK && a && compiler_calls==1 && stores==1);release(a);
- CHECK(fp_compile_cached(1,"FP",&a,&e)==S_OK && a && compiler_calls==1 && stores==1);release(a);clear();
- disk_hit=1;CHECK(fp_compile_cached(1,"FP",&a,&e)==S_OK && a && s_fp_disk_origin==1 && !compiler_calls);release(a);clear();
+ clear();shader_prefetch_active=1;CHECK(fp_compile_cached(1,"FP",&a,&e)==E_PENDING && !a && enqueue_calls==1 && !compiler_calls && !s_fp_bytecode.count);
+ disk_hit=1;CHECK(fp_compile_cached(1,"FP",&a,&e)==E_PENDING && !a && s_fp_bytecode.count==1);
+ shader_prefetch_active=0;CHECK(fp_compile_cached(1,"FP",&a,&e)==S_OK && a && s_fp_disk_origin==1 && !compiler_calls);release(a);clear();
+ claim_hit=1;CHECK(fp_compile_cached(1,"FP",&a,&e)==S_OK && a && s_fp_disk_origin==0 && !compiler_calls && stores==1);release(a);clear();
+ disk_hit=1;char* retained=NULL;
+ CHECK(shader_compile_vs("VS",&a,&e,&retained)==S_OK && a && retained && !compiler_calls);release(a);
+ s_vs_disk_source_bytes+=strlen(retained)+1;shader_forget_vs_source(retained);CHECK(!s_vs_disk_source_bytes);retained=NULL;clear();
+ disk_hit=1;s_vs_disk_source_bytes=RSX_VS_DISK_SOURCE_MAX;
+ CHECK(shader_compile_vs("VS",&a,&e,&retained)==S_OK && a && !retained && compiler_calls==1 && stores==1);release(a);
+ s_vs_disk_source_bytes=0;clear();
  compile_empty=1;CHECK(FAILED(fp_compile_cached(1,"FP",&a,&e)) && !a && !s_fp_bytecode.count);clear();
  compile_fail=1;CHECK(FAILED(fp_compile_cached(1,"FP",&a,&e)) && !a && e && !s_fp_bytecode.count);release(e);clear();
  pso_failures=1;CHECK(scenario(1,1,&a,&b,&pso)==S_OK && pso && creates==2 && compiler_calls==2 && removes==2 && stores==2);

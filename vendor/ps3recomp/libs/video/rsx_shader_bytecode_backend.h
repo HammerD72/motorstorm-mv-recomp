@@ -3,6 +3,7 @@
 #define RSX_SHADER_BYTECODE_BACKEND_H
 #include "rsx_shader_cache.h"
 #include "rsx_shader_disk_backend.h"
+#include "rsx_shader_pool_backend.h"
 static rsx_shader_cache s_fp_bytecode;
 static u64 s_fp_bytecode_hits,s_fp_bytecode_misses,s_fp_bytecode_failures,s_fp_bytecode_refusals;
 static void fp_blob_retain(void* context,void* pointer)
@@ -21,9 +22,18 @@ static HRESULT fp_compile_cached(u32 fp,const char* source,ID3DBlob** blob,ID3DB
     rsx_shader_key key={source,strlen(source),"guest_fp","main","ps_5_0",0,0};
     *error=NULL;*blob=NULL;s_fp_disk_origin=0;
     *blob=(ID3DBlob*)rsx_shader_cache_get(&s_fp_bytecode,&key,&s_fp_blob_ops);
-    if(*blob){s_fp_disk_origin=rsx_shader_cache_tag(&s_fp_bytecode,&key);s_fp_bytecode_hits++;return S_OK;}
+    if(*blob){s_fp_disk_origin=rsx_shader_cache_tag(&s_fp_bytecode,&key);if(!shader_prefetch_active)s_fp_bytecode_hits++;return S_OK;}
+    if(shader_prefetch_active){
+        if(shader_disk_load(&key,blob)){
+            if(rsx_shader_cache_put(&s_fp_bytecode,&key,*blob,(*blob)->lpVtbl->GetBufferSize(*blob),&s_fp_blob_ops))
+                rsx_shader_cache_set_tag(&s_fp_bytecode,&key,1);
+            (*blob)->lpVtbl->Release(*blob);*blob=NULL;
+        }else shader_enqueue(&key);
+        return E_PENDING;
+    }
     s_fp_bytecode_misses++;HRESULT hr;
     if(shader_disk_load(&key,blob)){hr=S_OK;s_fp_disk_origin=1;}
+    else if(shader_claim(&key,blob)){hr=S_OK;shader_disk_store(&key,*blob);}
     else{
         hr=fp_compile_uncached(&key,blob,error);
         if(SUCCEEDED(hr) && *blob)shader_disk_store(&key,*blob);

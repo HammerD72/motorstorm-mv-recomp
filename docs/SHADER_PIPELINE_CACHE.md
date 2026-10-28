@@ -40,3 +40,54 @@ These tests establish storage/recovery behavior, not a native game deadline or
 minimum FPS. The prior R48 owner runs motivate this port; the new public source
 candidate still requires owner acceptance. Readable-span caching and unrelated
 renderer fixes are outside this change.
+
+## Compile-only workers and prefetch
+
+RSX_FXC_THREADS defaults to min(8, logical processors minus one), matching R48.
+One logical processor uses synchronous compilation. The valid override is
+0..16; 0 disables the pool. Compile flags remain 0/0. This default reduces cold
+race-start serialization while retaining an explicit synchronous fallback.
+
+Workers receive complete deep-copied compiler inputs, and return only compiler
+blobs. They do not read guest memory, modify renderer/disk caches or call D3D12
+device functions. The pool bounds itself to 192 jobs, 16 MiB source and 32 MiB
+completed blobs. Exact source/name/entry/target/flags comparisons resolve hash
+collisions. Failed compilation or capacity refusal uses the synchronous path.
+The renderer claims results and creates PSOs in the original draw order.
+
+The existing view-resolution walk queues compile-only work. A second owner
+walk creates any missing PSOs after the views are resolved and before command
+replay. Speculative mode is scoped to one owner helper call, so an early frame
+exit cannot leave it enabled. Prefetch cannot insert a failed/negative PSO or
+create a PSO. It can warm successful bytecode. A 4096-slot/16 MiB exact-key table
+bounds duplicate suppression; full/oversized keys never suppress work.
+
+The combined fork still emits literal fragment constants, so its prefetch
+identity includes the original program payloads. This curated game uses buffered
+constants: canonical instruction bytes preserve inline-constant positions but
+zero those payloads, and exact rewrite state (including alias masks/remaps,
+dimensions and shader controls) completes the key. The existing 4096-byte
+program admission limit and both decompiler ABIs are unchanged. Shader extent
+and other renderer corrections require separate changes.
+
+Shutdown stops new work and joins workers/claimants. A timed-out join retains
+pool storage and immutable keys for any still-running callback; no device or
+renderer state is passed to workers. Backend teardown may safely retain this
+compile-only storage until process exit. No compiler deadline is guaranteed.
+
+The standalone checks add real Windows worker ordering, lease/reclamation and
+shutdown tests; actual coordinator callbacks with real FXC and an authored
+owner/device spy; pool-disabled fallback; exact-prefetch collision/overflow
+controls; and a wrong-owner negative control. The spy checks the actual owner
+helper, while source checks bound the production worker callbacks and place the
+prefetch exit before PSO creation. This is not a WARP/native race acceptance run.
+
+The compile-only preparation pass and explicit owner-resolution walk run
+independently of the optional legacy duplicate-lookup setting. In the curated
+game, RSX_PSO_SINGLE_LOOKUP still defaults to 1; with the pool disabled it
+continues to select replay-only lookup (0 retains the old extra prepass).
+It cannot suppress required pool work. The integration fixture executes the
+actual preparation/draw functions with the production default lookup and
+worker settings, real FXC and an authored device spy. Restoring the former
+consumer gate must fail the queued-work assertion. Disk storage is disabled
+in that cold-source fixture to make a compile miss deterministic.
