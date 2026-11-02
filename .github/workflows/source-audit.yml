@@ -203,6 +203,8 @@ jobs:
       - run: python scripts/check_repository.py --self-test
       - run: python scripts/check_havok_observer.py
       - run: python scripts/check_bike_observer.py
+      - name: Independent MRT masks and blending (WARP)
+        run: python scripts/check_rsx_mrt.py
       - name: Vertex homogeneous clipping pixel regression (WARP)
         run: python scripts/check_rsx_clip.py
       - name: Offline native stack replay and actual metadata negative control
