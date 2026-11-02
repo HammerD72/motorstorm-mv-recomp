@@ -48,16 +48,19 @@ static HRESULT shader_create_pso(D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc,
         rsx_shader_key key={fp_source,strlen(fp_source),"guest_fp","main","ps_5_0",0,0};
         rsx_shader_disk_remove(&s_shader_disk,&key);
         rsx_shader_cache_remove(&s_fp_bytecode,&key,&s_fp_blob_ops);
-        (*ps)->lpVtbl->Release(*ps);*ps=NULL;
-        ID3DBlob* error=NULL;begin=perf_now();
-        hr=fp_compile_uncached(&key,ps,&error);
+        ID3DBlob *replacement=NULL,*error=NULL;begin=perf_now();
+        hr=fp_compile_uncached(&key,&replacement,&error);
         (void)begin;
         if(error){
             if(FAILED(hr))fprintf(stderr,"[SHADERCACHE] FP recovery compile failed: %s\n",
                 (const char*)error->lpVtbl->GetBufferPointer(error));
             error->lpVtbl->Release(error);
         }
-        if(FAILED(hr) || !*ps)return FAILED(hr)?hr:E_FAIL;
+        if(FAILED(hr) || !replacement){
+            if(replacement)replacement->lpVtbl->Release(replacement);
+            return FAILED(hr)?hr:E_FAIL;
+        }
+        (*ps)->lpVtbl->Release(*ps);*ps=replacement;
         shader_disk_store(&key,*ps);
         rsx_shader_cache_put(&s_fp_bytecode,&key,*ps,(*ps)->lpVtbl->GetBufferSize(*ps),&s_fp_blob_ops);
         desc->PS.pShaderBytecode=(*ps)->lpVtbl->GetBufferPointer(*ps);

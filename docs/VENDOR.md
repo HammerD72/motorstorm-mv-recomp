@@ -1041,3 +1041,60 @@ headers stay byte-identical; each backend retains its existing shader ABI,
 texture state and draw ordering. Local own-fork pool component a9f79d8307ce3840beb226890bd25e2a7f4e2c41 contains this integration. The existing view-resolution pass queues work, then an owner
 walk creates PSOs before command replay. Real FXC/worker tests and an authored
 owner/device spy cover the coordinator; native acceptance remains separate.
+## Exact SPU float values and scoped SIMD
+
+This selective vendor sync ports runtime `057c56c` and `daeb1575`, preserving
+Robin Fröhlich’s authorship. The [value contract](SPU_FLOAT_VALUES.md) records
+the finite exponent255 range, exact scalar fallback, SIMD scope and authored
+checks. Original vendor test/workflow paths are omitted; curated runners
+exercise the actual helpers and keep existing interpreter assertions. Native
+menu/race effects require the separate owner trial.
+
+## SPURS admission observations (#219)
+
+Fork-first modular and combined commit `bfed7562da0d531c16e9fed37ec1cebacfb1d01d`
+adds default-OFF policy admission/worker and lifetime observations. Selected
+changes to the curated scheduler and CMake reverse to their pre-curation sources
+after newline normalization; unchanged lines retain their original bytes. The
+authored API header and observer core are copied from the fork, while the public
+scheduler fixture and runner preserve their existing dependencies and diagnostics.
+No generated guest code or original game data is included.
+The combined fork admission run `41224503133` passed on Windows, Linux and
+macOS; native workload run `41224503096` also passed.
+
+`scripts/check_spurs_scheduler.py --observe --mutants --observer-mutants`
+executes the actual curated scheduler and policies with authored dependencies,
+checks standalone production syntax and tests nine observer faults alongside
+the three existing scheduler controls. The source audit runs these checks on
+Linux and Windows. They do not establish game bindings, capture overhead or an
+FPS improvement. The [timeline report](research/NATIVE_JOB_TIMELINE.md) records
+the remaining gates and limitations.
+
+### Bounded sized observation payloads
+
+The sized trace store is curated from fork modular and combined commit
+`4bbc4e827f60692922056348b88ddd833a1c5360`. Its header and implementation are
+identical to the fork; the authored fixture and runner only adapt public paths.
+Fork storage runs `41226175836` and `41226179389` passed on Windows, Linux and
+macOS. The public source audit runs the real store and four negative controls on
+Linux and Windows. This is storage only: it does not install an observer, bind
+a game job, measure capture overhead, or establish an FPS improvement.
+
+### SPURS workload attribute contention
+
+Issue #227's context-aware ninth-argument handler is curated from fork modular
+and combined commit `49b20c9d8c13852ea01715d5021d06180156120d`. The fork HLE
+and native workload runs `41231041610`, `41231041521`, `41231064697` and
+`41231064621` passed on Windows, Linux and macOS. The public generator receives
+the matching registration change, and authored controls exercise actual HLE
+dispatch and scheduler admission. The selected local generated tree did not
+contain a pre-existing HLE table, so the build uses the public generator; a
+separately supplied old table would need the context registration regenerated.
+No game workload request, frame-time improvement or race result is established
+by these authored tests.
+
+The fork combined merge `a985009654ad1e63527ec8aba2aa2fdbcbe75d0c` also
+includes modular recovery fix `a25ff1d6`, retaining the original fragment blob
+if recovery compilation fails. The curated header and fixture match the fork;
+Windows offline shader pipeline checks cover failure and empty compiler output.
+Native race and performance effects remain unverified.

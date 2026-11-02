@@ -212,10 +212,39 @@ that reference reconstruction; its original digest is unchanged. The ownership
 fixture passes 18 checks with its existing cross-image wildcard diagnostic
 visible. These checks measure neither capture overhead nor game frame times.
 
+## SPURS admission and worker observations
+
+The default-OFF `PS3RECOMP_SPURS_SCHEDULER_OBSERVATION` option can expose real
+instance reservation/result/closure, workload registration/removal, policy
+admission and worker invocation/return. It assigns nonwrapping process-local
+instance, workload-generation and dispatch identities. Exhaustion yields zero
+and an explicit invalid-identity flag. A capture owner must supply a run identity
+and one shared monotonic clock. Thread-local access identifies the current host
+worker assignment; it does not establish that an arbitrary SPU context or job
+belongs to it. A direct policy call outside the pool has no such assignment.
+
+Admission metadata is copied under the existing scheduler locks and delivered
+after their release. Its time interval starts before the admission pass acquires
+the instance lock and ends after release. Multiple admissions share a pass; a
+worker can begin or return before that pass is delivered. Ready/signal values
+are sequential demand observations, not proof of job eligibility. Policy return
+is not individual job completion. Failed or BUSY lifecycle API attempts are not
+reported as completed transitions; successful instance closure retires its
+remaining workloads. Filtering, clock failures, unknown bindings and missing
+events must remain visible. Callbacks must not reenter or mutate the runtime,
+allocate, format, perform I/O or take application locks.
+
+The authored fixture executes the real scheduler and policies in both build modes.
+It verifies physical lane and lifetime identity against the actual policy context,
+reuse and exhaustion, direct-call absence, filtering, actual error returns and
+same-thread lock witnesses. Nine compiled observer mutants and the three existing
+scheduler regressions must fail their particular assertions. The test dependencies
+are authored scaffolding, not proof of full game synchronization or capture cost.
+
 ## Remaining integration gates
 
-1. Connect the atomic and execution observations above and add generic opt-in
-   admission/worker boundaries on the fork. Preserve native-leaf admission
+1. Connect the atomic, execution and admission observations above to a capture
+   owner and bounded recorder. Preserve native-leaf admission
    and all original failures. Event
    capture must not run guest work, allocate, format or take application locks.
    Qualify precise source attribution in interpreted and lifted paths: a lifted
@@ -239,3 +268,51 @@ Stable30 and graphics acceptance (#27/#137), the critical producer's frame-time
 cost (#155), and this timeline (#219) remain open. Vulkan and retail mstream
 remain parked. Neither the recorder nor this static binding makes the game
 faster by itself.
+
+### Complete observation payload storage
+
+The fixed job-trace record cannot hold an entire atomic observation. The new
+bounded sized store accepts an owner-selected fixed payload size and preserves
+each payload in one release-published slot, without fragments, allocation or
+I/O on append. It exposes pending slots and saturating loss counters, never
+reuses a slot, and requires producer and consumer quiescence before destruction.
+The owner must define the schema, clocks, run and lifetime identities, and
+interpret losses; this store does not supply any of those. It is not yet
+connected to a game capture. The actual store fixture tests full authored atomic
+snapshots, concurrent writers, pending publication, loss, counter saturation,
+and odd-sized records; four compiled controls must fail specific assertions.
+
+The game-side `job_capture` owner now connects the four installation points to
+the sized store with one supplied clock and run ID. Each record includes a
+thread ID and, when available, the current host-worker assignment. The latter
+is not proof that an arbitrary observed context belongs to that worker. Failed
+installation rolls back earlier installations; startup and shutdown require all
+producers to be quiescent and no other observer owner. Optional owner-provided
+atomic, execution and scheduler filters execute before event capture. The owner
+reports which filters were configured and saturating per-source exclusion counts;
+excluded events are missing coverage, not proof of absent work. Filters must be
+concurrent-safe and obey the observer callback restrictions. Null accepts all.
+Finite capacity and loss must be accounted for in any capture.
+
+The owner also provides a caller-thread private stream snapshot: a header,
+indexed completed records and a footer containing the before/after counts,
+pending slots, filters and losses. The reader checks the format, record indices
+and total extent before delivering records. Truncated files and consumer errors
+are rejected. The format uses the native ABI, has no payload checksum, and
+`fflush` is not a durability guarantee. The caller owns the stream and must
+close and independently preserve it; game startup and a live trigger before
+guard termination are still required. The view remains non-atomic and cannot
+establish missing job dependencies or a causal order.
+
+An explicit visit API scans the initial reservation horizon and records pending
+slots, consumer failures and metadata before and after the scan. Unexpected
+append failures use a saturating counter; full-store losses use the store's drop
+count. It is a live,
+partial view; callbacks can arrive out of order, writers can complete after a
+slot was scanned, and the layout contains native ABI fields rather than a
+portable file format. The actual owner fixture checks concurrent complete
+payloads, installation rollback, identity flags, loss and partial visits, with
+five specific negative controls. A second fixture links the actual execution and
+scheduler observer implementations; the atomic installers there are authored
+test dependencies. No game startup, durable capture, game-specific job identity,
+overhead measurement or native run is provided by this owner yet.

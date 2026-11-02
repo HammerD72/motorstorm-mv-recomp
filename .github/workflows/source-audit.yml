@@ -92,6 +92,44 @@ jobs:
           path: |
             build/self-tests/fp-snapshot/**/*.log
             build/self-tests/fp-snapshot/**/*.json
+      - name: Actual SPURS admission observations and negative controls
+        run: python scripts/check_spurs_scheduler.py --observe --mutants --observer-mutants --output build/self-tests/spurs-admission-observers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-admission-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-admission-observers/**/*.log
+            build/self-tests/spurs-admission-observers/**/*.json
+      - name: SPURS workload attribute HLE dispatch
+        run: python scripts/check_spurs_attribute_hle.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-attribute-hle-${{ runner.os }}
+          retention-days: 5
+          path: build/self-tests/spurs-attribute-hle/*.log
+      - name: Game job capture owner controls
+        run: python scripts/check_job_capture.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: job-capture-owner-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/job-capture-owner/*.log
+            build/self-tests/job-capture-owner/*.json
+      - name: Sized trace payloads and negative controls
+        run: python scripts/check_sized_trace.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sized-trace-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/sized-trace/**/*.log
+            build/self-tests/sized-trace/**/*.json
       - name: SPU execution observations and native admission controls
         run: python scripts/check_spu_execution_observer.py --mutants --syntax
       - uses: actions/upload-artifact@v4
@@ -142,6 +180,8 @@ jobs:
           path: |
             build/self-tests/spurs-policy-counters/**/*.log
             build/self-tests/spurs-policy-counters/**/*.json
+      - name: Exact SPU float values and scoped SIMD
+        run: python scripts/check_spu_float.py
       - name: Productive SPU interrupt returns
         run: python scripts/check_spu_iret_progress.py
       - name: Interpreter thread reporting isolation
@@ -163,6 +203,8 @@ jobs:
       - run: python scripts/check_repository.py --self-test
       - run: python scripts/check_havok_observer.py
       - run: python scripts/check_bike_observer.py
+      - name: Independent MRT masks and blending (WARP)
+        run: python scripts/check_rsx_mrt.py
       - name: Vertex homogeneous clipping pixel regression (WARP)
         run: python scripts/check_rsx_clip.py
       - name: Offline native stack replay and actual metadata negative control
@@ -259,6 +301,44 @@ jobs:
           path: |
             build/self-tests/fp-snapshot/**/*.log
             build/self-tests/fp-snapshot/**/*.json
+      - name: Actual SPURS admission observations and negative controls
+        run: python scripts/check_spurs_scheduler.py --observe --mutants --observer-mutants --output build/self-tests/spurs-admission-observers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-admission-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-admission-observers/**/*.log
+            build/self-tests/spurs-admission-observers/**/*.json
+      - name: SPURS workload attribute HLE dispatch
+        run: python scripts/check_spurs_attribute_hle.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-attribute-hle-${{ runner.os }}
+          retention-days: 5
+          path: build/self-tests/spurs-attribute-hle/*.log
+      - name: Game job capture owner controls
+        run: python scripts/check_job_capture.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: job-capture-owner-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/job-capture-owner/*.log
+            build/self-tests/job-capture-owner/*.json
+      - name: Sized trace payloads and negative controls
+        run: python scripts/check_sized_trace.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sized-trace-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/sized-trace/**/*.log
+            build/self-tests/sized-trace/**/*.json
       - name: SPU execution observations and native admission controls
         run: python scripts/check_spu_execution_observer.py --mutants --syntax
       - uses: actions/upload-artifact@v4
@@ -309,6 +389,8 @@ jobs:
           path: |
             build/self-tests/spurs-policy-counters/**/*.log
             build/self-tests/spurs-policy-counters/**/*.json
+      - name: Exact SPU float values and scoped SIMD
+        run: python scripts/check_spu_float.py
       - name: Productive SPU interrupt returns
         run: python scripts/check_spu_iret_progress.py
       - name: Interpreter thread reporting isolation
