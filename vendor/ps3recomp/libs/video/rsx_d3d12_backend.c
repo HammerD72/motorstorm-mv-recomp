@@ -19,8 +19,8 @@
 #include <time.h>
 #include "rsx_d3d12_backend.h"
 #include "rsx_index_strip.h"
-#include "rsx_upload_buffer.h"
 #include "rsx_record_batch.h"
+#include "rsx_upload_buffer.h"
 #include "rsx_primitives.h"
 #include "rsx_vertex_fetch.h"
 #include "rsx_texture_layout.h"
@@ -6076,7 +6076,7 @@ static void render_frame(void)
                 if (phase_on()) { s_phase.draws++; s_phase.small_draws += is_small; }
                 phase_gpu_draw(is_small, 0);
                 cpu_surface_written(cur_rt,cur_m);
-                gpu_pso_draw(dpso ? dpso : vpso, dr->vertex_count, dr->vb_byte_offset / 256);
+                gpu_pso_draw(next_pso, dr->vertex_count, dr->vb_byte_offset / 256);
                 if (dr->rt_off == 0) rsx_record_batch_display_write(&s_record_batch);
                 phase_gpu_draw(is_small, 1);
                 /* VP_SUBMIT=<N>: prove the VP pass actually reaches the GPU.
