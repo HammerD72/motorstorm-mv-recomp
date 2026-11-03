@@ -1107,3 +1107,13 @@ in issue #24 included this change, but it was absent from the game vendor copy.
 The authored GPU fixture tests the production decompiler on WARP and hardware;
 its missing-instruction control must fail. The Windows source audit runs WARP.
 A new native comparison is required to establish the visual effect in this build.
+
+### Ordered record-capacity drains
+
+Issue #130 selectively ports fork combined commits
+`19805574fe8291e4f187c1683d5c7a20b985dc57` and
+`09eb63f4e275659a5752b48e279e7c76f54984f6` into the diverged DX12 backend.
+A full batch drains without a capacity-triggered present, preserves backing
+initialization and display-write state, and checks GPU retirement around slot
+reuse. Authored ordered-batch and extracted retirement fixtures include negative
+controls; they do not establish GPU ordering or native race presentation.
