@@ -108,7 +108,12 @@ def main():
             old = subprocess.check_output(['git', '-C', str(ROOT), 'show',
                 args.baseline+':vendor/ps3recomp/libs/video/rsx_d3d12_backend.c']).decode('utf-8')
             old_bodies = '\n'.join(function(old, 'static u32 '+name+'(') for name in NAMES)
-            build_run('baseline', template.replace('@UPLOAD_FUNCTIONS@', old_bodies),
+            baseline_template = template
+            if 'rsx_vertex_fetch_prepare' not in old_bodies:
+                baseline_template = baseline_template.replace(
+                    'const rsx_vertex_fetch_batch* b, u32 k, VPSlot* out)\n{ if (b->state != s) abort();',
+                    'u32 k, VPSlot* out)\n{ (void)s;')
+            build_run('baseline', baseline_template.replace('@UPLOAD_FUNCTIONS@', old_bodies),
                       options=['--strip-only'], expected=1,
                       diagnostic='strip expected 6 vertices at capacity, got 0')
             result['baseline'] = args.baseline
