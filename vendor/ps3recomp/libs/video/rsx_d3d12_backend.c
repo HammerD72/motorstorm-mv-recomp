@@ -45,6 +45,7 @@
 #include <d3dcompiler.h>
 #include "rsx_mrt_masks.h"
 #include "rsx_d3d12_mrt.h"
+#include "rsx_d3d12_guest_sampler.h"
 static u32 rsx_record_color_masks(const rsx_state* state)
 {
     return state ? rsx_mrt_color_masks(state->color_mask, state->color_mask_mrt) : 15u;
@@ -140,6 +141,8 @@ typedef struct {
                          * surface come out with black patches and banding. */
         int set;
     } tex[16];
+    rsx_guest_sampler_regs sampler[16]; /* guest ADDRESS/FILTER/CONTROL0/BORDER
+                                         * per unit at record time */
     int tex_rt[16];     /* pre-pass: OffRT index sampled by unit, -1 = none */
     int tex_slot;       /* legacy single-slot path (atlas); -1 = none */
     int vs_idx;         /* VPVSEntry slot for this draw's vertex program (-1 = primary) */
@@ -1358,7 +1361,7 @@ static int init_d3d12(u32 width, u32 height)
         srv_range.BaseShaderRegister = 0;
         srv_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-        D3D12_ROOT_PARAMETER rp[3] = {0};
+        D3D12_ROOT_PARAMETER rp[4] = {0};
         rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;   /* b0 = vp_c bank */
         rp[0].Descriptor.ShaderRegister = 0;
         rp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
@@ -1370,22 +1373,23 @@ static int init_d3d12(u32 width, u32 height)
         rp[2].Descriptor.ShaderRegister = 1;
         rp[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-        D3D12_STATIC_SAMPLER_DESC samp[16] = {0};
-        for (int _s = 0; _s < 16; _s++) {
-            samp[_s].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-            samp[_s].AddressU = samp[_s].AddressV = samp[_s].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-            samp[_s].ShaderRegister = (UINT)_s;
-            samp[_s].MaxLOD = D3D12_FLOAT32_MAX;
-            samp[_s].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        }
-        /* s0 keeps point/clamp: the dbgfont atlas PS samples glyph cells and
-         * linear filtering bleeds neighbouring glyphs. */
-        samp[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-        samp[0].AddressU = samp[0].AddressV = samp[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        /* s0-s15 come from a per-draw guest sampler table (root parameter 3,
+         * see rsx_d3d12_sampler_tables.inc). Fallback atlas/colour pipelines
+         * bind the legacy table: s0 point/clamp for the dbgfont glyph atlas,
+         * others linear/wrap. */
+        D3D12_DESCRIPTOR_RANGE sampler_range = {0};
+        sampler_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+        sampler_range.NumDescriptors = 16;
+        sampler_range.BaseShaderRegister = 0;
+        sampler_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        rp[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        rp[3].DescriptorTable.NumDescriptorRanges = 1;
+        rp[3].DescriptorTable.pDescriptorRanges = &sampler_range;
+        rp[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rd = {0};
-        rd.NumParameters = 3; rd.pParameters = rp;
-        rd.NumStaticSamplers = 16; rd.pStaticSamplers = samp;
+        rd.NumParameters = 4; rd.pParameters = rp;
+        rd.NumStaticSamplers = 0; rd.pStaticSamplers = NULL;
         rd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
         ID3DBlob* sig = NULL; ID3DBlob* err = NULL;
@@ -3860,8 +3864,11 @@ static void vp_serve_pso_consts(u32 slot, D3D12DrawRecord* dr, u32 pso_n)
                   dr->fp_addr, pso_n, 10); } }
 }
 
+#include "rsx_d3d12_sampler_tables.inc"
+
 static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
 {
+    guest_sampler_record(dr);
     const rsx_state* st = s_d3d.current_rsx_state;
     if (!s_d3d.vp_cb_mapped || !st || slot >= MAX_DRAWS) return;
     (void)vs_idx;
@@ -4819,6 +4826,7 @@ static void render_frame(void)
      * polygons). These workloads are a few draws/frame, so full serialisation
      * costs little. */
     wait_for_gpu();
+    guest_sampler_retire();   /* GPU idle: last frame's sampler tables are free */
     if (phase_on()) s_phase.drain = perf_now() - ph0;
     phase_gpu_collect();
 
@@ -5512,6 +5520,7 @@ static void render_frame(void)
                     (void*)vpso, (void*)s_d3d.vp_root_sig); } }
         if (any && vpso) {
             s_d3d.cmd_list->lpVtbl->SetGraphicsRootSignature(s_d3d.cmd_list, s_d3d.vp_root_sig);
+            s_sampler_bound = NULL;   /* heaps are re-set below; force the first table bind */
             s_d3d.cmd_list->lpVtbl->SetPipelineState(s_d3d.cmd_list, vpso);
             s_d3d.cmd_list->lpVtbl->IASetPrimitiveTopology(s_d3d.cmd_list, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             s_d3d.cmd_list->lpVtbl->SetGraphicsRootConstantBufferView(s_d3d.cmd_list, 0,
@@ -5773,6 +5782,9 @@ static void render_frame(void)
                         rt != cur_m[0] && rt != cur_m[1] && rt != cur_m[2])
                         off_rt_transition(rt, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 }
+                /* Guest sampler table (s0-s15). A heap change invalidates the
+                 * bound SRV table, so force it to be set again. */
+                if (guest_sampler_bind(dr, dpso != NULL)) bound_srv = 0;
                 D3D12_GPU_DESCRIPTOR_HANDLE gh = gh_base;
                 gh.ptr += (u64)s_draw_srv_base[d] * s_d3d.srv_inc;
                 if (!bind_reuse_on() || gh.ptr != bound_srv) {
@@ -7632,6 +7644,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
                          | (s_d3d.current_rsx_state->alpha_ref & 0xFFu),
                 arefnow = s_d3d.current_rsx_state->alpha_ref;
             if (pv->is_vp && pv->topology == RSX_TOPOLOGY_TRIANGLES &&
+                guest_sampler_matches(pv) &&
                 pv->fp_addr == fpnow &&
                 pv->blend_key == rsx_blend_key(s_d3d.current_rsx_state,
                     s_d3d.current_rsx_state ? s_d3d.current_rsx_state->blend_enable : 1) &&
@@ -7794,6 +7807,7 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
         u32 fpnow = s_d3d.current_rsx_state
                     ? s_d3d.current_rsx_state->shader_program : 0;
         if (pv->is_vp && pv->topology == RSX_TOPOLOGY_TRIANGLES &&
+            guest_sampler_matches(pv) &&
             pv->fp_addr == fpnow &&
             pv->blend_key == rsx_blend_key(s_d3d.current_rsx_state,
                 s_d3d.current_rsx_state ? s_d3d.current_rsx_state->blend_enable : 1) &&
