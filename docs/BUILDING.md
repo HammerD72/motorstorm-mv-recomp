@@ -1,6 +1,6 @@
 # Setup and build
 
-Developer tooling, not a ready-to-play distribution. The initial embedded SPU stage does **not** recreate all 24 private images currently used. Extra firmware codecs, runtime-built PM and captured DSP modules need separate inputs/stages. An automated clean-clone boot has not been verified.
+Developer tooling, not a ready-to-play distribution. The SPU stage recreates the embedded images 1-3 and job modules 210-219 from the named debug EBOOT, but **not** all 24 private images currently used. Firmware codecs and captured DSP modules need separate inputs/stages. An automated clean-clone boot has not been verified.
 
 ## Target and native architecture
 
@@ -63,7 +63,13 @@ python scripts/project.py generate --stage ppu
 python scripts/project.py generate --stage spu
 ```
 
-PPU: loader/import metadata, named executable .symtab bounds, preserved lifter with HLE imports and C++ nonlocal jumps. Stripped retail needs independently validated function metadata. SPU: embedded ELF extraction and build_spu_workloads. Review unsupported-instruction diagnostics and registration; this is only the initial set.
+PPU: loader/import metadata, named executable .symtab bounds, preserved lifter with HLE imports and C++ nonlocal jumps. Stripped retail needs independently validated function metadata. SPU: embedded ELF extraction, symtab-named job/policy extraction (`scripts/spu/extract_ms1_named.py`, identity-checked against `scripts/spu/jobmod_meta.json`), build_spu_workloads and the job-module lift. Review unsupported-instruction diagnostics and registration; firmware codecs (9-13) and DSP captures (14, 15, 20, 21) remain outside this stage.
+
+The named extractor requires `--out` to be absent or completely empty. Its
+`--images` directory may contain the class-A ELFs, but an existing policy ELF
+is preserved by refusing extraction. All named inputs are validated before
+publication; a write failure removes only files and directories created by
+that invocation. Move previous outputs aside before regenerating.
 
 Additional scripts accept explicit inputs/outputs; inspect `--help`:
 
@@ -158,3 +164,29 @@ decoding before filtering, clamp/wrap, remapping, named units and LOD/bias;
 it also rejects insufficient source capacity and cube overlap. Logs and hashes
 remain in ignored `temp/checks/rsx-alias-*`. This is a sampling-contract test,
 not native race or performance acceptance.
+
+## VP upload capacity regression
+
+`python scripts/check_rsx_vp_upload.py` compiles the six actual VP upload
+functions, the shared two-parity growth helper and the actual retirement gate
+against authored vertex/storage/fence adapters. It checks 128 complete uploads
+over 16 schedules, preserving earlier bytes in both halves across repeated
+growth. It also covers allocation/retirement rollback and arithmetic limits,
+and requires independently broken parity-copy and unchecked-retirement controls
+to fail. `--baseline 614798b9f2348e08e9e54c95fb1b4c111409fe2f` must reproduce
+the original strip returning zero where six vertices are required; that revision
+must exist locally. The ordinary command requires no historical Git objects.
+
+Windows uses the normal clang-cl setup. For a GNU-style compiler, including
+MinGW on Windows, set `CC=clang` or use `--cc clang`. On Linux, the default is
+`CC` or `cc`. Python 3.10+ and a C11 compiler suffice; no game inputs, native
+game executable or GPU are used. Source/executable hashes and full logs stay
+under `temp/checks/vp-upload-*`. The Windows/Linux source workflow runs the
+ordinary command, but wiring a job is not a hosted test result.
+
+The existing `check_rsx_restart.py` and `check_rsx_indexed_strip.py` also accept
+GNU-style `CC` on Windows. Their original restart, decoded-attribute, winding,
+split-packet and cache-work checks remain; the indexed boundary check now
+requires the full draw and preserved prior bytes after growth. These tests do
+not prove GPU resource lifetime or presentation; see the qualified
+[vendor adoption](VENDOR.md#vp-upload-capacity-adoption-issue-129).
