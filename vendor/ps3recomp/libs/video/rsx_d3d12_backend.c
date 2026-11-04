@@ -145,6 +145,11 @@ typedef struct {
     } tex[16];
     rsx_guest_sampler_regs sampler[16]; /* guest ADDRESS/FILTER/CONTROL0/BORDER
                                          * per unit at record time */
+    /* Native D24 reads (RSX_DEPTH_TEXTURE=1, rsx_depth_sample.h): resolved
+     * once per batch after every depth attachment is prepared. */
+    rsx_depth_sample_view depth_view[16];
+    u8 depth_sampled_slot[16];  /* depth_cache slot read by the unit, 0 = none */
+    u32 depth_sample_mask;
     int tex_rt[16];     /* pre-pass: OffRT index sampled by unit, -1 = none */
     int tex_slot;       /* legacy single-slot path (atlas); -1 = none */
     int vs_idx;         /* VPVSEntry slot for this draw's vertex program (-1 = primary) */
@@ -296,6 +301,7 @@ typedef struct {
                              * -- MotorStorm's blur served 0 of 20). */
     u64 ds_key;              /* packed guest depth+stencil state (PSO key)   */
     u64 alias_key;          /* typed render-target sampling and remap identity */
+    u64 native_depth_key;   /* rsx_depth_sample_key of the draw's D24 views */
     u32 cube_mask;          /* which units are cube textures (PSO key): the HLSL
                              * declares those samplers as TextureCube, so a cube
                              * and a 2D variant of the same program are different
@@ -2546,14 +2552,16 @@ static DXGI_FORMAT dr_rt_dxgi(const D3D12DrawRecord* dr)
 static int vp_fp_entry_matches(const VPFPEntry* q, u32 fp_addr, u32 vs_hash,
                                u32 blend, int nrt, u32 rtfmt, int exp32,
                                u64 ucode_hash, u32 cmask, u32 cull, u32 alpha_key,
-                               u32 unnorm_key, u32 cube_mask, u64 ds_key, u64 alias_key)
+                               u32 unnorm_key, u32 cube_mask, u64 ds_key, u64 alias_key,
+                               u64 native_depth_key)
 {
     return q->fp_addr == fp_addr && q->vs_hash == vs_hash &&
            q->gen == s_d3d.vp_gen && q->blend == blend && q->nrt == nrt &&
            q->rtfmt == rtfmt && q->exp32 == exp32 &&
            q->ucode_hash == ucode_hash && q->cmask == cmask && q->cull == cull &&
            q->alpha_key == alpha_key && q->unnorm_key == unnorm_key && q->alias_key == alias_key &&
-           q->cube_mask == cube_mask && q->ds_key == ds_key;
+           q->cube_mask == cube_mask && q->ds_key == ds_key &&
+           q->native_depth_key == native_depth_key;
 }
 
 static VPFPEntry* vp_fp_cache_acquire(void)
@@ -2685,6 +2693,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         }
     }
     u64 alias_key = rsx_texture_alias_key(alias_mask, alias_remap, 1u);
+    const u64 native_depth_key = dr->depth_sample_mask ? rsx_depth_sample_key(dr->depth_view) : 0;
     if (nrt < 1) nrt = 1; if (nrt > 4) nrt = 4;
     if (rtfmt == 0) rtfmt = DXGI_FORMAT_R8G8B8A8_UNORM;
     extern uint8_t* vm_base;
@@ -2738,7 +2747,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         if (s_d3d.vp_fp[i].fp_addr != fp_addr) continue;   /* cheap reject first */
         else if (vp_fp_entry_matches(&s_d3d.vp_fp[i], fp_addr, vs_hash, blend, nrt,
                                      (u32)rtfmt, exp32, uhash, cmask, cull,
-                                     alpha_key, unnorm_key, cube_mask, ds_key, alias_key)) {
+                                     alpha_key, unnorm_key, cube_mask, ds_key, alias_key, native_depth_key)) {
             if (out_fpc_n) *out_fpc_n = s_d3d.vp_fp[i].fpc_n;
             s_pso_sampler_mask = s_d3d.vp_fp[i].pso ? s_d3d.vp_fp[i].sampler_mask : 0;
             /* Publish this entry's build-time constants for the serve
@@ -2811,6 +2820,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     key.cmask = cmask; key.cull = cull; key.alpha_key = alpha_key;
     key.unnorm_key = unnorm_key; key.cube_mask = cube_mask; key.ds_key = ds_key;
     key.alias_key = alias_key;
+    key.native_depth_key = native_depth_key;
     key.pso = NULL;
 
     /* Register-alias writes can expand a short FP beyond 32 KiB of HLSL. */
@@ -2821,8 +2831,11 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
      * a zero word is a genuine guest request for fp16, not unknown state. */
     u32 fpc_n = 0;
     static rsx_fp_constant_block fblk; /* 32 KB scratch; single-threaded build */
-    int n = rsx_fp_decompile_buffered_ex(uc, 4096, fp_ctrl, cube_mask,
-                                         hlsl, sizeof(hlsl), &fpc_n, &fblk);
+    int n = native_depth_key
+        ? rsx_fp_decompile_buffered_native_depth(uc, 4096, fp_ctrl, cube_mask, dr->depth_view,
+                                                 hlsl, sizeof(hlsl), &fpc_n, &fblk)
+        : rsx_fp_decompile_buffered_ex(uc, 4096, fp_ctrl, cube_mask,
+                                       hlsl, sizeof(hlsl), &fpc_n, &fblk);
     if (n <= 0) { static int _e=0; if(_e++<16) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr);
         if(!shader_prefetch_active)vp_fp_cache_put(&key); return NULL; }
     /* The emitted cbuffer is fp_constants[fpc_n] + fp_alpha; it must fit the
@@ -4006,10 +4019,12 @@ static void vp_serve_pso_consts(u32 slot, D3D12DrawRecord* dr, u32 pso_n)
 }
 
 #include "rsx_d3d12_sampler_tables.inc"
+#include "rsx_d3d12_native_depth.inc"
 
 static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
 {
     guest_sampler_record(dr);
+    native_depth_clear(dr);
     const rsx_state* st = s_d3d.current_rsx_state;
     if (!s_d3d.vp_cb_mapped || !st || slot >= MAX_DRAWS) return;
     (void)vs_idx;
@@ -5053,6 +5068,12 @@ static void render_frame(void)
             exit(1);
         }
     }
+    /* Depth resources are now fixed for this batch: resolve D24 texture reads. */
+    {
+        u8 written[RSX_D3D12_DEPTH_CAPACITY + 1] = {0};
+        for (u32 d = 0; d < s_d3d.draw_count && d < MAX_DRAWS; ++d)
+            native_depth_prepare(&s_d3d.draws[d], written);
+    }
 
     /* Compile the real vertex program once its microcode is captured, and keep
      * the constant bank uploaded for the VS. */
@@ -5443,6 +5464,8 @@ static void render_frame(void)
         for (int _u = 0; _u < 16; _u++) {
             u32 wslot = DRAW_SRV_BASE + _d * 16 + (u32)_u;
             dr->tex_rt[_u] = -1;
+            /* A D24 read of a live depth attachment samples it natively. */
+            if (native_depth_bind(dr, (unsigned)_u, wslot)) continue;
             /* Display-sized sampler source -> the rendered frame. */
             if (dr->tex[_u].set && s_screen_copy &&
                 dr->tex[_u].w == s_d3d.width && dr->tex[_u].h == s_d3d.height) {
@@ -6149,7 +6172,9 @@ static void render_frame(void)
                 if (phase_on()) { s_phase.draws++; s_phase.small_draws += is_small; }
                 phase_gpu_draw(is_small, 0);
                 cpu_surface_written(cur_rt,cur_m);
+                native_depth_begin(dr);
                 gpu_pso_draw(next_pso, dr->vertex_count, dr->vb_byte_offset / 256);
+                native_depth_end(dr);
                 if (dr->rt_off == 0) rsx_record_batch_display_write(&s_record_batch);
                 phase_gpu_draw(is_small, 1);
                 /* VP_SUBMIT=<N>: prove the VP pass actually reaches the GPU.

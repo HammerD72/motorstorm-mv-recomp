@@ -25,7 +25,7 @@ static void wait_for_gpu(void) { ++waits; }
 @VP_UPLOAD_RETIRE@
 #include "rsx_d3d12_guest_sampler.h"
 /* The fields of the production D3D12DrawRecord the sampler owner reads. */
-typedef struct { struct { int set; } tex[16]; rsx_guest_sampler_regs sampler[16]; u32 fp_snap; } D3D12DrawRecord;
+typedef struct { struct { int set; } tex[16]; rsx_guest_sampler_regs sampler[16]; rsx_depth_sample_view depth_view[16]; u32 fp_snap; } D3D12DrawRecord;
 #include "rsx_d3d12_sampler_tables.inc"
 
 static unsigned failures, checks;
@@ -128,6 +128,63 @@ static void decoder_checks(void)
           "mask: declaration is not a unit");
     check(rsx_guest_sampler_mask("rsx_tex10.Sample(rsx_samp[10], uv) rsx_tex[3].Sample(rsx_samp[3], uv)")
           == ((1u << 10) | (1u << 3)), "mask: unit 10 is not unit 1");
+    check(rsx_guest_sampler_mask("SamplerState rsx_samp1 : register(s1);\nSamplerComparisonState rsx_cmp3 : register(s3);\n"
+                                 "SamplerState rsx_samp12 : register(s12);\n"
+                                 "rsx_tex3.SampleCmpLevelZero(rsx_cmp3,uv,z) rsx_tex12.Sample(rsx_samp12, uv)")
+          == ((1u << 3) | (1u << 12)), "mask: individual names, declarations excluded");
+}
+
+/* ---- native D24 views ---------------------------------------------------- */
+static void depth_checks(void)
+{
+    rsx_depth_sample_view v;
+    const u32 on = 0x80000000u | (3072u << 7), clamp = 0x00030303u;
+    check(rsx_depth_sample_view_init(&v, 0x90, 1024, 1024, 1, 0, 0, (1u << 28) | clamp, 0x02020000u, on, 2048, 2048) == 1 &&
+          v.compare && v.func == 1 && v.linear, "D24 LESS compare view");
+    check(rsx_depth_sample_view_init(&v, 0x90 | 0x20, 512, 512, 1, 0, 0, (3u << 28) | clamp, 0x01010000u, on, 2048, 2048) == 1 &&
+          v.compare && !v.linear, "LN/UN layout bits ignored, point compare");
+    check(rsx_depth_sample_view_init(&v, 0x90, 1024, 1024, 1, 0, 0, (7u << 28) | clamp, 0x02020000u, on, 2048, 2048) == 1 &&
+          !v.compare, "ALWAYS reads the depth value");
+    check(rsx_depth_sample_view_init(&v, 0x90, 1024, 1024, 1, 0, 0, (1u << 28) | clamp, 0x02020000u, on | 4u, 2048, 2048) == 1 &&
+          !v.compare, "alpha kill disables comparison");
+    check(rsx_depth_sample_view_init(&v, 0x90, 1024, 1024, 1, 0, 0, (1u << 28) | 0x00010101u, 0x02020000u, on, 2048, 2048) == -1,
+          "cropped wrap is rejected");
+    check(rsx_depth_sample_view_init(&v, 0x90, 2048, 2048, 1, 0, 0, (1u << 28) | 0x00010101u, 0x02020000u, on, 2048, 2048) == 1,
+          "full-size wrap is exact");
+    check(rsx_depth_sample_view_init(&v, 0x92, 1024, 1024, 1, 0, 0, (1u << 28) | clamp, 0x02020000u, on, 2048, 2048) == 0,
+          "D16 stays on the existing path");
+    check(rsx_depth_sample_view_init(&v, 0x90, 1024, 1024, 4, 0, 0, (1u << 28) | clamp, 0x02020000u, on, 2048, 2048) == -1,
+          "mipmapped depth is rejected");
+    check(rsx_depth_sample_view_init(&v, 0x90, 1024, 1024, 1, 0, 0, (1u << 28) | clamp, 0x02020000u, 0, 2048, 2048) == 0,
+          "disabled unit is not a view");
+    /* RSX stored FUNC reference vs D3D reference FUNC stored. */
+    const u32 want[8] = {D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPARISON_FUNC_GREATER, D3D12_COMPARISON_FUNC_EQUAL,
+        D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_LESS, D3D12_COMPARISON_FUNC_NOT_EQUAL,
+        D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_COMPARISON_FUNC_ALWAYS};
+    int order = 1;
+    for (u32 f = 0; f < 8; ++f) order &= rsx_depth_sample_d3d_func(f) == want[f];
+    check(order, "comparison order reversed for ordered functions only");
+    char hlsl[2048];
+    rsx_depth_sample_view_init(&v, 0x90, 1024, 512, 1, 0, 0, (4u << 28) | clamp, 0x02020000u, on, 2048, 2048);
+    check(rsx_depth_sample_hlsl(hlsl, sizeof hlsl, 3, &v) > 0 &&
+          strstr(hlsl, "rsx_tex3.SampleCmpLevelZero(rsx_cmp3,uv,saturate(p.z))") &&
+          strstr(hlsl, "uv.x=clamp(uv.x,0.5/1024.0,1.0-0.5/1024.0)*(1024.0/2048.0)") &&
+          strstr(hlsl, "uv.y=clamp(uv.y,0.5/512.0,1.0-0.5/512.0)*(512.0/2048.0)"), "compare helper crops in guest texels");
+    rsx_depth_sample_view_init(&v, 0x90 | 0x40, 2048, 2048, 1, 0, 0, clamp, 0x01010000u, on, 2048, 2048);
+    check(rsx_depth_sample_hlsl(hlsl, sizeof hlsl, 5, &v) > 0 && strstr(hlsl, "p.xy / float2(2048.0,2048.0)") &&
+          strstr(hlsl, "rsx_tex5.SampleLevel(rsx_samp5,uv,0.0).r"), "unnormalized depth read");
+    /* Sampler table entry for a compare unit, and only on sampled units. */
+    D3D12DrawRecord dr; draw_init(&dr, 0);
+    rsx_depth_sample_view_init(&dr.depth_view[3], 0x90, 1024, 1024, 1, 0, 0, (1u << 28) | clamp, 0x02020000u, on, 2048, 2048);
+    dr.sampler[3].address = (1u << 28) | clamp;
+    D3D12_SAMPLER_DESC t[16]; int set[16];
+    for (unsigned u = 0; u < 16; ++u) set[u] = 1;
+    rsx_guest_sampler_table(dr.sampler, set, 1u << 3, dr.depth_view, t);
+    check(t[3].Filter == D3D12_ENCODE_BASIC_FILTER(1, 1, 0, D3D12_FILTER_REDUCTION_TYPE_COMPARISON) &&
+          t[3].ComparisonFunc == D3D12_COMPARISON_FUNC_GREATER && t[3].AddressU == D3D12_TEXTURE_ADDRESS_MODE_CLAMP &&
+          t[3].MaxLOD == 0.0f, "comparison sampler for a native compare unit");
+    rsx_guest_sampler_table(dr.sampler, set, 0, dr.depth_view, t);
+    check(t[3].Filter == D3D12_FILTER_MIN_MAG_MIP_LINEAR, "unsampled native unit keeps the legacy sampler");
 }
 
 /* ---- active sampler mask: P2 #3 ----------------------------------------- */
@@ -250,6 +307,7 @@ int main(int argc, char** argv)
     s_d3d.frame_index = 1; s_d3d.fence_values[1] = 41;
     const char* mode = argc > 1 ? argv[1] : NULL;
     decoder_checks();
+    depth_checks();
     mask_checks();
     if (mode && !strcmp(mode, "shutdown-failed")) shutdown_checks(1);
     else {

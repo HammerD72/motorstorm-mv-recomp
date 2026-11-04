@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "rsx_depth_sample.h"
 
 typedef struct {
     uint32_t address, filter, control0, border;
@@ -98,17 +99,58 @@ static int rsx_guest_sampler(const rsx_guest_sampler_regs* r, D3D12_SAMPLER_DESC
     return 1;
 }
 
+/* A use of the individually declared sampler NAME (rsx_samp3, rsx_cmp3) other
+ * than its declaration: the name followed by a non-digit and not " :". */
+static int rsx_guest_sampler_name_used(const char* hlsl, const char* name)
+{
+    const size_t n = strlen(name);
+    for (const char* at = strstr(hlsl, name); at; at = strstr(at + 1, name)) {
+        const char next = at[n];
+        if (next >= '0' && next <= '9') continue;
+        if (next == ' ' && at[n + 1] == ':') continue;   /* "rsx_samp3 : register(s3)" */
+        return 1;
+    }
+    return 0;
+}
 /* Units a compiled guest pixel shader samples. The FP decompiler names unit u
- * "rsx_samp[u]" at every sample site; the declaration is rsx_samp[16]. */
+ * "rsx_samp[u]" at every sample site (the declaration is rsx_samp[16]); a
+ * program with native depth units declares rsx_sampU / rsx_cmpU instead. */
 static unsigned rsx_guest_sampler_mask(const char* hlsl)
 {
     unsigned mask = 0;
     char token[24];
     for (unsigned u = 0; u < 16; ++u) {
         snprintf(token, sizeof(token), "rsx_samp[%u]", u);
-        if (strstr(hlsl, token)) mask |= 1u << u;
+        if (strstr(hlsl, token)) { mask |= 1u << u; continue; }
+        snprintf(token, sizeof(token), "rsx_samp%u", u);
+        if (rsx_guest_sampler_name_used(hlsl, token)) { mask |= 1u << u; continue; }
+        snprintf(token, sizeof(token), "rsx_cmp%u", u);
+        if (rsx_guest_sampler_name_used(hlsl, token)) mask |= 1u << u;
     }
     return mask;
+}
+
+/* Sampler for a native D24 unit: the guest addressing when it maps exactly
+ * (else clamp to edge, which the view helper requires for cropped axes),
+ * point or linear without mips, and the reversed comparison when the view
+ * compares. */
+static void rsx_guest_sampler_depth(const rsx_guest_sampler_regs* r,
+                                    const rsx_depth_sample_view* v, D3D12_SAMPLER_DESC* out)
+{
+    D3D12_SAMPLER_DESC d;
+    memset(&d, 0, sizeof(d));
+    if (!rsx_guest_address_mode(r->address & 15u, &d.AddressU)) d.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    if (!rsx_guest_address_mode((r->address >> 8) & 15u, &d.AddressV)) d.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    d.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    const D3D12_FILTER_TYPE t = v->linear ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
+    d.Filter = D3D12_ENCODE_BASIC_FILTER(t, t, D3D12_FILTER_TYPE_POINT,
+        v->compare ? D3D12_FILTER_REDUCTION_TYPE_COMPARISON : D3D12_FILTER_REDUCTION_TYPE_STANDARD);
+    d.ComparisonFunc = v->compare ? (D3D12_COMPARISON_FUNC)rsx_depth_sample_d3d_func(v->func)
+                                  : D3D12_COMPARISON_FUNC_ALWAYS;
+    d.MaxAnisotropy = 1;
+    d.MinLOD = d.MaxLOD = 0.0f;
+    d.BorderColor[0] = d.BorderColor[1] = d.BorderColor[2] = d.BorderColor[3] = 1.0f;
+    *out = d;
 }
 
 /* Sampled-unit masks by FP structural hash, so record-time draw merging can
@@ -146,12 +188,15 @@ static int rsx_guest_sampler_same(const rsx_guest_sampler_regs* a, const rsx_gue
  * registers never create a distinct table. Returns the guest-decoded count. */
 static unsigned rsx_guest_sampler_table(const rsx_guest_sampler_regs regs[16],
                                         const int set[16], unsigned mask,
+                                        const rsx_depth_sample_view* depth,
                                         D3D12_SAMPLER_DESC out[16])
 {
     unsigned decoded = 0;
     for (unsigned u = 0; u < 16; ++u) {
         rsx_guest_sampler_legacy(u, &out[u]);
-        if ((mask & (1u << u)) && set[u] && rsx_guest_sampler(&regs[u], &out[u])) ++decoded;
+        if (!(mask & (1u << u)) || !set[u]) continue;
+        if (depth && depth[u].enabled) { rsx_guest_sampler_depth(&regs[u], &depth[u], &out[u]); ++decoded; }
+        else if (rsx_guest_sampler(&regs[u], &out[u])) ++decoded;
     }
     return decoded;
 }

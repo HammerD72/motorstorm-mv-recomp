@@ -75,6 +75,7 @@ def main():
             include.mkdir()
             shutil.copy(FIX / 'rsx_sampler_d3d12_mock.h', include / 'd3d12.h')
             shutil.copy(VIDEO / 'rsx_d3d12_guest_sampler.h', include / 'rsx_d3d12_guest_sampler.h')
+            shutil.copy(VIDEO / 'rsx_depth_sample.h', include / 'rsx_depth_sample.h')
             (include / INC).write_text(inc_text, encoding='utf-8')
             unit = include / 'test.c'
             unit.write_text(unit_text, encoding='utf-8')
@@ -103,8 +104,8 @@ def main():
              ['incomplete'], 'failed retirement keeps overflow heaps'),
             ('unchecked-retire-device', '    if (!vp_upload_retire(NULL)) {', '    if (0) {',
              ['device'], 'failed retirement keeps overflow heaps'),
-            ('every-bound-unit', 'rsx_guest_sampler_table(dr->sampler, set, mask, desc)',
-             'rsx_guest_sampler_table(dr->sampler, set, mask | 0xFFFFu, desc)', [],
+            ('every-bound-unit', 'rsx_guest_sampler_table(dr->sampler, set, mask,',
+             'rsx_guest_sampler_table(dr->sampler, set, mask | 0xFFFFu,', [],
              'unused unit changes create no sampler identities'),
             ('merge-every-unit', '        if (!(mask & (1u << u))) continue;\n', '        (void)mask;\n', [],
              'unsampled unit change does not split a merge'),

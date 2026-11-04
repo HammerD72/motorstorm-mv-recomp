@@ -164,7 +164,8 @@ static int guest_sampler_bind(const D3D12DrawRecord* dr, unsigned mask)
     D3D12_SAMPLER_DESC desc[16];
     int set[16];
     for (unsigned u = 0; u < 16; ++u) set[u] = dr->tex[u].set;
-    s_sampler_guest_units += rsx_guest_sampler_table(dr->sampler, set, mask, desc);
+    s_sampler_guest_units += rsx_guest_sampler_table(dr->sampler, set, mask,
+        mask ? dr->depth_view : NULL, desc);
 
     if (!s_sampler_base) s_sampler_base = guest_sampler_heap_new();
     unsigned long long hash = guest_sampler_hash(desc);

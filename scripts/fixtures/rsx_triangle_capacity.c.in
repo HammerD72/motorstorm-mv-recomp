@@ -11,6 +11,7 @@
 #define VP_VERT_STRIDE 256
 /* rsx_d3d12_guest_sampler.h needs the D3D12 headers; the record only needs
  * its register layout. */
+#include "rsx_depth_sample.h"
 typedef struct { u32 address, filter, control0, border; } rsx_guest_sampler_regs;
 @RECORD@
 /* Sampler-state merge rules are exercised by check_rsx_sampler_tables.py. */
