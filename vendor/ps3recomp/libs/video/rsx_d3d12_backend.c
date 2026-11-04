@@ -3222,6 +3222,20 @@ static u32 rsx_remap_to_d3d(u32 c1, u32 basef)
     return out[1] | (out[2] << 3) | (out[3] << 6) | (out[0] << 9) | (1u << 12);
 }
 
+/* B8 is uploaded as R8 and presents its one value on every crossbar source,
+ * so only the per-output operation matters: force zero, force one, or the
+ * value. The identity (0xAAE4) is the old fixed replicate-R mapping (0x1000);
+ * MotorStorm's vehicle shadow blobs use 0xA9FF (alpha forced to one). */
+static u32 rsx_remap_b8_to_d3d(u32 c1)
+{
+    u8 out[4];
+    rsx_texture_component_remap(c1, 0x81u, out);
+    u32 sel[4];
+    for (int i = 0; i < 4; ++i) sel[i] = out[i] == RSX_REMAP_ZERO ? 4u : out[i] == RSX_REMAP_ONE ? 5u : 0u;
+    /* out[] is A,R,G,B; D3D12 wants destR | destG<<3 | destB<<6 | destA<<9. */
+    return sel[1] | (sel[2] << 3) | (sel[3] << 6) | (sel[0] << 9) | (1u << 12);
+}
+
 /* Which base formats (fmt & 0x9F) rsx_texture_layout actually decodes -- the
  * replay upload gate. Mirrors the layout switch case-for-case; anything else
  * rides the R8 one-byte default, which uploads noise, so those binds get a
@@ -5546,7 +5560,7 @@ static void render_frame(void)
                          * SRVs sampled the bytes at the wrong texel size. */
                         srv_write_ex(wslot, s_d3d.vp_tex[ts].res,
                                      (DXGI_FORMAT)s_d3d.vp_tex[ts].dxgi,
-                                     (_bf == 0x81) ? 0x1000
+                                     (_bf == 0x81) ? rsx_remap_b8_to_d3d(dr->tex[_u].ctrl1)
                                                    : rsx_remap_to_d3d(dr->tex[_u].ctrl1, _bf),
                                      _cube);
                         continue;
