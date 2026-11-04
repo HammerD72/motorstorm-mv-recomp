@@ -14,6 +14,21 @@ static int native_depth_on(void)
     return on;
 }
 
+/* RSX_DEPTH_DEBUG=lit|shadow|stored|reference replaces the helper result to
+ * isolate a wrong comparison input in a native run. Diagnostics only. */
+static u32 native_depth_debug(void)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        const char* e = getenv("RSX_DEPTH_DEBUG");
+        static const char* names[] = {"", "lit", "shadow", "stored", "reference"};
+        mode = 0;
+        for (int i = 1; e && i < 5; ++i) if (!strcmp(e, names[i])) mode = i;
+        if (mode) fprintf(stderr, "[RSXDEPTH] debug mode %s\n", names[mode]);
+    }
+    return (u32)mode;
+}
+
 static void native_depth_clear(D3D12DrawRecord* dr)
 {
     memset(dr->depth_view, 0, sizeof(dr->depth_view));
@@ -21,15 +36,15 @@ static void native_depth_clear(D3D12DrawRecord* dr)
     dr->depth_sample_mask = 0;
 }
 
-/* One line per (program, address, reason), bounded. */
+/* One line per (address, format, reason), bounded; the first program seen is named. */
 static void native_depth_notice(const D3D12DrawRecord* dr, unsigned u, const char* reason)
 {
-    static struct { u32 fp, address; const char* reason; } seen[256];
+    static struct { u32 address, fmt; const char* reason; } seen[256];
     static unsigned n;
     for (unsigned i = 0; i < n; ++i)
-        if (seen[i].fp == dr->fp_addr && seen[i].address == dr->tex[u].raw && seen[i].reason == reason) return;
+        if (seen[i].address == dr->tex[u].raw && seen[i].fmt == dr->tex[u].fmt && seen[i].reason == reason) return;
     if (n == 256) return;
-    seen[n].fp = dr->fp_addr; seen[n].address = dr->tex[u].raw; seen[n++].reason = reason;
+    seen[n].address = dr->tex[u].raw; seen[n].fmt = dr->tex[u].fmt; seen[n++].reason = reason;
     fprintf(stderr, "[RSXDEPTH] fp=%08X unit=%u address=%08X %ux%u fmt=%02X zfunc=%u %s\n",
             dr->fp_addr, u, dr->tex[u].raw, dr->tex[u].w, dr->tex[u].h, dr->tex[u].fmt,
             (dr->sampler[u].address >> 28) & 15u, reason);
@@ -54,7 +69,13 @@ static void native_depth_prepare(D3D12DrawRecord* dr, u8 written[RSX_D3D12_DEPTH
     if (native_depth_on() && dr->is_vp && !dr->is_clear && dr->fp_addr) {
         u32 read = native_depth_units(dr);
         for (unsigned u = 0; u < 16; ++u) {
-            if (!(read & (1u << u)) || !dr->tex[u].set || !rsx_depth_sample_format(dr->tex[u].fmt)) continue;
+            if (!(read & (1u << u)) || !dr->tex[u].set) continue;
+            const u32 base = dr->tex[u].fmt & 0x9Fu;
+            if (base == 0x91u || base == 0x92u || base == 0x93u) {
+                native_depth_notice(dr, u, "other_depth_format_skip");   /* D24 float / D16 */
+                continue;
+            }
+            if (!rsx_depth_sample_format(dr->tex[u].fmt)) continue;
             unsigned slot = 0;
             for (unsigned i = 0; i < s_d3d.depth_cache.count; ++i)
                 if (s_d3d.depth_cache.surfaces[i].resource &&
@@ -72,6 +93,7 @@ static void native_depth_prepare(D3D12DrawRecord* dr, u8 written[RSX_D3D12_DEPTH
                 native_depth_notice(dr, u, ok < 0 ? "unsupported_view_skip" : "disabled_unit_skip");
                 continue;
             }
+            dr->depth_view[u].debug = native_depth_debug();
             dr->depth_sampled_slot[u] = (u8)slot;
             dr->depth_sample_mask |= 1u << u;
             native_depth_notice(dr, u, dr->depth_view[u].compare ? "native_compare" : "native_depth");

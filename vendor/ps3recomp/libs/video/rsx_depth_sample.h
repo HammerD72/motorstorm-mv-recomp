@@ -11,6 +11,8 @@
 typedef struct {
     uint32_t enabled, compare, func, linear, unnormalized;
     uint32_t width, height, resource_width, resource_height;
+    uint32_t debug;   /* diagnostics only: 0 normal, 1 lit (1.0), 2 shadowed (0.0),
+                       * 3 stored depth, 4 reference depth */
 } rsx_depth_sample_view;
 
 /* D24_D8 with the LN/UN layout bits ignored. D24 float and D16 stay on the
@@ -71,7 +73,7 @@ static uint64_t rsx_depth_sample_key(const rsx_depth_sample_view v[16])
         if (!v[u].enabled) continue;
         any = 1;
         const uint32_t words[] = {u, v[u].compare, v[u].func, v[u].linear, v[u].unnormalized,
-            v[u].width, v[u].height, v[u].resource_width, v[u].resource_height};
+            v[u].width, v[u].height, v[u].resource_width, v[u].resource_height, v[u].debug};
         for (unsigned k = 0; k < sizeof words / sizeof words[0]; ++k)
             for (unsigned b = 0; b < 4; ++b) {
                 h ^= (words[k] >> (8 * b)) & 255u;
@@ -107,7 +109,15 @@ static int rsx_depth_sample_hlsl(char* out, size_t capacity, unsigned unit,
         if (k < 0 || (size_t)k >= sizeof body - (size_t)n) return -1;
         n += k;
     }
-    int k = v->compare ?
+    int k;
+    if (v->debug == 1 || v->debug == 2)
+        k = snprintf(out, capacity, "%s return (float4)%s;\n}\n", body, v->debug == 1 ? "1.0" : "0.0");
+    else if (v->debug == 3)
+        k = snprintf(out, capacity, "%s return (float4)rsx_tex%u.Load(int3(int2(saturate(uv)*float2(%u.0,%u.0)),0)).r;\n}\n",
+                     body, unit, v->resource_width - 1, v->resource_height - 1);
+    else if (v->debug == 4)
+        k = snprintf(out, capacity, "%s return (float4)saturate(p.z);\n}\n", body);
+    else k = v->compare ?
         snprintf(out, capacity, "%s return (float4)rsx_tex%u.SampleCmpLevelZero(rsx_cmp%u,uv,saturate(p.z));\n}\n",
                  body, unit, unit) :
         snprintf(out, capacity, "%s return (float4)rsx_tex%u.SampleLevel(rsx_samp%u,uv,0.0).r;\n}\n",
