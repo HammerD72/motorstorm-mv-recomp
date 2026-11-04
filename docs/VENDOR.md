@@ -1326,3 +1326,82 @@ launcher capture/identity expressions in isolation and rejects omission of
 the mode, without creating a native process. Windows full-backend syntax and
 Linux GCC checks cover composition. Native fresh-present observation remains
 a separate acceptance requirement; no race/FPS or performance gain is claimed.
+
+
+## Exact native SPU call return boundaries (#270)
+
+The bounded return-boundary correction starts on the toolkit fork:
+`c06a3da36fff2d53d049c11bf8937f3ca89ce7cd`, with compiled-return controls
+`a17a7df7`; both are integrated on the fork's `combined` branch. This selective
+port keeps the curated policy interpretation, statistics/unwind and staged-span
+rules. It publishes the emitted return before callee/dispatcher entry, restores
+the enclosing boundary after drain, distinguishes a live return to LS zero, and
+clears boundaries whose native caller has unwound. A matching explicit return
+takes precedence over ordinary compiled rejoin. Existing fork prerequisites also
+preserve the indirect target before overwriting an aliased link register and
+mask wrapped guest links; no whole runtime replacement is used.
+
+[Production checker](../scripts/check_spu_call_boundaries.py) compiles the actual
+curated runtime and actual lifter emission. Windows and Linux pass 16 call cases,
+16 real pre-change-emitter failures and 13 existing transition cases. Coverage
+includes alternate links, indirect target/link aliasing, LS-zero returns,
+registered/unregistered continuation PCs, enclosing boundaries and host FP state.
+The canonical explicit-return queue regression fails before the curated priority
+adaptation. The source audit runs the same checker on Windows and Linux.
+
+The curated baseline intentionally differs from the toolkit baseline in two
+pre-existing contracts, independently reproduced with main `8405b2a` runtime
+sources: ordinary compiled rejoin queues the dispatcher, and nested-stop retains
+STOP_BY_STOP with its existing unresolved-fallback diagnostic. The fixture
+preserves those contracts and retains stderr; this does not establish complete
+architectural stop/halt correctness.
+
+[Separate-copy updater](../scripts/update_spu_call_boundaries.py)
+converts only recognized generated call brackets, records hashes, refuses the
+source path/existing outputs/unknown brackets, and is checked against the actual
+fork emitter plus idempotency and rejection controls. Original private generated
+trees stay read-only: run it as `python <tool> <input.c> <new-local-copy.c>` before
+building from a separately prepared private SPU tree. The actual old curated
+emitter is retained separately from the fork updater-equivalence control.
+
+This port is preparation for native owned-job execution, not a measured speedup.
+Original-US normal-route native acceptance is recorded below; experimental
+owned-job admission (#269) remains outside the combined and game runtime.
+
+
+The existing [native-leaf checker](../scripts/check_native_leaf_dispatch.py)
+retains its original hash-pinned pre-port interpreter and compares 56 empty-
+registry full-state/IRQ/FP/budget records. Its historical reconstruction reverses
+only the separately covered call-boundary lines; production retains them.
+Windows and Linux pass that comparison and reject the unsafe dispatch/environment
+mutants and faulty TLS callback. This is not live owned-job IRQ/DMA acceptance.
+
+
+Fork test follow-up `5995243b` (combined `3b8602c9`) adds a real interpreted
+STOP before a live LS-zero return: the compiled caller continuation must not
+execute. Windows/Linux now pass 17 production cases, reject 17 actual historical
+emitter controls and preserve all 13 baseline transitions. This added control
+passes the port without a production change; the suspected halt/return ambiguity
+did not reproduce.
+
+
+Fork follow-up `da924142` (combined `4eedf23b`) adds actual pending-event
+interrupt delivery through the production drain/resolver, actual channel event
+acknowledgement, and production-emitted IRET. A second case calls deeper from the
+handler and returns by the real IRQ-frame longjmp, skipping the dead native
+continuation. Both compare all 128 registers and full LS after deliberate handler
+clobbers, verify cleared IRQ ownership, exact call/outer-return ownership and host
+FP state. Windows/Linux pass 19 production cases, reject 19 real historical
+emitter controls, and preserve 13 baseline transitions. These are authored CPU
+transitions, not proof of all live owned-job IRQ/DMA behavior.
+
+Original-US DX12 run `20261104T182435.860264Z`, EXE SHA256
+`f624726a70f71ee7c53bba384c3df8d86a670a53a711817a479ac365ade2b051`,
+completed all seven normal menu gates and once-only observed intro skip, reached
+real race HUD, and stopped at the configured post-target observation boundary.
+The last complete recorded 59.789187-second Present interval measured 1.88997385
+successful API Presents/s. This is not a controlled speedup or stable30; buffered
+CSV termination can lose its tail, so it is not final-process coverage. Original
+menu assets are present, with dark boxes/shading defects still visible. Exact
+EXE/PDB, private-copy generated inputs, captures, resources and qualified profile
+are retained privately outside rolling runs. No shared generated input changed.
