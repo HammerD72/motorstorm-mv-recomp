@@ -304,6 +304,7 @@ typedef struct {
                              * to build once (kept so a broken key fails fast
                              * instead of re-decompiling ~30 ms every draw);
                              * generation bumps and normal eviction retry it. */
+    u32 sampler_mask;        /* units the compiled PS samples (rsx_samp[u]) */
 } VPFPEntry;
 /* Pipeline identity remains unchanged. Grow the working set up to a hard
  * metadata bound; capped FIFO replacement must not shift other entries. */
@@ -2590,6 +2591,10 @@ static void vp_fp_cache_put(const VPFPEntry* e)
  * render path is single-threaded, like every other static cache here). */
 static u32 s_pso_k[VP_FPCB_MAX_CONSTS][4];
 static u32 s_pso_k_n;
+/* Sampled-unit mask of the last vp_get_fp_pso result (0 when it returned NULL). */
+static u32 s_pso_sampler_mask;
+/* Defined with the sampler tables; vp_get_fp_pso records each compiled mask. */
+static void guest_sampler_note_mask(u64 ucode_hash, u32 mask);
 /* ---- Content-addressed FP-ucode snapshots -------------------------------
  * The guest recycles ONE fp-ucode address for several programs per frame
  * (rewrites the window between passes). Hashing/decompiling the bytes lazily
@@ -2669,6 +2674,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
                                           u32 cmask, u32 cull, u32 cube_mask, u64 ds_key,
                                           u32 snap_idx, u16* out_fpc_n, const D3D12DrawRecord* dr)
 {
+    s_pso_sampler_mask = 0;
     u32 alias_mask = 0, alias_remap[16] = {0};
     for (unsigned u = 0; u < sizeof dr->tex / sizeof dr->tex[0]; ++u) {
         int rt = dr->tex_rt[u];
@@ -2734,6 +2740,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
                                      (u32)rtfmt, exp32, uhash, cmask, cull,
                                      alpha_key, unnorm_key, cube_mask, ds_key, alias_key)) {
             if (out_fpc_n) *out_fpc_n = s_d3d.vp_fp[i].fpc_n;
+            s_pso_sampler_mask = s_d3d.vp_fp[i].pso ? s_d3d.vp_fp[i].sampler_mask : 0;
             /* Publish this entry's build-time constants for the serve
              * fallback (see vp_serve_pso_consts): the guest may recycle the
              * ucode address after the build, so records can no longer
@@ -3123,6 +3130,9 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
 
     key.pso   = pso;
     key.fpc_n = (u16)fpc_n;
+    key.sampler_mask = rsx_guest_sampler_mask(hlsl);
+    guest_sampler_note_mask(key.ucode_hash, key.sampler_mask);
+    s_pso_sampler_mask = key.sampler_mask;
     if (fpc_n <= VP_FPCB_MAX_CONSTS)
         memcpy(key.k, fblk.values, (size_t)fpc_n * 16u);
     if(!shader_prefetch_active)vp_fp_cache_put(&key);
@@ -5014,7 +5024,7 @@ static void render_frame(void)
      * polygons). These workloads are a few draws/frame, so full serialisation
      * costs little. */
     gpu_pso_retire();
-    guest_sampler_retire();   /* GPU idle: last frame's sampler tables are free */
+    guest_sampler_retire();   /* checked: last frame's tables are free only on success */
     if (phase_on()) s_phase.drain = perf_now() - ph0;
     phase_gpu_collect();
 
@@ -5917,6 +5927,7 @@ static void render_frame(void)
                 /* Per-draw pipeline: prefer the guest's own compiled FP; fall
                  * back to the hardcoded atlas/colour PS pair. */
                 ID3D12PipelineState* dpso = NULL;
+                u32 dsampler_mask = 0;
                 double ph_pso = phase_on() ? perf_now() : 0.0;
                 if (dr->fp_addr) {
                     u32 udim[16][2]; u16 pso_n = 0;
@@ -5926,6 +5937,7 @@ static void render_frame(void)
                                          dr_unnorm(dr, udim), udim, dr->cmask,
                                          dr->cull, dr_cube_mask(dr), dr->ds_key,
                                          dr->fp_snap, &pso_n, dr);
+                    dsampler_mask = s_pso_sampler_mask;
                     if (pso_n && dr->fp_const_n != (u32)pso_n) {
                         /* the guest rewrote the program at this address after
                          * record: refresh the record + its b1 slot to match;
@@ -5994,7 +6006,7 @@ static void render_frame(void)
                 }
                 /* Guest sampler table (s0-s15). A heap change invalidates the
                  * bound SRV table, so force it to be set again. */
-                if (guest_sampler_bind(dr, dpso != NULL)) bound_srv = 0;
+                if (guest_sampler_bind(dr, dpso ? dsampler_mask : 0u)) bound_srv = 0;
                 D3D12_GPU_DESCRIPTOR_HANDLE gh = gh_base;
                 gh.ptr += (u64)s_draw_srv_base[d] * s_d3d.srv_inc;
                 if (!bind_reuse_on() || gh.ptr != bound_srv) {
@@ -8397,6 +8409,7 @@ void rsx_d3d12_backend_shutdown(void)
     cpu_surface_shutdown();
 
     gpu_working_sets_release();
+    guest_sampler_shutdown();
     for(int i=0;i<s_d3d.vp_vs_n;i++){
         shader_forget_vs_source(s_d3d.vp_vs[i].disk_source);s_d3d.vp_vs[i].disk_source=NULL;
     }

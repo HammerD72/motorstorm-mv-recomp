@@ -10,6 +10,7 @@
 #define RSX_D3D12_GUEST_SAMPLER_H
 #include <d3d12.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef struct {
@@ -97,16 +98,60 @@ static int rsx_guest_sampler(const rsx_guest_sampler_regs* r, D3D12_SAMPLER_DESC
     return 1;
 }
 
-/* One draw's 16-unit table. guest=0 (fallback atlas/colour pipelines) keeps the
- * legacy policy on every unit. Returns the number of guest-decoded units. */
+/* Units a compiled guest pixel shader samples. The FP decompiler names unit u
+ * "rsx_samp[u]" at every sample site; the declaration is rsx_samp[16]. */
+static unsigned rsx_guest_sampler_mask(const char* hlsl)
+{
+    unsigned mask = 0;
+    char token[24];
+    for (unsigned u = 0; u < 16; ++u) {
+        snprintf(token, sizeof(token), "rsx_samp[%u]", u);
+        if (strstr(hlsl, token)) mask |= 1u << u;
+    }
+    return mask;
+}
+
+/* Sampled-unit masks by FP structural hash, so record-time draw merging can
+ * ignore units the program never samples. Direct-mapped; a miss (never
+ * compiled, or evicted) returns every unit, which only costs a merge. */
+#define RSX_GUEST_SAMPLER_MASKS 1024u
+typedef struct { uint64_t hash; unsigned mask; } rsx_guest_sampler_mask_slot;
+static void rsx_guest_sampler_mask_note(rsx_guest_sampler_mask_slot* table,
+                                        uint64_t hash, unsigned mask)
+{
+    if (!hash) return;
+    rsx_guest_sampler_mask_slot* s = &table[hash % RSX_GUEST_SAMPLER_MASKS];
+    if (s->hash == hash) s->mask |= mask;          /* variants of one program */
+    else { s->hash = hash; s->mask = mask; }
+}
+static unsigned rsx_guest_sampler_mask_for(const rsx_guest_sampler_mask_slot* table,
+                                           uint64_t hash)
+{
+    const rsx_guest_sampler_mask_slot* s = &table[hash % RSX_GUEST_SAMPLER_MASKS];
+    return hash && s->hash == hash ? s->mask : 0xFFFFu;
+}
+
+/* Two register sets sample identically on one unit: both disabled (the unit
+ * then keeps the legacy policy whatever else changed), or every register equal. */
+static int rsx_guest_sampler_same(const rsx_guest_sampler_regs* a, const rsx_guest_sampler_regs* b)
+{
+    if (!(a->control0 & 0x80000000u) && !(b->control0 & 0x80000000u)) return 1;
+    return a->address == b->address && a->filter == b->filter &&
+           a->control0 == b->control0 && a->border == b->border;
+}
+
+/* One draw's 16-unit table. mask = units the bound pipeline's pixel shader
+ * samples (0 for the fallback atlas/colour pipelines). Units outside the mask,
+ * or without a bound texture, get the canonical legacy sampler, so their
+ * registers never create a distinct table. Returns the guest-decoded count. */
 static unsigned rsx_guest_sampler_table(const rsx_guest_sampler_regs regs[16],
-                                        const int set[16], int guest,
+                                        const int set[16], unsigned mask,
                                         D3D12_SAMPLER_DESC out[16])
 {
     unsigned decoded = 0;
     for (unsigned u = 0; u < 16; ++u) {
         rsx_guest_sampler_legacy(u, &out[u]);
-        if (guest && set[u] && rsx_guest_sampler(&regs[u], &out[u])) ++decoded;
+        if ((mask & (1u << u)) && set[u] && rsx_guest_sampler(&regs[u], &out[u])) ++decoded;
     }
     return decoded;
 }

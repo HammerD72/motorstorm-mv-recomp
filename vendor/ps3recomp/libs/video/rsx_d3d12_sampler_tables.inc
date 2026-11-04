@@ -1,10 +1,11 @@
 /* Per-draw guest sampler tables for the VP root signature (root parameter 3).
- * Included after s_d3d/D3D12DrawRecord. Tables are immutable while any
- * recorded command can reference them: a persistent base heap caches tables
- * across frames, overflow heaps are added only when a frame needs more than
- * 128 distinct tables, and both are recycled only at the next render_frame,
- * after its full wait_for_gpu() drain. Pattern follows
- * ps3recomp's rsx_address_tables.h; filtering is decoded as well. */
+ * Included after s_d3d/D3D12DrawRecord, vp_upload_retire and the FP snapshot
+ * ring. Tables are immutable while any recorded command can reference them: a
+ * persistent base heap caches tables across frames, overflow heaps are added
+ * only when a frame needs more than 128 distinct tables, and descriptors are
+ * reused or heaps released only after a checked GPU retirement. A failed
+ * retirement keeps every table. Pattern follows ps3recomp's
+ * rsx_address_tables.h; filtering is decoded as well. */
 #include "rsx_d3d12_guest_sampler.h"
 
 #define GUEST_SAMPLER_TABLES 128   /* 128 tables x 16 = the 2048-sampler heap limit */
@@ -22,6 +23,8 @@ static GuestSamplerHeap* s_sampler_base;
 static GuestSamplerHeap* s_sampler_overflow;
 static ID3D12DescriptorHeap* s_sampler_bound;
 static unsigned s_sampler_guest_units, s_sampler_tables_made;
+/* Sampled-unit masks by FP structural hash (filled by vp_get_fp_pso). */
+static rsx_guest_sampler_mask_slot s_sampler_masks[RSX_GUEST_SAMPLER_MASKS];
 
 static void guest_sampler_fail(const char* message)
 {
@@ -68,23 +71,46 @@ static void guest_sampler_record(D3D12DrawRecord* dr)
         r->border   = st->textures[u].border_color;
     }
 }
-/* Draw concatenation must not merge across a sampler change. */
+static void guest_sampler_note_mask(u64 ucode_hash, u32 mask)
+{
+    rsx_guest_sampler_mask_note(s_sampler_masks, ucode_hash, mask);
+}
+/* Units the record's program samples: its snapshot's structural hash, the same
+ * identity vp_get_fp_pso compiles from. Unknown programs compare every unit. */
+static unsigned guest_sampler_record_mask(const D3D12DrawRecord* dr)
+{
+    if (!dr->fp_snap || dr->fp_snap > VP_FPSNAP_MAX) return 0xFFFFu;
+    return rsx_guest_sampler_mask_for(s_sampler_masks, s_fp_snap[dr->fp_snap - 1].hash);
+}
+/* Draw concatenation must not merge across a change on a unit the program
+ * samples. Unsampled units, and units disabled on both sides, are ignored. */
 static int guest_sampler_matches(const D3D12DrawRecord* dr)
 {
     const rsx_state* st = s_d3d.current_rsx_state;
     if (!st) return 0;
+    unsigned mask = guest_sampler_record_mask(dr);
     for (unsigned u = 0; u < 16; ++u) {
-        const rsx_guest_sampler_regs* r = &dr->sampler[u];
-        if (r->address != st->textures[u].address || r->filter != st->textures[u].filter ||
-            r->control0 != st->textures[u].control0 || r->border != st->textures[u].border_color)
-            return 0;
+        if (!(mask & (1u << u))) continue;
+        rsx_guest_sampler_regs now;
+        now.address = st->textures[u].address;
+        now.filter = st->textures[u].filter;
+        now.control0 = st->textures[u].control0;
+        now.border = st->textures[u].border_color;
+        if (!rsx_guest_sampler_same(&dr->sampler[u], &now)) return 0;
     }
     return 1;
 }
-/* Caller guarantees the GPU is idle (render_frame's leading wait_for_gpu), so
- * no recorded command still references any table. */
-static void guest_sampler_retire(void)
+/* Reclaim last frame's tables. Only after vp_upload_retire proves the queue
+ * completed (no device removal, no sentinel fence, fence reached): a failed
+ * wait keeps every heap and slot, and the next bind appends instead. */
+static int guest_sampler_retire(void)
 {
+    if (!vp_upload_retire(NULL)) {
+        static unsigned logged;
+        if (logged++ < 8)
+            fprintf(stderr, "[RSXSAMPLER] GPU retirement failed; sampler tables preserved\n");
+        return 0;
+    }
     int overflowed = s_sampler_overflow != NULL;
     while (s_sampler_overflow) {
         GuestSamplerHeap* h = s_sampler_overflow;
@@ -95,6 +121,29 @@ static void guest_sampler_retire(void)
     if (s_sampler_base && (overflowed || s_sampler_base->count == GUEST_SAMPLER_TABLES))
         s_sampler_base->count = 0;   /* rewrite from slot 0; nothing in flight */
     s_sampler_bound = NULL;
+    return 1;
+}
+/* Device teardown: release every sampler heap after a checked retirement and
+ * clear all owners, so a later initialization never binds descriptors from
+ * the previous device. If retirement fails the heaps are leaked, never
+ * released while possibly referenced; the owners are cleared either way. */
+static void guest_sampler_shutdown(void)
+{
+    int retired = s_sampler_base || s_sampler_overflow ? vp_upload_retire(NULL) : 1;
+    if (!retired)
+        fprintf(stderr, "[RSXSAMPLER] shutdown retirement failed; sampler heaps leaked\n");
+    GuestSamplerHeap* lists[2] = {s_sampler_base, s_sampler_overflow};
+    for (unsigned i = 0; i < 2; ++i)
+        while (lists[i]) {
+            GuestSamplerHeap* h = lists[i];
+            lists[i] = h->next;
+            if (retired && h->heap) h->heap->lpVtbl->Release(h->heap);
+            free(h);
+        }
+    s_sampler_base = s_sampler_overflow = NULL;
+    s_sampler_bound = NULL;
+    s_sampler_guest_units = s_sampler_tables_made = 0;
+    memset(s_sampler_masks, 0, sizeof(s_sampler_masks));
 }
 static GuestSamplerHeap* guest_sampler_find(GuestSamplerHeap* h, unsigned long long hash,
                                             const D3D12_SAMPLER_DESC* desc, unsigned* slot)
@@ -106,15 +155,16 @@ static GuestSamplerHeap* guest_sampler_find(GuestSamplerHeap* h, unsigned long l
             }
     return NULL;
 }
-/* Bind this draw's table to root parameter 3. guest=0 for the fallback
- * atlas/colour pipelines. Returns 1 when the shader-visible heaps changed,
- * which invalidates the caller's bound SRV table (root parameter 1). */
-static int guest_sampler_bind(const D3D12DrawRecord* dr, int guest)
+/* Bind this draw's table to root parameter 3. mask = units the bound guest
+ * pixel shader samples (vp_get_fp_pso's s_pso_sampler_mask); 0 for the
+ * fallback atlas/colour pipelines. Returns 1 when the shader-visible heaps
+ * changed, which invalidates the caller's bound SRV table (root parameter 1). */
+static int guest_sampler_bind(const D3D12DrawRecord* dr, unsigned mask)
 {
     D3D12_SAMPLER_DESC desc[16];
     int set[16];
     for (unsigned u = 0; u < 16; ++u) set[u] = dr->tex[u].set;
-    s_sampler_guest_units += rsx_guest_sampler_table(dr->sampler, set, guest, desc);
+    s_sampler_guest_units += rsx_guest_sampler_table(dr->sampler, set, mask, desc);
 
     if (!s_sampler_base) s_sampler_base = guest_sampler_heap_new();
     unsigned long long hash = guest_sampler_hash(desc);
