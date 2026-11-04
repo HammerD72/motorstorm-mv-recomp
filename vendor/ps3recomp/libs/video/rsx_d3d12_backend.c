@@ -150,6 +150,10 @@ typedef struct {
     rsx_depth_sample_view depth_view[16];
     u8 depth_sampled_slot[16];  /* depth_cache slot read by the unit, 0 = none */
     u32 depth_sample_mask;
+    /* Packed-depth reads (RSX_DEPTH_ALIAS=1): A8R8G8B8 at a depth address. */
+    u8 depth_alias_index[16];   /* conversion entry + 1, 0 = none */
+    u32 depth_alias_order[16];  /* last earlier record of the batch that wrote that attachment, +1 */
+    u32 depth_alias_mask;
     int tex_rt[16];     /* pre-pass: OffRT index sampled by unit, -1 = none */
     int tex_slot;       /* legacy single-slot path (atlas); -1 = none */
     int vs_idx;         /* VPVSEntry slot for this draw's vertex program (-1 = primary) */
@@ -216,6 +220,10 @@ typedef struct {
  * fully bound", IQ id690). */
 #define DRAW_SRV_BASE 32
 #define SRV_HEAP_SIZE (DRAW_SRV_BASE + MAX_DRAWS * 16)
+/* Packed-depth (A5) conversions: depth SRV, stencil SRV and RGBA8 UAV each,
+ * after the per-draw windows (rsx_d3d12_native_depth.inc). */
+#define DEPTH_ALIAS_CAPACITY 16
+#define DEPTH_ALIAS_DESCRIPTORS (DEPTH_ALIAS_CAPACITY * 3)
 
 /* Per-frame VP texture slot: a guest texture uploaded for this frame's VP
  * draws (re-uploaded every frame -- gcm/cube's plasma animates in guest
@@ -1283,7 +1291,7 @@ static int init_d3d12(u32 width, u32 height)
         {
             D3D12_DESCRIPTOR_HEAP_DESC hd = {0};
             hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            hd.NumDescriptors = SRV_HEAP_SIZE;
+            hd.NumDescriptors = SRV_HEAP_SIZE + DEPTH_ALIAS_DESCRIPTORS;
             hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
             hr = s_d3d.device->lpVtbl->CreateDescriptorHeap(
                 s_d3d.device, &hd, &IID_ID3D12DescriptorHeap, (void**)&s_d3d.srv_heap);
@@ -5071,8 +5079,10 @@ static void render_frame(void)
     /* Depth resources are now fixed for this batch: resolve D24 texture reads. */
     {
         u8 written[RSX_D3D12_DEPTH_CAPACITY + 1] = {0};
+        u32 last_user[RSX_D3D12_DEPTH_CAPACITY + 1] = {0};
+        native_depth_batch_begin();
         for (u32 d = 0; d < s_d3d.draw_count && d < MAX_DRAWS; ++d)
-            native_depth_prepare(&s_d3d.draws[d], written);
+            native_depth_prepare(&s_d3d.draws[d], d, written, last_user);
     }
 
     /* Compile the real vertex program once its microcode is captured, and keep
@@ -6172,7 +6182,7 @@ static void render_frame(void)
                 if (phase_on()) { s_phase.draws++; s_phase.small_draws += is_small; }
                 phase_gpu_draw(is_small, 0);
                 cpu_surface_written(cur_rt,cur_m);
-                native_depth_begin(dr);
+                native_depth_begin(dr, next_pso);
                 gpu_pso_draw(next_pso, dr->vertex_count, dr->vb_byte_offset / 256);
                 native_depth_end(dr);
                 if (dr->rt_off == 0) rsx_record_batch_display_write(&s_record_batch);
@@ -8435,6 +8445,7 @@ void rsx_d3d12_backend_shutdown(void)
 
     gpu_working_sets_release();
     guest_sampler_shutdown();
+    native_depth_shutdown();
     for(int i=0;i<s_d3d.vp_vs_n;i++){
         shader_forget_vs_source(s_d3d.vp_vs[i].disk_source);s_d3d.vp_vs[i].disk_source=NULL;
     }
