@@ -587,7 +587,7 @@ unmodified operand. The preserved baseline fails; the candidate passes.
 Both Windows and Linux CI run this contract. No external PR was opened.
 The native menu remains malformed; this is a repaired instruction contract.
 
-### Upstream recheck — October 12, 2026
+### Upstream recheck â€” October 12, 2026
 
 Rechecked all 230 upstream PRs and 14 issues, including open and closed entries.
 Upstream master remains `5244db92669b54831c6d3ebb7a96d58c4dbfa6df`
@@ -760,7 +760,7 @@ buffer against an owned snapshot. Pointer reuse alone never establishes a hit.
 Misses hash that snapshot with the unchanged legacy FNV basis and multiplier;
 allocation failure visibly falls back to the original calculation. Buffers must
 remain stable during the call, as before; this does not make concurrent writes
-atomic. Eligible sizes are 4–256 KiB, with 32 entries and at most 4 MiB retained
+atomic. Eligible sizes are 4â€“256 KiB, with 32 entries and at most 4 MiB retained
 per thread. Windows FLS and POSIX key destructors release the snapshots.
 
 `SPU_FINGERPRINT_CACHE=1` enables the cache; the default makes no snapshot
@@ -1161,7 +1161,7 @@ owner/device spy cover the coordinator; native acceptance remains separate.
 ## Exact SPU float values and scoped SIMD
 
 This selective vendor sync ports runtime `057c56c` and `daeb1575`, preserving
-Robin Fröhlich’s authorship. The [value contract](SPU_FLOAT_VALUES.md) records
+Robin FrÃ¶hlichâ€™s authorship. The [value contract](SPU_FLOAT_VALUES.md) records
 the finite exponent255 range, exact scalar fallback, SIMD scope and authored
 checks. Original vendor test/workflow paths are omitted; curated runners
 exercise the actual helpers and keep existing interpreter assertions. Native
@@ -1536,3 +1536,69 @@ means (rounding bound 0.0000945 seconds), about 3.15 API Presents/s, intervals
 speedup. Graphics defects and the stable-30 goal remain open. Protected hashed
 packets retain identities, captures, guards and both profiles outside rolling
 run retention; no proprietary bytes are public.
+
+
+## SPU discovery in execution coordinates (issue 283)
+
+This selective integration comes from own-fork modular `9351f7060ade0c68b9cb31818e32f840db0f2e14`
+and canonical combined `5c99615192221edb2b04bc01e5d20da147bf978f`.
+It preserves the curated emitter, runtime, image ownership and required policy
+interpretation. No upstream PR or title-specific toolkit exception is involved.
+
+The ELF load bias now applies before decoding and discovering functions.
+Relative branches, executable-segment addresses, ELF entry and section-defined
+function symbols use the execution address space. Absolute instruction/table
+values and absolute symbols retain their encoded LS addresses; undefined symbols
+are not loaded entries. Raw/origin overrides and zero-bias behavior remain
+separate. Moving discovered bounds afterward could discard valid absolute
+continuations or bias them twice, leaving interpreted fallbacks.
+
+`check_spu_load_bias.py` uses authored ELF inputs for immediate continuations,
+relative/absolute branches, nonzero segment origins, sized/absolute/undefined
+symbols, separate data pointer tables, raw compatibility and rejected invalid
+options. Actual previous curated production successfully emits its source but
+omits the authored continuation: the retained historical RED. Three real emitted
+plain/interrupt-disable/interrupt-enable branches execute the restored native
+entry through the production dispatcher. An independent expected GPR/LS/PC/
+status/IRQ/FP state and a registry-isolated interpreter run agree. Existing
+call-boundary controls retain actual pending-IRQ/IRET coverage; this authored
+fixture does not claim live DMA/job or whole-game equivalence.
+
+Focused fork discovery controls passed Windows, Linux and macOS; owned-job and
+call-boundary workflows also passed. Two unchanged broader harness dependency
+failures remain tracked in issue 284 rather than hidden or counted as passes.
+The curated Windows emitted-code fixture passes with its real diagnostic/thread
+support sources.
+
+Private original-US regeneration retains all ten module identities, link bases,
+entries and staged fingerprints, with zero unsupported instructions reported.
+It restores 68 PVS entries (including the observed missing continuation),
+89 vehicle entries and additional entries in the other modules. Former biased
+seeds are removed; raw function counts are not a performance metric. Original
+state regression passes 15 saved-state cases and 495 instruction positions.
+These remain architectural controls with reconstructed host state, not full
+job/DMA replay.
+
+Full candidate EXE `a72249074563e2f231bdfffad2d81944969237f87f4baccabcf6c8b3dac5ac53`
+reached normal PLAY, original bike/rider selection and actual race/HUD/opponents
+in run `20261105T105047.441439Z`. It closed at the configured post-target guard
+(307.860 seconds), without a resource breach. Earlier abnormal selection and a
+one-module isolation observation remain recorded; this subsequent full-candidate
+success means that comparison alone does not establish their cause. Existing
+shadow/shading defects remain; this is not graphics acceptance.
+
+A synchronous exact-symbol probe captured 85 real xform invocation pairs across
+52 functions, with no reported changed reads, exclusions or errors. All 85
+captured architectural exits agree with reconstructed scalar/vector native
+execution and the production interpreter: GPR, full LS, PC, status, stop and
+interrupt-enable. Host pointers/registries and FP environment are reconstructed;
+this is no atomic DMA/IRQ or whole-job proof. Another 818 authored natural-prefix
+comparisons agree under a deterministic fixture clock (262 explicit exclusions).
+The game clock and original execution/completion behavior were unchanged.
+
+The final 60 intact diagnostic groups contain 180 successful API Presents over
+59.693455 reconstructed seconds (about 3.02/s). That interval overlaps suspended
+stack profiling; it is not scanout, an unprofiled benchmark or controlled gain.
+No speedup or stable 30 FPS is established. The measured async SPU thread remains
+the next CPU-workload lead; per-thread CPU and inclusive stacks do not alone prove
+exclusive frame cost or a critical dependency.
