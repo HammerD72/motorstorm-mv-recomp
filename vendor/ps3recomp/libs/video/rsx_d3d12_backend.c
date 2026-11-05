@@ -778,16 +778,24 @@ static int init_d3d12(u32 width, u32 height)
 {
     HRESULT hr;
 
-    /* Enable debug layer in debug builds */
-    /* Debug layer: on in debug builds, or in any build when D3D12_DBG is set
-     * (so a Release run can capture exact PSO/validation errors). */
-    if (
+    /* Debug layer. D3D12_DBG=1 enables it and D3D12_DBG=0 disables it in any
+     * build. Unset keeps the build default: on without NDEBUG, off with it.
+     * The game build compiles with /UNDEBUG to keep assertions, so without an
+     * explicit 0 the validation layer is always on -- it wraps every D3D12
+     * call, and in a MotorStorm race the renderer thread spent most of its
+     * time inside it. Performance measurements should set D3D12_DBG=0. */
+    int debug_layer;
+    {
+        const char* e = getenv("D3D12_DBG");
 #ifdef NDEBUG
-        getenv("D3D12_DBG")
+        debug_layer = e && strcmp(e, "0") != 0;
 #else
-        1
+        debug_layer = !(e && strcmp(e, "0") == 0);
 #endif
-    ) {
+    }
+    printf("[D3D12] Debug layer %s (D3D12_DBG=%s)\n",
+           debug_layer ? "requested" : "off", getenv("D3D12_DBG") ? getenv("D3D12_DBG") : "unset");
+    if (debug_layer) {
         ID3D12Debug* debug_controller = NULL;
         hr = D3D12GetDebugInterface(&IID_ID3D12Debug, (void**)&debug_controller);
         if (SUCCEEDED(hr) && debug_controller) {
