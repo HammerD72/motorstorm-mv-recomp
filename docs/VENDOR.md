@@ -1602,3 +1602,94 @@ stack profiling; it is not scanout, an unprofiled benchmark or controlled gain.
 No speedup or stable 30 FPS is established. The measured async SPU thread remains
 the next CPU-workload lead; per-thread CPU and inclusive stacks do not alone prove
 exclusive frame cost or a critical dependency.
+
+## Explicit DX12 validation control
+
+Contributor [PR 290](https://github.com/robbe1912/motorstorm-mv-recomp/pull/290)
+was ported author-preservingly to fork modular
+`6ef27cc449478afb16d4fd65346782afe7ad36d7`, then canonical combined
+`cf1027f302deaa990f9630f6e66f04441bb4f482`. It permits explicit `D3D12_DBG=0`
+in either build while retaining unset defaults, assertions and normal error
+handling. The fork and curated comments describe generic policy without an
+unmeasured per-title performance claim. The actual fork backend compiled with
+and without `NDEBUG`; this establishes compilation, not validation overhead.
+The launcher records explicit validation and existing texture-profile settings
+for the residency investigation in
+[issue 291](https://github.com/robbe1912/motorstorm-mv-recomp/issues/291).
+No toolkit PR was opened. Cache/lifetime changes and native performance
+acceptance remain separate work.
+
+### Bounded DX12 texture retention (issue 291)
+
+The fork modular branch `codex/d3d12-texture-residency` ends at `6191470f`;
+its lookup, budget, fingerprint, growth and required-wait changes are combined
+in canonical `d090e2f6`. The curated port preserves its decoded DXGI field, checked void
+PSO-retirement wrapper and per-draw descriptor implementation. It does not
+replace the backend wholesale with a divergent fork snapshot.
+
+The optional cache prefers empty entries, retains reusable entries while byte
+and metadata headroom remain, then evicts unpinned least-recently-used entries.
+Its target covers actual default+upload allocation footprints; indispensable
+batch pins remain intact with explicit overage. Pins clear only after checked
+GPU retirement. Allocation/map failures remain visible and fatal. Full XXH3
+validates every uploaded top-level cube face using shared checked mip/face
+addressing; unused mip gaps are not hashed. The vendored xxHash v0.8.3 header,
+license and verified upstream blob identities are recorded in its provenance
+file. This follows the pinned Mac cache/content-hash practice without importing
+title-specific addresses or changing guest completion behavior.
+
+The bounded GPU wait rechecks its own target fence after every event wake and
+retains a monotonic six-second deadline; a stale notification cannot admit an
+unfinished submission. Actual historical wait code fails the authored stale-wake
+case. CPU lookup/budget/fingerprint checks exercise production code and reject
+four/four/three mutants, plus the actual historical lookup and sparse-hash paths.
+Full fork backend compilation passes checked and NDEBUG configurations.
+
+Authored headless tests exercise actual uploader/retirement/resource bodies with
+real RTX 3080 and WARP devices: RGBA readback, six cube faces, formerly unsampled
+and later-face mutations, blocked and stale fences, pinned overage, byte trimming,
+metadata growth preserving cached resources, and shader-visible 2D/cube SRVs.
+Production SRV writing feeds two distinct 2D textures and all six cube directions
+through a real compute shader while later uploads preserve recorded bindings.
+The final RTX 3080 run reported zero validation messages/errors. Reference cache
+and historical wait controls fail their specific contracts. Unrelated public
+entry declarations become static only in the test copy for linkage; an unused
+relocation diagnostic boundary aborts. Original game assets are not test inputs.
+
+The curated GPU trial also passes against its actual checked retirement wrapper.
+Native candidate `0198d03479a4fc3479a89d564902fc7fbed160145d92a7e72017deb37a9e5544`
+with matched PE/PDB identity completed normal screen-gated PLAY in run
+`20261105T230519.607489Z`: original menu frame 11, loaded bike/rider frame 25,
+and actual player/opponents/race HUD frame 42 were inspected as completed
+presenting backbuffers. Seven normal inputs and one observed Sony skip were
+acknowledged. An additional inspected loaded-bike reference preserves the
+existing threshold, checks, input sequence and race target; unloaded, distant
+and wrong-menu captures remain rejected. An earlier failed navigation trial is
+retained as a failure. Shadow rectangles and shading defects remain.
+
+The configured post-target guard ended the run at 419.875 seconds without a
+resource breach. Aggregate-only diagnostics admitted 299 complete texture
+records: 27,973,970 calls, 453 misses/allocation pairs, 366 stale reuploads,
+365,287 validated hits and no reported resource failures or clock errors.
+Owned default+upload footprints peaked at 255,983,616 bytes under the selected
+512 MiB target; no budget evictions or pinned overage occurred. Texture-call
+wall totals were setup 1.102 s, lookup 14.056 s, checksum 6.897 s and remainder
+2.653 s; these are not exclusive CPU/frame costs. The final report had zero
+misses and 2,437 validated hits. Lookup scanning is now a visible cost.
+
+The final 60 intact diagnostic groups contain 202 successful API Presents over
+60.260426 reconstructed seconds (about 3.352/s, interval 183.674–616.115 ms,
+mean-rounding bound 0.000101 s). No suspended sampler ran. Sequential matched
+thread counters total 253.906 CPU seconds over 60.055 seconds; thread labels
+were unavailable, so this packet does not assign named-thread critical costs.
+These are single-run diagnostics, not scanout, an alternating matched gain or
+stable 30 FPS. Native GPU phase timings and a controlled end-to-end improvement
+remain unproven; the real-GPU fixture establishes functional queue/resource
+semantics. The full performance and graphics goal remains open.
+
+The retirement follow-up `6191470f` is integrated through the same canonical
+combined branch `d090e2f6`. Mandatory resize, resource-reuse and readback callers
+now abort visibly on a failed target-fence wait. The curated backend has ten
+such callers; its checked void retirement wrapper remains unchanged. CPU
+fixtures cover failure before and after capacity submission and preserve
+recorded ownership when the wait fails, even with an otherwise completed fence.

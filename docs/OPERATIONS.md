@@ -28,6 +28,21 @@ budget on the drain. Raw diagnostic capture remains the backend default
 rendering, submission order or guest presentation. A presenting manifest still
 requires successful-Present/error checks and semantic image inspection.
 
+Use `--d3d12-debug default|0|1` to select optional DX12 API validation.
+Inherited `D3D12_DBG` is cleared: `default` retains the compiled policy, `0`
+disables validation, and `1` requests it. Assertions and ordinary device,
+queue and resource error handling remain active. The requested setting and
+actual environment are recorded; confirm the backend's startup result because
+a requested debug interface can be unavailable. Compare the same executable
+with matched options before attributing a frame-time difference to validation.
+
+`--profile-textures` enables existing aggregate texture setup/lookup/checksum/
+remainder timing and cache outcomes (`PERF=1`, `RSX_TEXTURE_PROFILE=1`). It
+records this environment without enabling broad asset captures or GPU queries.
+These counters add overhead; retain the same profiling setting on both sides
+of a comparison. Texture-call remainder includes several kinds of work and
+must not be reported as allocation time alone.
+
 For a renderer timing trial, add `--profile-renderer` to the normal launcher.
 It enables the existing CPU phase counters and GPU timestamp queries, retaining
 `rsx_phases.csv`, `[PERF]`/`[RSXPHASE]` logs and the exact timing environment in
@@ -291,3 +306,21 @@ parity and matched gameplay timing. All memory, binaries, symbols and captures
 remain private; CI uploads authored-test logs/JSON only.
 
 For the default-off fingerprint-owned job experiment, pass `--native-owned-jobs` to [run.py](../scripts/run.py). The launcher clears inherited SPU flags, explicitly selects and records `SPU_NATIVE_OWNED_JOBS=1`, and retains required policy interpretation. Environment inheritance alone does not select this mode.
+
+### Persistent DX12 texture cache
+
+`--texture-retention 0|1` explicitly selects the reference or bounded persistent
+cache (default `0`); `--texture-cache-mib 0..4096` sets its allocation target
+(default `512`). The launcher clears inherited selections and records both.
+The target counts owned default texture and upload allocation footprints, not
+all driver memory or physical VRAM residency. Indispensable live batch pins may
+exceed it; `[TEXRESIDENCY]` reports this overage with `--profile-textures`.
+A zero target retains required batch resources until genuine GPU retirement.
+
+Use identical cache targets, validation and profiling settings for comparisons.
+Retention validates every uploaded face with full XXH3; the reference retains
+its sparse source checksum. Complete hashing has a measurable cost. Verify the
+actual selected mode, allocations, evictions and bytes in `[TEXRESIDENCY]`, plus
+the exact executable identity; a requested option is not execution evidence.
+The new cache remains experimental pending native race observation and matched
+measurements. Use the existing normal menu route and resource/ownership guards.
