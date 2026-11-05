@@ -5,6 +5,7 @@ the CSV. The historical buffered source (git object below) must reproduce the
 lost/partial tail; mutants of each persistence rule must fail."""
 import os
 from pathlib import Path
+import hashlib
 import re
 import subprocess
 import sys
@@ -15,7 +16,10 @@ VIDEO = ROOT / 'vendor/ps3recomp/libs/video'
 INCLUDE = ROOT / 'vendor/ps3recomp/include'
 SOURCE = VIDEO / 'rsx_fps_stats.c'
 FIXTURE = ROOT / 'scripts/fixtures/fps_csv_persistence.c'
-HISTORICAL = '93f8614:vendor/ps3recomp/libs/video/rsx_fps_stats.c'   # buffered, flushed only at exit
+# The buffered source before #275 (93f8614:vendor/ps3recomp/libs/video/rsx_fps_stats.c), kept as a
+# hash-pinned fixture: CI checkouts are shallow, so the git object is not available there.
+HISTORICAL = ROOT / 'scripts/fixtures/rsx_fps_stats_historical.c'
+HISTORICAL_SHA256 = '2f89d2580e768bf78694e0acef076a5c5b3c42f1d12715fb490c517340e9c2a3'
 HEADER = 'frame,t_ms,dt_ms,flips_since_prev_present'
 ROW = re.compile(r'^(\d+),(\d+\.\d{3}),(\d+\.\d{3}),(\d+)$')
 
@@ -165,9 +169,9 @@ def main():
 
         # Historical control: the old buffered source loses the tail under
         # the same owned termination (real clock; no flush before exit).
-        old = out / 'historical_rsx_fps_stats.c'
-        old.write_text(subprocess.check_output(['git', 'show', HISTORICAL], cwd=ROOT, text=True))
-        hist = build(out, 'historical', old, False)
+        if hashlib.sha256(HISTORICAL.read_bytes()).hexdigest() != HISTORICAL_SHA256:
+            raise SystemExit('FAIL historical fixture changed; it must stay the pre-#275 source')
+        hist = build(out, 'historical', HISTORICAL, False)
         r, path = run(hist, out, 'historical-terminate', 'terminate', 2000, 16667)
         rows, tail = read_csv(path)
         rows = rows or []
