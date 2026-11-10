@@ -1423,6 +1423,13 @@ static void gcm_rsx_process_fifo_unlocked(void);
  * the D3D12 backend it feeds) stays on the present thread -- running it from
  * the polling game thread killed the process silently. */
 static HANDLE s_gcm_kick_ev = NULL;
+
+/* Renderer hook polled between FIFO commands (see gcm_rsx_process_fifo_unlocked).
+ * The backend uses it to answer a blocked CPU read of a rendered surface
+ * without waiting for the whole drain to finish. NULL: no polling. */
+static void (*volatile s_gcm_fifo_poll_hook)(void);
+void cellGcm_set_fifo_poll_hook(void (*hook)(void)) { s_gcm_fifo_poll_hook = hook; }
+
 void* cellGcm_fifo_kick_event(void)
 {
     if (!s_gcm_kick_ev) s_gcm_kick_ev = CreateEventA(NULL, FALSE, FALSE, NULL);
@@ -1597,7 +1604,9 @@ static void gcm_rsx_process_fifo_unlocked(void)
      * short of `put` every tick is the signature of a FIFO that can never
      * catch up, and the reason is the whole diagnosis. */
     const char* why = "caught-up";
+    void (*const poll_hook)(void) = s_gcm_fifo_poll_hook;
     while (s_fifo_getoff != put && budget-- > 0) {
+        if (poll_hook) poll_hook();
         u32 ea = gcm_io2ea(s_fifo_getoff);
         if (!ea) {
             /* An absent mapping does not authorize a new entry point.

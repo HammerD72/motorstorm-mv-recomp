@@ -16,6 +16,8 @@ static u64 clock_value=100;static unsigned clock_calls,read_calls;static LONG cu
 static int s_cpu_surface_recording;static int clock_ok=1;static u32 gpu_pixel,cpu_pixel;static unsigned submitted_batches;static struct Event kick_event;
 static LONG GetCurrentThreadId(void){return current_thread;}
 static LONG InterlockedCompareExchange(volatile LONG *p,LONG value,LONG expected){LONG old=*p;if(old==expected)*p=value;return old;}
+static LONG InterlockedExchange(volatile LONG *p,LONG value){LONG old=*p;*p=value;return old;}
+static int poll_mode;static void cpu_surface_fifo_poll(void);static DWORD poll_steps(HANDLE h);
 static void AcquireSRWLockExclusive(SRWLOCK *p){(void)p;}
 static void ReleaseSRWLockExclusive(SRWLOCK *p){(void)p;}
 static int QueryPerformanceCounter(LARGE_INTEGER *p){clock_calls++;p->QuadPart=(int64_t)clock_value++;return clock_ok;}
@@ -29,6 +31,7 @@ static void cpu_surface_service(void);
 static void cpu_surface_frame_complete(void);
 static DWORD WaitForSingleObject(HANDLE h,DWORD deadline){
     if(deadline!=30000)abort();
+    if(poll_mode)return poll_steps(h);
     clock_value+=40;current_thread=2;
     /* Authored GPU submission and retirement; production completion must
      * copy this published pixel and release the waiter without a pump. */
@@ -55,6 +58,23 @@ static void cpu_surface_read(u32 address,u32 bytes){
 /* PRODUCTION_SERVICE */
 /* PRODUCTION_COMPLETION */
 /* PRODUCTION_REQUEST */
+/* PRODUCTION_POLL */
+static DWORD poll_steps(HANDLE h){
+    /* FIFO poll between commands: no owner yet, a foreign thread and an
+     * open recording must all leave the request queued; the renderer
+     * between commands serves it from submitted work. */
+    cpu_surface_fifo_poll();
+    if(h->signaled){fprintf(stderr,"FAIL: poll served without a renderer owner\n");exit(2);}
+    s_cpu_surface_thread=2;current_thread=3;cpu_surface_fifo_poll();
+    if(h->signaled){fprintf(stderr,"FAIL: poll served from a foreign thread\n");exit(2);}
+    current_thread=2;gpu_pixel=0xCAFE;submitted_batches++;s_cpu_surface_recording=1;cpu_surface_fifo_poll();
+    if(h->signaled){fprintf(stderr,"FAIL: poll served while recording\n");exit(2);}
+    s_cpu_surface_recording=0;cpu_surface_fifo_poll();
+    if(!h->signaled || s_cpu_surface_pending){fprintf(stderr,"FAIL: poll did not serve a queued request\n");exit(2);}
+    current_thread=1;
+    return WAIT_OBJECT_0;
+}
+
 #define REQUIRE(x,message) do{if(!(x)){fprintf(stderr,"FAIL: %s\n",message);return 1;}}while(0)
 int main(int argc,char **argv){
     RsxCpuSurfaceProfile p={0};p.queued=10;p.started=20;p.finished=60;p.returned=70;
@@ -65,6 +85,12 @@ int main(int argc,char **argv){
     p.started=20;p.copies=3;REQUIRE(!rsx_cpu_surface_profile_valid(&p),"invalid copy count rejected");
     s_cpu_surface_live=1;
     if(argc==2 && !strcmp(argv[1],"unsubmitted")){s_cpu_surface_recording=1;cpu_surface_frame_complete();return 1;}
+    if(argc==2 && !strcmp(argv[1],"poll")){
+        poll_mode=1;cpu_surface_request(0x20120,2,NULL);
+        REQUIRE(cpu_pixel==0xCAFE && read_calls==1 && !s_cpu_surface_head && !s_cpu_surface_pending,"FIFO poll serves a queued read from submitted work");
+        cpu_surface_fifo_poll();REQUIRE(read_calls==1,"idle poll does nothing");
+        puts("PASS: FIFO poll owner/thread/recording guards");return 0;
+    }
     if(argc==2 && !strcmp(argv[1],"clock-failure")){s_cpu_surface_profile=1;clock_ok=0;cpu_surface_request(0x20120,2,NULL);return 1;}
     cpu_surface_request(0x20120,2,NULL);
     REQUIRE(cpu_pixel==0xBEEF && submitted_batches==1,"submitted pixel visible at completion");

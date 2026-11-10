@@ -14,6 +14,8 @@ typedef struct CpuSurfaceRequest {
 static SRWLOCK s_cpu_surface_lock = SRWLOCK_INIT;
 static CpuSurfaceRequest *s_cpu_surface_head, *s_cpu_surface_tail;
 static volatile LONG s_cpu_surface_thread;
+/* Set while a request is queued; read without the lock by the FIFO poll. */
+static volatile LONG s_cpu_surface_pending;
 static ID3D12CommandAllocator *s_cpu_surface_alloc;
 static ID3D12GraphicsCommandList *s_cpu_surface_list;
 static ID3D12Fence *s_cpu_surface_fence;
@@ -143,6 +145,7 @@ static void cpu_surface_service(void) {
     if(owner && owner!=thread)cpu_surface_fail("renderer service thread changed",E_FAIL);
     AcquireSRWLockExclusive(&s_cpu_surface_lock);
     CpuSurfaceRequest *request=s_cpu_surface_head;s_cpu_surface_head=s_cpu_surface_tail=NULL;
+    InterlockedExchange(&s_cpu_surface_pending,0);
     ReleaseSRWLockExclusive(&s_cpu_surface_lock);
     while(request) {
         CpuSurfaceRequest *next=request->next;
@@ -179,7 +182,7 @@ static void cpu_surface_request(u32 address,u32 bytes,void *opaque) {
     AcquireSRWLockExclusive(&s_cpu_surface_lock);
     if(!s_cpu_surface_live){ReleaseSRWLockExclusive(&s_cpu_surface_lock);CloseHandle(request.done);return;}
     if(s_cpu_surface_tail)s_cpu_surface_tail->next=&request;else s_cpu_surface_head=&request;
-    s_cpu_surface_tail=&request;ReleaseSRWLockExclusive(&s_cpu_surface_lock);
+    s_cpu_surface_tail=&request;InterlockedExchange(&s_cpu_surface_pending,1);ReleaseSRWLockExclusive(&s_cpu_surface_lock);
     extern void *cellGcm_fifo_kick_event(void);
     HANDLE kick=(HANDLE)cellGcm_fifo_kick_event();if(kick&&!SetEvent(kick))cpu_surface_fail("renderer kick",E_FAIL);
     DWORD wait=WaitForSingleObject(request.done,30000);
@@ -194,6 +197,20 @@ static void cpu_surface_request(u32 address,u32 bytes,void *opaque) {
     request.profile.returned=cpu_surface_tick();
     cpu_surface_profile_emit(&request);
     CloseHandle(request.done);
+}
+/* FIFO poll (cellGcm_set_fifo_poll_hook): answer queued CPU reads between
+ * FIFO commands instead of only between drains. The renderer used to reach
+ * cpu_surface_service only at its next pump or batch end, so a blocked guest
+ * read waited out the rest of a long drain (~37 ms mean in a MotorStorm race)
+ * before the copy even started. A read is served from the same state the pump
+ * would serve it from -- submitted work, after the prior-fence wait -- only
+ * sooner. Only the renderer thread services, and never while recording.
+ * RSX_CPU_SURFACE_POLL=0 restores pump-only service (A/B). */
+static void cpu_surface_fifo_poll(void) {
+    if(!s_cpu_surface_pending || s_cpu_surface_recording)return;
+    LONG owner=InterlockedCompareExchange(&s_cpu_surface_thread,0,0);
+    if(!owner || owner!=(LONG)GetCurrentThreadId())return;
+    cpu_surface_service();
 }
 static void cpu_surface_init(void) {
     s_cpu_surface_thread=0;
@@ -211,6 +228,11 @@ static void cpu_surface_init(void) {
     CPU_SURFACE_HR(s_d3d.device->lpVtbl->CreateFence(s_d3d.device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&s_cpu_surface_fence));
     s_cpu_surface_event=CreateEventA(NULL,FALSE,FALSE,NULL);if(!s_cpu_surface_event)cpu_surface_fail("GPU event creation",E_FAIL);
     s_cpu_surface_live=1;vm_read_sync_set_handler(cpu_surface_request,NULL);
+    const char *poll=getenv("RSX_CPU_SURFACE_POLL");
+    if(!(poll && poll[0]=='0')) {
+        extern void cellGcm_set_fifo_poll_hook(void (*hook)(void));
+        cellGcm_set_fifo_poll_hook(cpu_surface_fifo_poll);
+    }
 }
 static void cpu_surface_retire(OffRT *r) {
     cpu_surface_copy(r);
@@ -218,6 +240,7 @@ static void cpu_surface_retire(OffRT *r) {
     r->cpu_address=r->cpu_pitch=0;r->gpu_generation=r->cpu_generation=0;
 }
 static void cpu_surface_shutdown(void) {
+    { extern void cellGcm_set_fifo_poll_hook(void (*hook)(void)); cellGcm_set_fifo_poll_hook(NULL); }
     vm_read_sync_set_handler(NULL,NULL);
     AcquireSRWLockExclusive(&s_cpu_surface_lock);
     for(int i=0;i<CPU_SURFACE_CAPACITY;i++)cpu_surface_retire(&s_d3d.off_rt[i]);

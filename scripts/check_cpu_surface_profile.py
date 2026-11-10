@@ -19,7 +19,7 @@ def main():
     declarations=source[source.index('typedef struct CpuSurfaceRequest'):source.index('static ID3D12CommandAllocator')]
     declarations+='\nstatic int s_cpu_surface_live;\n'
     helper=source[source.index('static int s_cpu_surface_profile;'):source.index('static void cpu_surface_fence_wait')]
-    for marker,value in [('DECLARATIONS',declarations),('HELPERS',helper),('SERVICE',function(source,'cpu_surface_service')),('COMPLETION',function(source,'cpu_surface_frame_complete')),('REQUEST',function(source,'cpu_surface_request'))]:
+    for marker,value in [('DECLARATIONS',declarations),('HELPERS',helper),('SERVICE',function(source,'cpu_surface_service')),('COMPLETION',function(source,'cpu_surface_frame_complete')),('REQUEST',function(source,'cpu_surface_request')),('POLL',function(source,'cpu_surface_fifo_poll'))]:
         fixture=fixture.replace('/* PRODUCTION_'+marker+' */',value)
     c=out/'check.c';c.write_text(fixture);exe=out/('check.exe' if os.name=='nt' else 'check')
     compiler=os.environ.get('MV_CLANG') or os.environ.get('CC') or ('clang-cl' if os.name=='nt' else 'cc')
@@ -44,6 +44,24 @@ def main():
     ordering=subprocess.run([str(exe),'unsubmitted'],capture_output=True,text=True)
     (out/'unsubmitted.log').write_text(ordering.stdout+ordering.stderr)
     assert ordering.returncode==2 and 'CPU service before command submission' in ordering.stderr
+    polled=subprocess.run([str(exe),'poll'],capture_output=True,text=True)
+    (out/'poll.log').write_text(polled.stdout+polled.stderr)
+    assert polled.returncode==0 and 'PASS: FIFO poll' in polled.stdout,polled.stdout+polled.stderr
+    poll=function(source,'cpu_surface_fifo_poll')
+    for name,before,after,expected in [
+        ('poll-records','if(!s_cpu_surface_pending || s_cpu_surface_recording)return;','if(!s_cpu_surface_pending)return;','FAIL'),
+        ('poll-any-thread','if(!owner || owner!=(LONG)GetCurrentThreadId())return;','(void)owner;','FAIL: poll served')]:
+        assert poll.count(before)==1,name
+        src=out/(name+'.c');src.write_text(fixture.replace(poll,poll.replace(before,after)))
+        binary=out/(name+('.exe' if os.name=='nt' else ''))
+        changed=[str(src) if x==str(c) else x for x in cmd]
+        if os.name=='nt':changed=[('/Fe'+str(binary)) if x.startswith('/Fe') else x for x in changed]
+        else:changed[-1]=str(binary)
+        build=subprocess.run(changed,capture_output=True,text=True)
+        assert build.returncode==0,build.stdout+build.stderr
+        bad=subprocess.run([str(binary),'poll'],capture_output=True,text=True)
+        assert bad.returncode!=0,(name,bad.stdout+bad.stderr)
+        print('mutant',name,'rejected:',(bad.stderr.strip().splitlines() or ['abort'])[-1])
     mutant=out/'mutant';mutant.mkdir(exist_ok=True)
     header=(ROOT/'vendor/ps3recomp/libs/video/rsx_cpu_surface_profile.h').read_text()
     assert header.count('if(stages[i]>remaining)return 0;')==1
@@ -70,5 +88,5 @@ def main():
     assert build.returncode==0,build.stdout+build.stderr
     bad=subprocess.run([str(missing)],capture_output=True,text=True);(out/'missing-service-run.log').write_text(bad.stdout+bad.stderr)
     assert bad.returncode==2 and 'queued request not released at completed batch' in bad.stderr
-    print('PASS: submitted pixel/waiter completion, premature-order/missing-service and clock/accounting controls');return 0
+    print('PASS: submitted pixel/waiter completion, FIFO poll guards, premature-order/missing-service and clock/accounting controls');return 0
 if __name__=='__main__':sys.exit(main())
