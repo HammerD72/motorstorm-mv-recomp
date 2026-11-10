@@ -38,6 +38,8 @@ jobs:
           python scripts/check_rsx_texture_retention.py
           python scripts/check_rsx_texture_budget.py
           python scripts/check_rsx_texture_fingerprint.py
+      - name: Actual 3D volume texture decode and FP declarations
+        run: python scripts/check_rsx_texture_volume.py
       - name: Full render-batch accounting and submission errors
         run: python scripts/check_rsx_perf_accounting.py
       - name: Exact SPU fingerprint cache and worker cleanup
@@ -329,6 +331,8 @@ jobs:
           python scripts/check_rsx_texture_retention.py
           python scripts/check_rsx_texture_budget.py
           python scripts/check_rsx_texture_fingerprint.py
+      - name: Actual 3D volume texture decode and FP declarations
+        run: python scripts/check_rsx_texture_volume.py
       - name: Full render-batch accounting and submission errors
         run: python scripts/check_rsx_perf_accounting.py
       - name: Exact SPU fingerprint cache and worker cleanup
