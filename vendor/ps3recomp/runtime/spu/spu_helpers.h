@@ -1,7 +1,7 @@
 /*
  * ps3recomp - SPU instruction semantics helpers
  *
- * Pure-C, header-only implementation of the per-instruction semantics used
+ * Instruction value implementation of the per-instruction semantics used
  * by lifter-generated code. Extracted from spu_lifter.py so the helpers
  * have one source of truth and can be unit-tested directly (see
  * runtime/spu/tests/test_spu_helpers.c).
@@ -16,6 +16,8 @@
 #include "spu_context.h"
 #include <string.h>
 #include <math.h>
+#include "spu_float.h"
+#include "spu_float_simd.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -122,16 +124,7 @@ static inline u128 spu_sfx(u128 a, u128 b, u128 t) { u128 r; for(int i=0;i<4;i++
 static inline u128 spu_fi(u128 a, u128 b) {
     u128 r;
     for (int i = 0; i < 4; i++) {
-        uint32_t rb = b._u32[i];
-        uint32_t ra = a._u32[i];
-        uint32_t exp = (rb >> 23) & 0xFFu;
-        uint32_t base_bits = rb & 0xFFFFFC00u;
-        float base; memcpy(&base, &base_bits, sizeof base);
-        uint32_t step_frac = rb & 0x3FFu;
-        float step = ldexpf((float)step_frac, (int)exp - 127 - 13);
-        if (base < 0.0f) step = -step;
-        float y = ldexpf((float)(ra & 0x7FFFFu), -19);
-        r._f32[i] = base - step * y;
+        r._u32[i] = spu_sf_interpolate(a._u32[i], b._u32[i]);
     }
     return r;
 }
@@ -175,79 +168,8 @@ static inline u128 spu_selb(u128 a, u128 b, u128 c) {
     r._u64[1]=(a._u64[1]&~c._u64[1])|(b._u64[1]&c._u64[1]);
     return r;
 }
-/* shufb special selectors per Cell BE ISA:
- *   sel & 0xE0 == 0xE0 -> 0x80
- *   sel & 0xC0 == 0xC0 -> 0xFF
- *   sel & 0xC0 == 0x80 -> 0x00
- *   otherwise           -> concat{a,b}[sel & 0x1F] */
-#if defined(__SSE4_1__)
-#include <smmintrin.h>
-/* pshufb version: one of the hottest SPU ops (~11% of GH3's FMOD mixer task
- * as the byte loop). SPU byte P lives at host byte SPU_W(P), i.e. the bytes
- * of each 32-bit word reversed, so swap into SPU order, select, swap back. */
-static inline u128 spu_shufb(u128 a, u128 b, u128 c) {
-    const __m128i sw = _mm_setr_epi8(3,2,1,0, 7,6,5,4, 11,10,9,8, 15,14,13,12);
-    __m128i A, B, C; memcpy(&A, &a, 16); memcpy(&B, &b, 16); memcpy(&C, &c, 16);
-    A = _mm_shuffle_epi8(A, sw); B = _mm_shuffle_epi8(B, sw); C = _mm_shuffle_epi8(C, sw);
-    const __m128i idx = _mm_and_si128(C, _mm_set1_epi8(0x0F));
-    const __m128i fromb = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8(0x10)), _mm_set1_epi8(0x10));
-    __m128i r = _mm_blendv_epi8(_mm_shuffle_epi8(A, idx), _mm_shuffle_epi8(B, idx), fromb);
-    /* Special selectors: 10x -> 0x00, 110 -> 0xFF, 111 -> 0x80. */
-    const __m128i m80 = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8((char)0x80)), _mm_set1_epi8((char)0x80));
-    const __m128i mC0 = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8((char)0xC0)), _mm_set1_epi8((char)0xC0));
-    const __m128i mE0 = _mm_cmpeq_epi8(_mm_and_si128(C, _mm_set1_epi8((char)0xE0)), _mm_set1_epi8((char)0xE0));
-    const __m128i special = _mm_blendv_epi8(mC0, _mm_set1_epi8((char)0x80), mE0);
-    r = _mm_shuffle_epi8(_mm_blendv_epi8(r, special, m80), sw);
-    u128 out; memcpy(&out, &r, 16); return out;
-}
-/* The byte loop stays as the reference (tests/test_spu_shufb.c checks both). */
-static inline u128 spu_shufb_ref(u128 a, u128 b, u128 c) {
-    /* shufb is defined on SPU byte positions. Our u128 is host-native LE, so SPU
-     * byte P lives at _u8[SPU_W(P)]; map every access (the concat source, the
-     * control, and the result) through SPU_W so a control supplied as an immediate
-     * (ila/il) or an LS-loaded constant -- already in true SPU byte order -- is
-     * interpreted correctly. The cbd/chd/cwd/cdd generators below produce true
-     * SPU-byte-order selectors to match. */
-    uint8_t cat[32];
-    for (int j=0;j<16;j++) cat[j]    = a._u8[SPU_W(j)];   /* concat SPU byte j  = a SPU byte j */
-    for (int j=0;j<16;j++) cat[16+j] = b._u8[SPU_W(j)];   /* concat SPU byte 16+j = b SPU byte j */
-    u128 r;
-    for (int t=0;t<16;t++) {                              /* result SPU byte t */
-        uint8_t s = c._u8[SPU_W(t)];                      /* control SPU byte t */
-        uint8_t v;
-        if      ((s & 0xE0)==0xE0) v=0x80;
-        else if ((s & 0xC0)==0xC0) v=0xFF;
-        else if ((s & 0xC0)==0x80) v=0x00;
-        else                       v=cat[s & 0x1F];       /* concat SPU byte (s & 0x1F) */
-        r._u8[SPU_W(t)] = v;
-    }
-    return r;
-}
-#else
-static inline u128 spu_shufb(u128 a, u128 b, u128 c) {
-    /* shufb is defined on SPU byte positions. Our u128 is host-native LE, so SPU
-     * byte P lives at _u8[SPU_W(P)]; map every access (the concat source, the
-     * control, and the result) through SPU_W so a control supplied as an immediate
-     * (ila/il) or an LS-loaded constant -- already in true SPU byte order -- is
-     * interpreted correctly. The cbd/chd/cwd/cdd generators below produce true
-     * SPU-byte-order selectors to match. */
-    uint8_t cat[32];
-    for (int j=0;j<16;j++) cat[j]    = a._u8[SPU_W(j)];   /* concat SPU byte j  = a SPU byte j */
-    for (int j=0;j<16;j++) cat[16+j] = b._u8[SPU_W(j)];   /* concat SPU byte 16+j = b SPU byte j */
-    u128 r;
-    for (int t=0;t<16;t++) {                              /* result SPU byte t */
-        uint8_t s = c._u8[SPU_W(t)];                      /* control SPU byte t */
-        uint8_t v;
-        if      ((s & 0xE0)==0xE0) v=0x80;
-        else if ((s & 0xC0)==0xC0) v=0xFF;
-        else if ((s & 0xC0)==0x80) v=0x00;
-        else                       v=cat[s & 0x1F];       /* concat SPU byte (s & 0x1F) */
-        r._u8[SPU_W(t)] = v;
-    }
-    return r;
-}
-#define spu_shufb_ref spu_shufb
-#endif
+/* Byte shuffle semantics and checked host admission have one owner. */
+#include "spu_shuffle.h"
 
 /* ---- shift / rotate immediate (word lanes) ---- */
 static inline u128 spu_shli(u128 a, int sh)  { u128 r; sh&=0x3F; for(int i=0;i<4;i++) r._u32[i]=(sh>31)?0:(a._u32[i]<<sh); return r; }
@@ -274,8 +196,8 @@ static inline u128 spu_rotqbii(u128 a, int sh) { sh&=7; if(!sh) return a;
     u128 r; r._u32[0]=(uint32_t)(nhi>>32); r._u32[1]=(uint32_t)nhi; r._u32[2]=(uint32_t)(nlo>>32); r._u32[3]=(uint32_t)nlo; return r; }
 
 /* ---- single-precision float (4 lanes) ---- */
-static inline u128 spu_fa(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._f32[i]=a._f32[i]+b._f32[i]; return r; }
-static inline u128 spu_fs(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._f32[i]=a._f32[i]-b._f32[i]; return r; }
+static inline u128 spu_fa(u128 a, u128 b) { u128 r; if(spu_sf_simd_binary(r._u32,a._u32,b._u32,0)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_add(a._u32[i],b._u32[i]); return r; }
+static inline u128 spu_fs(u128 a, u128 b) { u128 r; if(spu_sf_simd_binary(r._u32,a._u32,b._u32,1)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_add(a._u32[i],b._u32[i]^0x80000000u); return r; }
 
 /* RI8 scale: float-to-int uses 2^(173-i8), int-to-float 2^(i8-155).
  * The canonical immediates 173 and 155 are identity conversions. */
@@ -287,10 +209,10 @@ static inline u128 spu_csflt(u128 a, int i8){ u128 r; double f=exp2((double)(i8-
     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._s32[i]*f); return r; }
 static inline u128 spu_cuflt(u128 a, int i8){ u128 r; double f=exp2((double)(i8-155));
     for(int i=0;i<4;i++) r._f32[i]=(float)((double)a._u32[i]*f); return r; }
-static inline u128 spu_fm(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._f32[i]=a._f32[i]*b._f32[i]; return r; }
-static inline u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=fmaf(a._f32[i], b._f32[i], c._f32[i]); return r; }
-static inline u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; for(int i=0;i<4;i++) r._f32[i]=fmaf(a._f32[i], b._f32[i], -c._f32[i]); return r; }
-static inline u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; for(int i=0;i<4;i++) r._f32[i]=fmaf(a._f32[i], -b._f32[i], c._f32[i]); return r; }
+static inline u128 spu_fm(u128 a, u128 b) { u128 r; if(spu_sf_simd_binary(r._u32,a._u32,b._u32,2)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_mul(a._u32[i],b._u32[i]); return r; }
+static inline u128 spu_fma(u128 a, u128 b, u128 c)  { u128 r; if(spu_sf_simd_fused(r._u32,a._u32,b._u32,c._u32,0,0)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i],0); return r; }
+static inline u128 spu_fms(u128 a, u128 b, u128 c)  { u128 r; if(spu_sf_simd_fused(r._u32,a._u32,b._u32,c._u32,0,0x80000000u)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i]^0x80000000u,0); return r; }
+static inline u128 spu_fnms(u128 a, u128 b, u128 c) { u128 r; if(spu_sf_simd_fused(r._u32,a._u32,b._u32,c._u32,0x80000000u,0)) return r; for(int i=0;i<4;i++) r._u32[i]=spu_sf_madd(a._u32[i],b._u32[i],c._u32[i],0x80000000u); return r; }
 static inline u128 spu_fceq(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=(a._f32[i]==b._f32[i])?0xFFFFFFFFu:0; return r; }
 static inline u128 spu_fcgt(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._u32[i]=(a._f32[i]>b._f32[i])?0xFFFFFFFFu:0; return r; }
 

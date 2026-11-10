@@ -58,14 +58,23 @@ def main():
     s.add_argument('--keys-dir', default='game/private_keys', help='Private headers and optional keys.json')
     b=sub.add_parser('build'); b.add_argument('--jobs',type=int,default=8); b.add_argument('--configure-only',action='store_true')
     b.add_argument('--optimize',action='store_true',help='Enable native O1 optimization with symbols and assertions retained')
+    b.add_argument('--optimize-renderer',action='store_true',help='Use checked O2/automatic inlining for native video/FIFO sources; requires --optimize')
     b.add_argument('--ps3recomp-dir',type=Path,help='Selected toolkit source (default: curated vendor runtime)')
     b.add_argument('--native-world-transforms',action=argparse.BooleanOptionalAction,default=True,
                    help='Bind verified native hierarchy work (default on; selected debug-US ELF only)')
     b.add_argument('--native-job-wait',action=argparse.BooleanOptionalAction,default=True,
                    help='Bind verified native cooperative dependency waits (default on)')
+    b.add_argument('--native-visibility',action=argparse.BooleanOptionalAction,default=False,
+                   help='Bind verified visibility prototype (default off; reference execution remains the runtime default)')
+    b.add_argument('--native-pcm-cubic',action=argparse.BooleanOptionalAction,default=False,
+                   help='Bind verified PCM cubic DSP (default off; explicit runtime reference/shadow/native mode)')
+    b.add_argument('--native-particle-thresholds',action=argparse.BooleanOptionalAction,default=False,
+                   help='Bind the verified particle scan (default off; runtime reference/shadow/native policy remains explicit)')
     g=sub.add_parser('generate'); g.add_argument('--stage',choices=['ppu','spu'],required=True); g.add_argument('--jobs',type=int,default=8)
     sub.add_parser('check')
     args=ap.parse_args()
+    if args.cmd=='build' and args.optimize_renderer and not args.optimize:
+        ap.error('--optimize-renderer requires --optimize')
     if args.cmd=='setup':
         c={'elf':str(Path(args.elf).resolve()),'disc':str(Path(args.disc).resolve()),'ffmpeg':str(Path(args.ffmpeg).resolve()),'keys':str(Path(args.keys_dir).resolve()),'userdata':'game/userdata','generated':'build/generated/named'}
         for key in ('elf','disc','ffmpeg'):
@@ -93,8 +102,12 @@ def main():
         else:
             images=ROOT/'build/extracted/spu'; out=c['generated']/'spu'
             if out.exists() and any(out.iterdir()): raise SystemExit('Existing SPU tree preserved. Move it to temp/ before regeneration.')
+            named=ROOT/'build/extracted/named'
             run([sys.executable,TOOLS/'extract_spu_images.py',c['elf'],'--output',images])
+            # Symtab-named inputs: policy module id 3 joins the class-A images; job binaries 210-219.
+            run([sys.executable,ROOT/'scripts/spu/extract_ms1_named.py','--elf',c['elf'],'--out',named,'--images',images])
             run([sys.executable,TOOLS/'build_spu_workloads.py','--images',images,'--lifted',out,'--out',out/'spu_workloads.c','--title','MotorStorm MV','--constructor'])
+            run([sys.executable,ROOT/'scripts/spu/lift_ms1_jobmods.py','--jobmods',named/'jobmods','--out',out])
         print('Generated output is private and ignored. See docs/BUILDING.md for additional module requirements.'); return
     if args.cmd=='build':
         if not 1<=args.jobs<=8: raise SystemExit('Use 1..8 jobs to bound compiler memory')
@@ -109,8 +122,12 @@ def main():
         if 'MV_CLANG' in env: command.extend([f'-DCMAKE_C_COMPILER={env["MV_CLANG"]}',f'-DCMAKE_CXX_COMPILER={env["MV_CLANG"]}'])
         command.append(f'-DPS3RECOMP_DIR={source_root}')
         command.append(f'-DPORT_OPTIMIZE_NATIVE={"ON" if args.optimize else "OFF"}')
+        command.append(f'-DPORT_OPTIMIZE_RENDERER={"ON" if args.optimize_renderer else "OFF"}')
         command.extend([f'-DPORT_NATIVE_WORLD_TRANSFORMS={"ON" if args.native_world_transforms else "OFF"}',
                         f'-DPORT_NATIVE_JOB_WAIT={"ON" if args.native_job_wait else "OFF"}',
+                        f'-DPORT_NATIVE_VISIBILITY={"ON" if args.native_visibility else "OFF"}',
+                        f'-DPORT_NATIVE_PCM_CUBIC={"ON" if args.native_pcm_cubic else "OFF"}',
+                        f'-DPORT_NATIVE_PARTICLE_THRESHOLDS={"ON" if args.native_particle_thresholds else "OFF"}',
                         f'-DPORT_TARGET_ELF={c["elf"]}'])
         logs=ROOT/'temp/builds'/datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
         logged_run(command,logs/'configure.log',env=env)
@@ -123,8 +140,21 @@ def main():
         identity.update(build_type='Debug',optimized_checked=args.optimize,native_world_transforms=args.native_world_transforms,
                         native_job_wait=args.native_job_wait)
         identity.update(runtime_record)
-        if args.native_world_transforms or args.native_job_wait:
+        identity['native_visibility']=args.native_visibility
+        identity['native_pcm_cubic']=args.native_pcm_cubic
+        identity['native_particle_thresholds']=args.native_particle_thresholds
+        identity['renderer_optimization']=json.loads((binary/'renderer-optimization.json').read_text())
+        if identity['renderer_optimization']['enabled'] != args.optimize_renderer:
+            raise SystemExit('Renderer build configuration did not match the requested mode')
+        identity['renderer_optimization_helper_sha256']=hashlib.sha256((ROOT/'src/renderer_optimization.cmake').read_bytes()).hexdigest()
+        if args.native_particle_thresholds:
+            identity['native_particle_binding']=json.loads((binary/'native-particle-input/identity.json').read_text())
+            identity['native_particle_binding_generator_sha256']=hashlib.sha256((ROOT/'scripts/native_particle_binding.py').read_bytes()).hexdigest()
+        if args.native_world_transforms or args.native_job_wait or args.native_visibility or args.native_pcm_cubic:
             identity['native_world_binding']=json.loads((binary/'native-world-binding.json').read_text())
+            identity['native_world_sources_sha256']={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in sorted((ROOT/'src/motorstorm').glob('*')) if p.is_file()}
+        elif args.native_particle_thresholds:
             identity['native_world_sources_sha256']={str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted((ROOT/'src/motorstorm').glob('*')) if p.is_file()}
         (binary/'build_identity.json').write_text(json.dumps(identity,indent=2)); print('Build identity:',identity['sha256'])

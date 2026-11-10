@@ -16,6 +16,13 @@ jobs:
         run: python scripts/check_native_window.py
       - name: Screen-gated menu replay regression
         run: python scripts/check_menu_replay.py
+      - name: Explicit native resource budgets
+        run: python scripts/check_native_resource_guard.py
+      - name: Native mode admission
+        run: python scripts/check_native_mode_guard.py
+          python scripts/check_menu_luminance_gate.py
+      - name: Checked renderer optimization scope
+        run: python scripts/check_renderer_optimization.py
       - name: Run retention filesystem safety
         run: python scripts/check_run_retention.py
       - name: Bounded frame capture selector
@@ -26,22 +33,66 @@ jobs:
         run: python scripts/check_spu_decrementer.py
       - name: Actual texture lookup and phase accounting
         run: python scripts/check_rsx_texture_profile.py
+      - name: Persistent texture lookup, byte budget and complete fingerprints
+        run: |
+          python scripts/check_rsx_texture_retention.py
+          python scripts/check_rsx_texture_budget.py
+          python scripts/check_rsx_texture_fingerprint.py
+      - name: Full render-batch accounting and submission errors
+        run: python scripts/check_rsx_perf_accounting.py
       - name: Exact SPU fingerprint cache and worker cleanup
         run: python scripts/check_spu_fingerprint_cache.py
+      - name: Private MFC ownership and warm lookup cache
+        run: python scripts/check_spu_mfc_registry.py
+      - name: Checked baseline SPU shuffle dispatch and fallback
+        run: python scripts/check_spu_shufb_dispatch.py --require-simd-code
+      - name: Exact native SPU call return boundaries
+        run: python scripts/check_spu_call_boundaries.py
+      - name: Loaded SPU continuation discovery and native execution
+        run: python scripts/check_spu_load_bias.py
+      - name: Owned native SPU jobs with interpreted policy
+        run: python scripts/check_spu_native_owned.py
       - name: Resident SPU compiled lookup ownership
         run: python scripts/check_spu_resident_lookup.py
       - name: Native world transforms and independent FP oracle
         run: python scripts/check_native_world_transforms.py
+      - name: Native visibility planes and independent negative controls
+        run: python scripts/check_native_visibility_planes.py
+      - name: Native PCM DSP and independent rational oracle
+        run: python scripts/check_pcm_cubic.py
+      - name: Native particle scan and independent scalar oracle
+        run: python scripts/check_native_threshold_scan.py
+      - name: Private particle code binding and output preservation
+        run: python scripts/check_native_particle_binding.py
+      - name: Native visibility adapter and full-state negative controls
+        run: python scripts/check_native_visibility_adapter.py
+      - name: Verified SPU visibility binding and code/data guards
+        run: python scripts/check_native_visibility_binding.py
       - name: Verified native game binding and input isolation
         run: python scripts/check_native_game_binding.py
       - name: Native scene transaction and original fallback
         run: python scripts/check_native_scene.py
       - name: Native job dependency wait and negative controls
         run: python scripts/check_native_job_wait.py
+      - name: Guarded native leaf interpreter dispatch
+        run: python scripts/check_native_leaf_dispatch.py
+      - name: Ordered record batches and retirement controls
+        run: |
+          python scripts/check_rsx_record_batch.py
+          python scripts/check_rsx_record_retire.py
+          python scripts/check_rsx_triangle_capacity.py
       - name: Actual indexed strip restart regression
         run: python scripts/check_rsx_restart.py
+      - name: Recorded PSO ownership and checked teardown
+        run: python scripts/check_rsx_pso_retention.py
+      - name: Bounded texture and pipeline working sets
+        run: python scripts/check_rsx_working_sets.py
       - name: Actual indexed vertex reuse regression
         run: python scripts/check_rsx_indexed_strip.py
+      - name: Named SPU extraction identities and rejections
+        run: python scripts/check_spu_named_extract.py
+      - name: Actual VP upload capacity preservation
+        run: python scripts/check_rsx_vp_upload.py
       - name: Actual packed vertex fetch regression
         run: python scripts/check_rsx_vertex.py
       - name: Actual fragment source modifier regression
@@ -60,6 +111,116 @@ jobs:
         run: python scripts/check_spurs_guest_fields.py
       - name: Scalar-u64 SPURS policy arguments
         run: python scripts/check_spurs_policy_arguments.py
+      - name: Prepared native vertex fetch and actual work controls
+        run: python scripts/check_vertex_prepared.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vertex-prepared-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/vertex-prepared/**/*.log
+            build/self-tests/vertex-prepared/**/*.json
+      - name: Fragment snapshot decisions and historical controls
+        run: python scripts/check_fp_snapshot.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fp-snapshot-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/fp-snapshot/**/*.log
+            build/self-tests/fp-snapshot/**/*.json
+      - name: Actual SPURS admission observations and negative controls
+        run: python scripts/check_spurs_scheduler.py --observe --mutants --observer-mutants --output build/self-tests/spurs-admission-observers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-admission-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-admission-observers/**/*.log
+            build/self-tests/spurs-admission-observers/**/*.json
+      - name: SPURS workload attribute HLE dispatch
+        run: python scripts/check_spurs_attribute_hle.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-attribute-hle-${{ runner.os }}
+          retention-days: 5
+          path: build/self-tests/spurs-attribute-hle/*.log
+      - name: Game job capture owner controls
+        run: python scripts/check_job_capture.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: job-capture-owner-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/job-capture-owner/*.log
+            build/self-tests/job-capture-owner/*.json
+      - name: Sized trace payloads and negative controls
+        run: python scripts/check_sized_trace.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sized-trace-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/sized-trace/**/*.log
+            build/self-tests/sized-trace/**/*.json
+      - name: SPU execution observations and native admission controls
+        run: python scripts/check_spu_execution_observer.py --mutants --syntax
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spu-execution-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spu-execution-observers/**/*.log
+            build/self-tests/spu-execution-observers/**/*.json
+      - name: Actual atomic observations and specific negative controls
+        run: python scripts/check_native_atomic_observer.py --mutants --syntax
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-atomic-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/native-atomic-observers/**/*.log
+            build/self-tests/native-atomic-observers/**/*.json
+      - name: Bounded native job trace and actual negative controls
+        run: python scripts/check_native_job_trace.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-job-trace-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/native-job-trace/**/*.log
+            build/self-tests/native-job-trace/**/*.json
+      - name: Bounded native policy admission and actual negative controls
+        run: python scripts/check_spurs_scheduler.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scheduler-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-scheduler/**/*.log
+            build/self-tests/spurs-scheduler/**/*.json
+      - name: Concurrent policy counters and persistent productivity
+        run: python scripts/check_spurs_policy_counters.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: policy-counter-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-policy-counters/**/*.log
+            build/self-tests/spurs-policy-counters/**/*.json
+      - name: Exact SPU float values and scoped SIMD
+        run: python scripts/check_spu_float.py
       - name: Productive SPU interrupt returns
         run: python scripts/check_spu_iret_progress.py
       - name: Interpreter thread reporting isolation
@@ -81,20 +242,62 @@ jobs:
       - run: python scripts/check_repository.py --self-test
       - run: python scripts/check_havok_observer.py
       - run: python scripts/check_bike_observer.py
+      - name: Fragment half-float packing (WARP)
+        run: python scripts/check_rsx_fp_pack.py --warp-only
+      - name: Recorded PSO ownership and checked teardown
+        run: python scripts/check_rsx_pso_retention.py
+      - name: Bounded texture and pipeline working sets
+        run: python scripts/check_rsx_working_sets.py
+      - name: Evicted recorded pipelines execute (WARP)
+        run: python scripts/check_rsx_pso_gpu.py --warp-only
+      - name: Fragment source sign bits and invalid-DXBC control (WARP)
+        run: python scripts/check_rsx_fp_source_sign.py --warp-only
+      - name: Independent MRT masks and blending (WARP)
+        run: python scripts/check_rsx_mrt.py
+      - name: Production depth attachment descriptors and fallback selection
+        run: python scripts/check_rsx_depth_contract.py
+      - name: Depth admission, explicit clears and compatible fallbacks (WARP)
+        run: python scripts/check_rsx_depth_admission.py --warp-only
       - name: Vertex homogeneous clipping pixel regression (WARP)
         run: python scripts/check_rsx_clip.py
+      - name: Offline native stack replay and actual metadata negative control
+        run: python scripts/check_native_stacks.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-stack-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/native-stacks/**/*.log
+            build/self-tests/native-stacks/**/*.json
       - name: Packed XY16F render-target sampling (WARP)
         run: python scripts/check_rsx_texture_alias.py
       - name: Screen-gated menu replay regression
         run: python scripts/check_menu_replay.py
+      - name: Explicit native resource budgets
+        run: python scripts/check_native_resource_guard.py
+      - name: Native mode admission
+        run: python scripts/check_native_mode_guard.py
+          python scripts/check_menu_luminance_gate.py
+      - name: Checked renderer optimization scope
+        run: python scripts/check_renderer_optimization.py
       - name: Run retention filesystem safety
         run: python scripts/check_run_retention.py
       - name: Bounded frame capture selector
         run: python scripts/check_rsx_capture_schedule.py
+      - name: Ordered record batches and retirement controls
+        run: |
+          python scripts/check_rsx_record_batch.py
+          python scripts/check_rsx_record_retire.py
+          python scripts/check_rsx_triangle_capacity.py
       - name: Actual indexed strip restart regression
         run: python scripts/check_rsx_restart.py
       - name: Actual indexed vertex reuse regression
         run: python scripts/check_rsx_indexed_strip.py
+      - name: Named SPU extraction identities and rejections
+        run: python scripts/check_spu_named_extract.py
+      - name: Actual VP upload capacity preservation
+        run: python scripts/check_rsx_vp_upload.py
       - name: Actual packed vertex fetch regression
         run: python scripts/check_rsx_vertex.py
       - name: Actual fragment source modifier regression
@@ -113,18 +316,43 @@ jobs:
         run: python scripts/check_spu_decrementer.py
       - name: Actual texture lookup and phase accounting
         run: python scripts/check_rsx_texture_profile.py
+      - name: Persistent texture lookup, byte budget and complete fingerprints
+        run: |
+          python scripts/check_rsx_texture_retention.py
+          python scripts/check_rsx_texture_budget.py
+          python scripts/check_rsx_texture_fingerprint.py
+      - name: Full render-batch accounting and submission errors
+        run: python scripts/check_rsx_perf_accounting.py
       - name: Exact SPU fingerprint cache and worker cleanup
         run: python scripts/check_spu_fingerprint_cache.py
+      - name: Checked baseline SPU shuffle dispatch and fallback
+        run: python scripts/check_spu_shufb_dispatch.py --require-simd-code
+      - name: Exact native SPU call return boundaries
+        run: python scripts/check_spu_call_boundaries.py
+      - name: Owned native SPU jobs with interpreted policy
+        run: python scripts/check_spu_native_owned.py
       - name: Resident SPU compiled lookup ownership
         run: python scripts/check_spu_resident_lookup.py
       - name: Native world transforms and independent FP oracle
         run: python scripts/check_native_world_transforms.py
+      - name: Native visibility planes and independent negative controls
+        run: python scripts/check_native_visibility_planes.py
+      - name: Native particle scan and independent scalar oracle
+        run: python scripts/check_native_threshold_scan.py
+      - name: Private particle code binding and output preservation
+        run: python scripts/check_native_particle_binding.py
+      - name: Native visibility adapter and full-state negative controls
+        run: python scripts/check_native_visibility_adapter.py
+      - name: Verified SPU visibility binding and code/data guards
+        run: python scripts/check_native_visibility_binding.py
       - name: Verified native game binding and input isolation
         run: python scripts/check_native_game_binding.py
       - name: Native scene transaction and original fallback
         run: python scripts/check_native_scene.py
       - name: Native job dependency wait and negative controls
         run: python scripts/check_native_job_wait.py
+      - name: Guarded native leaf interpreter dispatch
+        run: python scripts/check_native_leaf_dispatch.py
       - name: Texture snapshot regression
         run: python scripts/check_texture_capture.py
       - name: Memory capacity contract
@@ -135,6 +363,116 @@ jobs:
         run: python scripts/check_spurs_guest_fields.py
       - name: Scalar-u64 SPURS policy arguments
         run: python scripts/check_spurs_policy_arguments.py
+      - name: Prepared native vertex fetch and actual work controls
+        run: python scripts/check_vertex_prepared.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vertex-prepared-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/vertex-prepared/**/*.log
+            build/self-tests/vertex-prepared/**/*.json
+      - name: Fragment snapshot decisions and historical controls
+        run: python scripts/check_fp_snapshot.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fp-snapshot-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/fp-snapshot/**/*.log
+            build/self-tests/fp-snapshot/**/*.json
+      - name: Actual SPURS admission observations and negative controls
+        run: python scripts/check_spurs_scheduler.py --observe --mutants --observer-mutants --output build/self-tests/spurs-admission-observers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-admission-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-admission-observers/**/*.log
+            build/self-tests/spurs-admission-observers/**/*.json
+      - name: SPURS workload attribute HLE dispatch
+        run: python scripts/check_spurs_attribute_hle.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spurs-attribute-hle-${{ runner.os }}
+          retention-days: 5
+          path: build/self-tests/spurs-attribute-hle/*.log
+      - name: Game job capture owner controls
+        run: python scripts/check_job_capture.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: job-capture-owner-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/job-capture-owner/*.log
+            build/self-tests/job-capture-owner/*.json
+      - name: Sized trace payloads and negative controls
+        run: python scripts/check_sized_trace.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sized-trace-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/sized-trace/**/*.log
+            build/self-tests/sized-trace/**/*.json
+      - name: SPU execution observations and native admission controls
+        run: python scripts/check_spu_execution_observer.py --mutants --syntax
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spu-execution-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spu-execution-observers/**/*.log
+            build/self-tests/spu-execution-observers/**/*.json
+      - name: Actual atomic observations and specific negative controls
+        run: python scripts/check_native_atomic_observer.py --mutants --syntax
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-atomic-observers-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/native-atomic-observers/**/*.log
+            build/self-tests/native-atomic-observers/**/*.json
+      - name: Bounded native job trace and actual negative controls
+        run: python scripts/check_native_job_trace.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-job-trace-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/native-job-trace/**/*.log
+            build/self-tests/native-job-trace/**/*.json
+      - name: Bounded native policy admission and actual negative controls
+        run: python scripts/check_spurs_scheduler.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scheduler-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-scheduler/**/*.log
+            build/self-tests/spurs-scheduler/**/*.json
+      - name: Concurrent policy counters and persistent productivity
+        run: python scripts/check_spurs_policy_counters.py --mutants
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: policy-counter-logs-${{ runner.os }}
+          retention-days: 5
+          path: |
+            build/self-tests/spurs-policy-counters/**/*.log
+            build/self-tests/spurs-policy-counters/**/*.json
+      - name: Exact SPU float values and scoped SIMD
+        run: python scripts/check_spu_float.py
       - name: Productive SPU interrupt returns
         run: python scripts/check_spu_iret_progress.py
       - name: Interpreter thread reporting isolation
@@ -145,3 +483,16 @@ jobs:
         run: python scripts/check_task_lifecycle.py
       - name: Check complete task cleanup API
         run: python scripts/check_task_exit_source.py
+
+  shader-pipeline:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Shader storage, worker and owner controls
+        run: python scripts/check_shader_pipeline.py --cc clang-cl

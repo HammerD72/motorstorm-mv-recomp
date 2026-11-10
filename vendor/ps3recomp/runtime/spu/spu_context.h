@@ -9,6 +9,7 @@
 
 #ifndef SPU_CONTEXT_H
 #define SPU_CONTEXT_H
+#include "../../include/ps3emu/spu_execution_observer.h"
 
 #include "../../include/ps3emu/ps3types.h"
 #include <stdint.h>
@@ -482,7 +483,7 @@ typedef struct spu_context {
      * through the caller's code until the next lifted entry -- GH3's job
      * manager then ran its buffer loop a second time on the job's registers
      * and died in its own assert (the song-freeze). */
-    uint32_t drain_ret_pc;
+    uint32_t drain_ret_pc; /* 0: none; SPU_LS_SIZE: a live return to LS 0 */
 } spu_context;
 
 /* Reserved LS addresses (inside the kernel area, below the 0xA00 policy-module
@@ -509,6 +510,10 @@ typedef struct spu_context {
 /* ---------------------------------------------------------------------------
  * Initialization
  * -----------------------------------------------------------------------*/
+/* Release private DMA state only when the execution owner has stopped using
+ * the context. Pair with spu_coh_unregister before a reset or destruction. */
+void spu_mfc_release(spu_context* ctx);
+
 static inline void spu_context_init(spu_context* ctx, uint32_t spu_id)
 {
     memset(ctx, 0, sizeof(*ctx));
@@ -1070,6 +1075,7 @@ static inline void spu_pchist_tick(const spu_context* ctx)
             }                                                              \
             void (*_tf)(spu_context*) = g_spu_trampoline_fn;    \
             g_spu_trampoline_fn = 0;                            \
+            PS3_SPU_DISPATCH_BASE(_tf); \
             yz_lockstep_tick(ctx);                             \
             spu_task_launch_check((ctx), (void*)_tf);          \
             if ((ctx)->int_enable &&                            \
@@ -1078,6 +1084,7 @@ static inline void spu_pchist_tick(const spu_context* ctx)
             spu_pchist_tick(ctx);                              \
             g_spu_pch[g_spu_pch_n++ & 7u] =                    \
                 (uint32_t)((ctx)->pc & SPU_LS_MASK);           \
+            PS3_SPU_DISPATCH((ctx), _tf); \
             _tf(ctx);                                          \
         }                                                      \
     } while (0)
@@ -1086,12 +1093,13 @@ static inline void spu_pchist_tick(const spu_context* ctx)
  * brsl/bisl frame is live (host_depth>0); at 0 the frame was destroyed (task
  * resume / restack unwind) so dispatch to the link register instead -- faithful
  * to CBEA `bi` (branch to word 0 of RA). pc set unconditionally. */
-#define SPU_RET(ctx) do {                                      \
-        (ctx)->pc = (ctx)->gpr[0]._u32[0];                     \
-        if ((ctx)->host_depth == 0)                            \
-            g_spu_trampoline_fn = spu_indirect_branch;         \
-        return;                                                \
-    } while (0)
+#define SPU_RET(ctx) do { \
+    (ctx)->pc = (ctx)->gpr[0]._u32[0]; \
+    if ((ctx)->host_depth == 0) g_spu_trampoline_fn = spu_indirect_branch; \
+    PS3_SPU_EXECUTION(PS3_SPU_COMPILED_RETURN, (ctx), 0, (ctx)->pc, 0, \
+        PS3_SPU_SOURCE_UNAVAILABLE | PS3_SPU_TARGET_CONTEXT_PC, 0); \
+    return; \
+} while (0)
 
 /* Host return through a NON-r0 link register. Sony's SPU compiler links
  * leaf/helper calls through r4/r5/r6/r8/r78 (`brsl $r4, helper` ...
@@ -1099,7 +1107,14 @@ static inline void spu_pchist_tick(const spu_context* ctx)
  * the guest is going, and spu_drain_call's return-address check can then
  * never match -- it restarts dispatch from r0's stale value instead. Same
  * host-frame return as SPU_RET, publishing the register actually branched. */
-#define SPU_RET_REG(ctx, n) do {                                       (ctx)->pc = (ctx)->gpr[n]._u32[0];                             if ((ctx)->host_depth == 0)                                        g_spu_trampoline_fn = spu_indirect_branch;                 return;                                                    } while (0)
+#define SPU_RET_REG(ctx, n) do { \
+    const unsigned _ps3_return_register = (n); \
+    (ctx)->pc = (ctx)->gpr[_ps3_return_register]._u32[0]; \
+    if ((ctx)->host_depth == 0) g_spu_trampoline_fn = spu_indirect_branch; \
+    PS3_SPU_EXECUTION(PS3_SPU_COMPILED_RETURN, (ctx), 0, (ctx)->pc, _ps3_return_register, \
+        PS3_SPU_SOURCE_UNAVAILABLE | PS3_SPU_TARGET_CONTEXT_PC, 0); \
+    return; \
+} while (0)
 
 #ifdef __cplusplus
 } /* extern "C" */

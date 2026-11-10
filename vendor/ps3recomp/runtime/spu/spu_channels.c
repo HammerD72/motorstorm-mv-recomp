@@ -12,7 +12,10 @@
  * embed one), in a small lazily-populated registry.
  */
 
+#include "spu_native_owned.h"
 #include "spu_dma.h"
+#include "ps3emu/native_atomic_observer.h"
+void spu_halt(spu_context*); /* Policy trampolines can precede its definition. */
 #include "spu_coherency.h" /* lock-line lock + PPU-write coherence bitmap */
 #include "spu_helpers.h"   /* spu_splat_u32 / spu_ls_read128 (SMC microstep) */
 #include "spu_lockstep.h"
@@ -267,14 +270,14 @@ static void spu_pm_interp_trampoline(spu_context* ctx)
                           v0[0], v0[1], v0[2], v0[3],
                           ctx->list_stall_mask);
                   fflush(stderr); } }
-            extern volatile unsigned g_spurs_pm_exited;
+
             g_spurs_pm_exited = 1;
             ctx->status = SPU_STATUS_STOPPED_BY_STOP;
             spu_halt(ctx);
             return;
         }
         if (pc == SPURS_PM_SELECT_WORKLOAD_LS) {
-            extern volatile unsigned g_spurs_pm_polls;
+
             ++g_spurs_pm_polls;
             ctx->gpr[3] = spu_make_preferred_u32(spu_pm_current_workload(ctx));
             ctx->pc = ctx->gpr[0]._u32[0] & SPU_LS_MASK;
@@ -282,7 +285,9 @@ static void spu_pm_interp_trampoline(spu_context* ctx)
             return;
         }
     }
-    uint32_t r = spu_interp_run(ctx, pc);
+    const int owned_mode=spu_native_owned_policy(ctx);
+    const uint32_t stop=owned_mode ? ctx->drain_ret_pc : 0;
+    uint32_t r = owned_mode ? spu_interp_run_native_call(ctx,pc,stop) : spu_interp_run(ctx,pc);
     { extern int spu_irq_regs_maybe_restore(spu_context*);
       spu_irq_regs_maybe_restore(ctx); }   /* iret-bail contract (see
           spu_indirect_branch prologue): restore the handler's saved regs */
@@ -291,7 +296,12 @@ static void spu_pm_interp_trampoline(spu_context* ctx)
         return;
     }
     ctx->pc = r & SPU_LS_MASK;
-    g_spu_trampoline_fn = spu_pm_interp_trampoline;   /* stay interpreted */
+    if (owned_mode && stop && ctx->pc==(stop & SPU_LS_MASK)) {
+        if (g_spu_trampoline_fn==spu_indirect_branch) g_spu_trampoline_fn=0;
+        return;
+    }
+    if (!owned_mode || !g_spu_trampoline_fn)
+        g_spu_trampoline_fn = spu_pm_interp_trampoline;
 }
 
 /* SPU->PPU outbound-mailbox delivery hook. The SPU writing WrOutMbox /
@@ -497,6 +507,36 @@ void spu_stop(spu_context* ctx)
 
 /* Run a lifted SPU entry with a halt landing pad. Returns 1 if the job halted
  * (via spu_halt), 0 if it returned normally. */
+int spu_native_owned_enabled(void) {
+    static SPU_THREAD_LOCAL int mode=-1;
+    if (mode<0) {
+        const char* value=getenv("SPU_NATIVE_OWNED_JOBS");
+        if (!value || !strcmp(value,"0")) mode=0;
+        else if (!strcmp(value,"1")) mode=1;
+        else { fprintf(stderr,"invalid SPU_NATIVE_OWNED_JOBS: expected 0 or 1\n"); abort(); }
+    }
+    return mode;
+}
+int spu_native_owned_observed(void) {
+#if PS3_EXECUTION_OBSERVATION || PS3_ATOMIC_OBSERVATION
+    return 1; /* retain the original interpreter observation granularity */
+#else
+    static SPU_THREAD_LOCAL int observed=-1;
+    if (observed<0) {
+        static const char* const options[]={"SPU_TRACE_CALLS","SPU_BOUNDARY_DIR",
+            "SPU_CALLTRACE","SPU_PCHIST","SPU_LS_LOWREAD","SPU_LS_WATCH",
+            "SPU_SMC_WATCH","SPU_STEPCAP","SPU_TRACE","YDKJ_SPU_TRACE","YDKJ_CRI_GATE1TRACE"};
+        observed=0;
+        for (unsigned i=0;i<sizeof(options)/sizeof(options[0]);++i)
+            observed |= getenv(options[i])!=NULL;
+    }
+    return observed;
+#endif
+}
+void spu_native_owned_interpret(spu_context* ctx) {
+    spu_pm_interp_trampoline(ctx);
+}
+
 int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
 {
     int halted = 0;
@@ -552,6 +592,7 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
         /* A one-way guest stack reset invalidates every lifted host caller.
          * Re-enter its target with the same guest state on the driver stack. */
         ctx->host_depth = 0;
+        ctx->drain_ret_pc = 0;
         g_spu_trampoline_fn = 0;
         spu_indirect_branch(ctx);
         SPU_DRAIN(ctx);
@@ -665,8 +706,9 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
             ctx->pm_designed = 0;      /* consume: this pass's exit re-marks it */
             ctx->pm_win_touched = 0;   /* probe window resets per pass (R34) */
             g_spu_trampoline_fn = spu_pm_interp_trampoline;
-        } else
-        entry(ctx);
+        } else if (spu_native_owned_policy(ctx))
+            spu_indirect_branch(ctx);
+        else entry(ctx);
         { static int _e = 0;
           if (getenv("SPU_ARGWATCH") && _e < 8) { _e++;
               fprintf(stderr, "[argwatch] after entry(): img=%d pc=0x%05X "
@@ -676,118 +718,15 @@ int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
               fflush(stderr); } }
         SPU_DRAIN(ctx);
     }
+    ctx->drain_ret_pc = 0; /* no compiled caller survives this driver return */
     yz_lockstep_unregister(ctx);   /* leave the ring; hand the token onward */
     s_spu_halt_armed = outer_armed;
     if (outer_armed) memcpy(s_spu_halt_env, outer_env, sizeof(jmp_buf));
     return halted;
 }
 
-/* ===========================================================================
- * Per-context MFC engine registry
- *
- * One MFC engine per live SPU context, in a small table. A thread group starts
- * all of its threads at once and each one arrives here on its first DMA, so the
- * table is written concurrently by as many host threads as the group has.
- *
- * Two rules keep that safe without putting a lock on the lookup, which every
- * MFC channel access goes through:
- *
- *   - A slot's owner field is written only by the thread that owns the context
- *     in it: the claim below, and the release when that context is done. Every
- *     reader is comparing the field against ITS OWN context pointer, so a read
- *     that races a claim either matches (its own slot, which only it can have
- *     written) or does not, and can never be handed another context's engine.
- *   - Choosing which free slot to claim is done under a lock. It used to be a
- *     scan followed by a store, and two threads that scanned before either
- *     stored both took the same slot and then shared one engine's queue and tag
- *     state -- one SPU's tag wait satisfied by the other SPU's transfer.
- * ===========================================================================*/
-#define SPU_MAX_CONTEXTS 8
-
-typedef struct {
-    spu_context* volatile ctx;
-    mfc_engine   mfc;
-} spu_mfc_slot;
-
-static spu_mfc_slot s_mfc_slots[SPU_MAX_CONTEXTS];
-static SRWLOCK      s_mfc_claim_lock = SRWLOCK_INIT;
-
-/* Physical SPUs do not bound retained software contexts: virtual policies
- * and workloads can each own an engine while inactive. Overflow owners keep
- * private state until their context is released. All list access is locked. */
-typedef struct spu_mfc_overflow {
-    spu_context* ctx;
-    mfc_engine mfc;
-    struct spu_mfc_overflow* next;
-} spu_mfc_overflow;
-static spu_mfc_overflow* s_mfc_overflow;
-
-static mfc_engine* mfc_for(spu_context* ctx)
-{
-    for (int i = 0; i < SPU_MAX_CONTEXTS; i++)
-        if (s_mfc_slots[i].ctx == ctx)
-            return &s_mfc_slots[i].mfc;
-
-    /* No slot yet: take one. The engine is initialized before the slot is
-     * published, so it is never visible to anyone in a half-reset state. */
-    mfc_engine* e = NULL;
-    AcquireSRWLockExclusive(&s_mfc_claim_lock);
-    /* Recheck publication after acquiring the lock. An existing overflow
-     * owner must stay on its engine even when an inline slot becomes free. */
-    for (int i = 0; i < SPU_MAX_CONTEXTS && !e; i++)
-        if (s_mfc_slots[i].ctx == ctx) e = &s_mfc_slots[i].mfc;
-    for (spu_mfc_overflow* n = s_mfc_overflow; n && !e; n = n->next)
-        if (n->ctx == ctx) e = &n->mfc;
-    for (int i = 0; i < SPU_MAX_CONTEXTS && !e; i++) {
-        if (s_mfc_slots[i].ctx != NULL) continue;
-        mfc_engine_init(&s_mfc_slots[i].mfc);
-        s_mfc_slots[i].ctx = ctx;
-        e = &s_mfc_slots[i].mfc;
-    }
-    if (!e) {
-        spu_mfc_overflow* n = (spu_mfc_overflow*)calloc(1, sizeof(*n));
-        if (!n) {
-            fprintf(stderr, "[SPU] cannot allocate private MFC engine for context %p\n", (void*)ctx);
-            fflush(stderr);
-            abort();
-        }
-        mfc_engine_init(&n->mfc);
-        n->ctx = ctx;
-        n->next = s_mfc_overflow;
-        s_mfc_overflow = n;
-        e = &n->mfc;
-    }
-    ReleaseSRWLockExclusive(&s_mfc_claim_lock);
-    return e;
-}
-
-/* Give the slot `ctx` holds back to the table, called when its context is done.
- * Slots used to be claimed and never released, so a title with more SPU
- * contexts over its life than there are slots ran the rest of them on the
- * shared fallback engine -- and by then it is not a fresh engine but whatever
- * tag and queue state the previous owners left in it.
- *
- * Only the owner calls this, and only after its SPU has stopped, so the engine
- * is idle. The next claimant re-initializes it. A context that never issued a
- * DMA holds no slot and this is a scan that finds nothing. */
-void spu_mfc_release(spu_context* ctx)
-{
-    if (!ctx) return;
-    AcquireSRWLockExclusive(&s_mfc_claim_lock);
-    for (int i = 0; i < SPU_MAX_CONTEXTS; i++) {
-        if (s_mfc_slots[i].ctx != ctx) continue;
-        s_mfc_slots[i].ctx = NULL;
-        break;
-    }
-    for (spu_mfc_overflow** link = &s_mfc_overflow; *link; link = &(*link)->next) {
-        if ((*link)->ctx != ctx) continue;
-        spu_mfc_overflow* n = *link;
-        *link = n->next;
-        free(n);
-        break;
-    }
-    ReleaseSRWLockExclusive(&s_mfc_claim_lock);
-}
+/* Private ownership and generation-validated warm engine lookup. */
+#include "spu_mfc_registry.h"
 
 /* ===========================================================================
  * Atomic reservation (GETLLAR / PUTLLC / PUTLLUC) -- real lock-line semantics
@@ -909,6 +848,22 @@ void spu_pm_store_note(spu_context* ctx, uint32_t ea, uint32_t lsa, const char* 
 }
 
 /* Returns 1 if `cmd` is an atomic line op and was handled here, else 0. */
+/* PS3_ATOMIC_OBSERVER_SPU_BEGIN */
+#if PS3_ATOMIC_OBSERVATION
+static const ps3_atomic_observer* s_spu_atomic_observer;
+#endif
+int ps3_atomic_observer_install_spu(const ps3_atomic_observer* o)
+{
+    if (o && (!o->clock || !o->observe)) return 0;
+#if PS3_ATOMIC_OBSERVATION
+    s_spu_atomic_observer = o;
+    return 1;
+#else
+    return o == NULL;
+#endif
+}
+/* PS3_ATOMIC_OBSERVER_SPU_END */
+
 static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
 {
     /* Classify FIRST. Every MFC_Cmd write lands here, and only the switch at
@@ -928,6 +883,12 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
       ea = sysmem_spu_alias_fixup(ea); }
     uint8_t* ls  = &ctx->ls[lsa];
     uint8_t* mem = vm_base + ea;
+#if PS3_ATOMIC_OBSERVATION
+    const ps3_atomic_observer* observer = cmd == MFC_GETLLAR_CMD ? NULL :
+        ps3_atomic_observer_select(s_spu_atomic_observer, PS3_ATOMIC_SPU_STORE,
+            (uintptr_t)ctx, ea, MFC_ATOMIC_LINE);
+    ps3_atomic_observation observation;
+#endif
     /* Round 21(b): final-EA truth for policy atomics. bg_276 killed the
      * 0x7FFFFFFF rule (0x00440440 holds EBOOT .text, not the queue); the
      * container-arena rule 0x40000000|(ea&0x3FFFFFFF) puts 0x80440440 at
@@ -1008,6 +969,15 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
         } else {
             ctx->atomic_stat = 1;   /* PUTLLC failure (line "moved") */
         }
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) {
+            ps3_atomic_observation_begin(&observation, observer,
+                PS3_ATOMIC_SPU_STORE, cmd, ea, MFC_ATOMIC_LINE, (uintptr_t)ctx,
+                (uint32_t)ctx->pc & SPU_LS_MASK, ctx->gpr[0]._u32[0] & SPU_LS_MASK);
+            ps3_atomic_observation_end(&observation, observer,
+                PS3_ATOMIC_INVALID_RANGE | PS3_ATOMIC_DATA_UNAVAILABLE);
+        }
+        #endif
         return 1;
     }
 
@@ -1193,7 +1163,15 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
         { extern uint32_t g_barrier_sync_watch;
           uint32_t b = g_barrier_sync_watch;
           if (b && (ea & ~127u) == (b & ~127u)) g_spu_putllc_sync_hit++; }
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) ps3_atomic_observation_begin(&observation, observer,
+            PS3_ATOMIC_SPU_STORE, cmd, ea, MFC_ATOMIC_LINE, (uintptr_t)ctx,
+            (uint32_t)ctx->pc & SPU_LS_MASK, ctx->gpr[0]._u32[0] & SPU_LS_MASK);
+        #endif
         spu_lockline_lock();
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) memcpy(observation.before, mem, MFC_ATOMIC_LINE);
+        #endif
         if (ctx->resv_valid && ctx->resv_ea == ea &&
             memcmp(mem, ctx->resv_line, MFC_ATOMIC_LINE) == 0) {
             { extern void spu_lockguard_check(spu_context*, uint32_t, const uint8_t*, uint32_t, const char*);
@@ -1301,13 +1279,28 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
                       ctx->atomic_stat ? "FAIL" : "OK",
                       ctx->gpr[0]._u32[0] & SPU_LS_MASK, ea); }
         ctx->resv_valid = 0;                           /* reservation consumed */
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) memcpy(observation.after, mem, MFC_ATOMIC_LINE);
+        #endif
         spu_lockline_unlock();
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) ps3_atomic_observation_end(&observation, observer,
+            PS3_ATOMIC_ATTEMPTED | (ctx->atomic_stat == 0 ? PS3_ATOMIC_COMMITTED : 0));
+        #endif
         if (ctx->atomic_stat == 0 && g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
         return 1;
 
     case MFC_PUTLLUC_CMD:
     case MFC_PUTQLLUC_CMD:
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) ps3_atomic_observation_begin(&observation, observer,
+            PS3_ATOMIC_SPU_STORE, cmd, ea, MFC_ATOMIC_LINE, (uintptr_t)ctx,
+            (uint32_t)ctx->pc & SPU_LS_MASK, ctx->gpr[0]._u32[0] & SPU_LS_MASK);
+        #endif
         spu_lockline_lock();
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) memcpy(observation.before, mem, MFC_ATOMIC_LINE);
+        #endif
         { extern void spu_lockguard_check(spu_context*, uint32_t, const uint8_t*, uint32_t, const char*);
           spu_lockguard_check(ctx, ea, ls, MFC_ATOMIC_LINE, "PUTLLUC"); }
         spu_pm_store_note(ctx, ea, lsa, "PUTLLUC");
@@ -1320,7 +1313,14 @@ static int spu_mfc_atomic(spu_context* ctx, uint32_t cmd)
          * has already overwritten. */
         spu_coh_notify_write(ea);
         ctx->resv_valid = 0; ctx->atomic_stat = 2;   /* PUTLLUC complete */
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) memcpy(observation.after, mem, MFC_ATOMIC_LINE);
+        #endif
         spu_lockline_unlock();
+        #if PS3_ATOMIC_OBSERVATION
+        if (observer) ps3_atomic_observation_end(&observation, observer,
+            PS3_ATOMIC_ATTEMPTED | PS3_ATOMIC_COMMITTED);
+        #endif
         if (g_spu_line_commit_hook) g_spu_line_commit_hook(ea & ~127u);
         return 1;
 
@@ -2901,7 +2901,9 @@ static int spu_smc_microstep(spu_context* ctx)
         /* Stop at the drain's return point too: it sits mid-function, so it is
          * no lifted entry, and a job's return would otherwise run on through
          * the caller's code (GH3's song-freeze; see drain_ret_pc). */
-        return spu_interp_run_until(ctx, pc, ctx->drain_ret_pc) ? 1 : 0;
+        uint32_t end_pc = spu_interp_run_until(ctx, pc, ctx->drain_ret_pc);
+        return end_pc || (ctx->drain_ret_pc &&
+               (end_pc & SPU_LS_MASK) == (ctx->drain_ret_pc & SPU_LS_MASK)) ? 1 : 0;
     }
     { static int _n = 0; if (_n++ < 4)
         fprintf(stderr, "[spu-smc] microstep img=%d runaway (4096 steps from 0x%05X)\n",
@@ -2959,7 +2961,7 @@ void spu_indirect_branch(spu_context* ctx)
      * these two reserved addresses as exitToKernelAddr / selectWorkloadAddr in
      * the SpursKernelContext (spurs_policy.c). */
     if (ctx->policy_mode) {
-        extern volatile unsigned g_spurs_pm_polls, g_spurs_pm_exited;
+
         if (ctx->pc == SPURS_PM_EXIT_TO_KERNEL_LS) {
             /* Module exit: the workload returned to the kernel (drained/yield).
              * Print gated: fires once per policy run = thousands/sec. */
@@ -3172,6 +3174,12 @@ void spu_indirect_branch(spu_context* ctx)
     /* The launched task owns the shared task-code region: resolve it there FIRST
      * so a co-resident task at the same LS base cannot shadow it. (resident_task
      * is 0 outside the region, so this only ever fires for genuine task code.) */
+    /* Retain the interpreted policy path before legacy SMC microsteps.
+     * Only an existing first-owner registry hit may enter native job code. */
+    if (spu_native_owned_policy(ctx) &&
+        (!spu_native_owned_can_run(ctx,ctx->pc) || !spu_lifted_lookup(ctx,ctx->pc))) {
+        spu_native_owned_interpret(ctx); return;
+    }
     spu_fn fn = NULL;
     int code_owner = 0;
     int span_rel = 0;
@@ -3718,6 +3726,7 @@ void spu_indirect_branch(spu_context* ctx)
       } }
     if (fn) {
         spu_check_stack_reset(ctx, fn);
+        PS3_SPU_RESOLVED(ctx, fn);
         /* MUSTTAIL: a guest loop that iterates through an indirect branch (the
          * Bink decoder's per-command dispatch does) must not grow the host
          * stack -- a plain call here leaked a resolver+callee frame per

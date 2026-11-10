@@ -19,7 +19,7 @@ def main():
     source = args.source.resolve()
     text = source.read_text(encoding='utf-8')
     start = text.index('static u32 upload_strip_vp_indexed(')
-    end = text.index('static void d3d12_draw_arrays(', start)
+    end = text.index('\nstatic ', start + 1)
     fixture = ROOT / 'scripts/fixtures/rsx_indexed_strip.c.in'
     template = fixture.read_text(encoding='utf-8')
     assert template.count('@INDEXED_STRIP_FUNCTION@') == 1
@@ -27,11 +27,14 @@ def main():
     out = ROOT / 'temp/checks' / ('rsx-indexed-strip-' + stamp)
     out.mkdir(parents=True)
     c, exe = out / 'check.c', out / ('check.exe' if os.name == 'nt' else 'check')
-    c.write_text(template.replace('@INDEXED_STRIP_FUNCTION@', text[start:end]), encoding='utf-8')
+    fetch_start = text.index('static void read_vp_vertex(')
+    fetch_end = text.index('\n/* VTX_POS=', fetch_start)
+    assert template.count('@FETCH_VERTEX_FUNCTION@') == 1
+    c.write_text(template.replace('@INDEXED_STRIP_FUNCTION@', text[start:end]).replace('@FETCH_VERTEX_FUNCTION@', text[fetch_start:fetch_end]), encoding='utf-8')
     fetch = VIDEO / 'rsx_vertex_fetch.c'
     include = ROOT / 'vendor/ps3recomp/include'
     env = os.environ.copy()
-    if os.name == 'nt':
+    if os.name == 'nt' and not env.get('CC'):
         from project import build_environment
         env = build_environment()
         cmd = [env['MV_CLANG'], '/nologo', '/O2', '/I' + str(include), '/I' + str(VIDEO),
@@ -42,9 +45,9 @@ def main():
     with (out / 'build.log').open('wb') as log:
         build = subprocess.run(cmd, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120)
     inputs = [source, fixture, fetch, VIDEO / 'rsx_vertex_fetch.h', VIDEO / 'rsx_commands.h',
-              VIDEO / 'rsx_index_strip.h', Path(__file__)]
+              VIDEO / 'rsx_index_strip.h', VIDEO / 'rsx_upload_buffer.h', Path(__file__)]
     result = dict(command=cmd, build_returncode=build.returncode, game_inputs=False,
-                  production_functions=['upload_strip_vp_indexed', 'rsx_fetch_attrib'],
+                  production_functions=['upload_strip_vp_indexed', 'read_vp_vertex', 'rsx_vertex_fetch_prepare', 'rsx_fetch_vertex_prepared', 'rsx_fetch_attrib'],
                   source_hashes={str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs})
     if build.returncode:
         print((out / 'build.log').read_text(encoding='utf-8', errors='replace'))

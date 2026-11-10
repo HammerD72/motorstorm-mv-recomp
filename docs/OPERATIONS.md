@@ -18,7 +18,51 @@ entry-return cleanup are distinct events. The trace reports sequential exit
 context and enabled-bit reads; it changes no task bits and does not prove an
 atomic snapshot or race acceptance. It is disabled by default.
 
-Owned child limits: 600s, available physical ≥4GiB, available commit ≥12GiB, private ≤14GiB. Write stop.txt in its run directory for closure. final.json distinguishes guards from natural exits; always inspect fatal logs even on exit 0. Match PID/create_time before attaching/stopping; preserve ordinary user RPCS3.
+Owned child limits: 600s, available physical ≥4GiB, available commit ≥12GiB by default, private ≤14GiB. `--min-free-commit-gib 6` explicitly selects a 6GiB host commit reserve; accepted reserves are finite and 1..12GiB. `--min-free-physical-gib 1` allows concurrent host work with a 1GiB free physical RAM floor; accepted reserves are finite and 1..4GiB. These reserves are host headroom, not game memory requirements. They stay fixed during the run so the guard does not silently reduce its own stop threshold. Lower physical or commit headroom may cause paging and perturb timings; retain the recorded policy when comparing runs. Other guards remain active. `launch.json` and `final.json` record all byte limits and launcher/guard source hashes; a resource stop records its exact metric, value and bound. The [guard policy](../scripts/native_resource_guard.py) and [historical admission checks](../scripts/check_native_resource_guard.py) keep defaults and every other limit enforced. Write stop.txt in its run directory for closure. final.json distinguishes guards from natural exits; always inspect fatal logs even on exit 0. Match PID/create_time before attaching/stopping; preserve ordinary user RPCS3.
+
+Menu/replay captures select `RSX_CAP_SCREEN_ONLY=1` and record it in launch
+identity. A periodic sample due during an offscreen capacity drain stays due
+until a nonempty presenting batch; it spends neither the scheduled nor burst
+budget on the drain. Raw diagnostic capture remains the backend default
+(unset or `RSX_CAP_SCREEN_ONLY=0`). This changes capture selection only, not
+rendering, submission order or guest presentation. A presenting manifest still
+requires successful-Present/error checks and semantic image inspection.
+
+Use `--d3d12-debug default|0|1` to select optional DX12 API validation.
+Inherited `D3D12_DBG` is cleared: `default` retains the compiled policy, `0`
+disables validation, and `1` requests it. Assertions and ordinary device,
+queue and resource error handling remain active. The requested setting and
+actual environment are recorded; confirm the backend's startup result because
+a requested debug interface can be unavailable. Compare the same executable
+with matched options before attributing a frame-time difference to validation.
+
+`--profile-textures` enables existing aggregate texture setup/lookup/checksum/
+remainder timing and cache outcomes (`PERF=1`, `RSX_TEXTURE_PROFILE=1`). It
+records this environment without enabling broad asset captures or GPU queries.
+These counters add overhead; retain the same profiling setting on both sides
+of a comparison. Texture-call remainder includes several kinds of work and
+must not be reported as allocation time alone.
+
+For a renderer timing trial, add `--profile-renderer` to the normal launcher.
+It enables the existing CPU phase counters and GPU timestamp queries, retaining
+`rsx_phases.csv`, `[PERF]`/`[RSXPHASE]` logs and the exact timing environment in
+launch/final records. It does not enable the broad Havok/asset capture profile.
+Queries add overhead and do not establish exclusive guest CPU cost. Match GPU
+results to their reported `gpu_frame`, and distinguish nonpresenting batches
+from completed display intervals in `frames.csv`.
+
+For CPU boundary timing without the per-draw GPU queries, set `PERF=1` in
+the launcher environment and leave `--profile-renderer` off. The report counts
+render batches, including nonpresenting drains, and measures the whole render
+function. `outside_render` is unclassified time between batches. The
+`command_close` and `command_execute` fields isolate CPU wall time in the API
+calls; they include driver work/waits and are not GPU execution durations.
+
+With a private replay, `--replay-observe-seconds 120` retains two minutes after
+the observed target instead of the default five seconds, subject to the same
+overall `--seconds` and resource guards. Target observation remains a navigation
+receipt; inspect images, errors and actual work before reporting a race result.
+The launch identity also records inherited `MS_NATIVE_*` modes and `PERF`.
 
 Process creation is reported separately from window readiness. The launcher
 checks the owned D3D12 window is visible, unminimized and intersects the desktop,
@@ -75,6 +119,16 @@ and launcher entry points. It requires Python 3.10+ and `psutil` from
 reject before launch and explicit toolkit-default must record the selection.
 Without that source, only this optional historical check is skipped. No game
 inputs or original instructions are used by either check.
+
+CPU surface dependency diagnostics use `scripts/run.py --profile-cpu-surfaces`.
+This explicitly enables and records the existing `RSX_CPU_SURFACE_PROFILE=1`
+backend diagnostics after inherited RSX settings are cleared. Each completed
+request reports absolute QPC timestamps, client/renderer IDs, exact-range
+matches, clean hits, copies, bytes, and disjoint queue/service/copy/fence phases.
+Use matches and copies to distinguish stale page dispatches from required GPU
+synchronization before changing ownership or waits. Per-request timing and log
+I/O perturb execution; keep these captures separate from performance comparisons.
+The option changes no readback, completion, error or deadline behavior.
 
 ## Input and proof
 
@@ -262,3 +316,71 @@ Native event/manifest evidence is required in addition to selector tests.
 and event latch with an authored game-free fixture, then checks launch
 preflight. It runs on Ubuntu and Windows. Capture readback perturbs timing;
 these runs do not prove normal frame rates or correct vehicle rendering.
+
+
+## Offline native stack attribution
+
+Issue [211](https://github.com/robbe1912/motorstorm-mv-recomp/issues/211)
+reuses the Win64 contexts and bounded native stacks already saved by the owned
+observer. Run `python scripts/check_native_stacks.py --mutants` on Windows x64
+first: the authored optimized executable must recover leaf/middle/top/main,
+while the separately compiled missing-unwind-metadata control loses those
+callers. Missing stack bytes, wrong bases, context disagreement and bad
+EXE/PDB/blob identities remain visible failures.
+
+`scripts/analyze_native_stacks.py --help` documents the private packet,
+EXE/hash/PDB-hash and output arguments. Output must be outside the protected
+packet. The reader uses Windows StackWalk64 with the PE runtime-function table,
+read-only non-executable image mappings and only the saved stack memory; it
+never opens a target process, launches the game or uses desktop input. Symbols
+use the admitted local PDB and local DLLs; symbol-server auto-detection and the
+environment symbol path are disabled. Missing memory/metadata and unresolved
+symbols are retained. A plausible return-address scan is not an unwind.
+
+The protected issue209 packet produced 285 saved walks across the renderer,
+async worker and three policy workers (57 each), with explicit partial-walk
+reasons. Native worker callers include the interpreter, guarded native
+visibility routines and SIMD helpers. Renderer callers include vertex fetch,
+fragment-program hashing and texture upload. Async callers include the real
+taskset signal wait and lifted job dispatch. This resolves some callers hidden
+by earlier CRT/OS instruction-pointer observations, using no new native run.
+
+These are selected later suspending point observations, not CPU-event samples,
+exclusive CPU percentages, complete inline/tail-call histories or causal frame
+time. Exact EXE/PDB/blob identities and the actually loaded PDB hash/CodeView GUID+age are verified; DLL bytes were not archived
+at capture time, so current local DLL extents/hashes are reported separately
+and walks through them lose historical-identity qualification. Every incomplete
+walk remains explicit. #155 full critical-path cost, #27 stable30 and #137
+rendering remain open; the next native rewrite still requires original/native
+parity and matched gameplay timing. All memory, binaries, symbols and captures
+remain private; CI uploads authored-test logs/JSON only.
+
+For the default-off fingerprint-owned job experiment, pass `--native-owned-jobs` to [run.py](../scripts/run.py). The launcher clears inherited SPU flags, explicitly selects and records `SPU_NATIVE_OWNED_JOBS=1`, and retains required policy interpretation. Environment inheritance alone does not select this mode.
+
+### Persistent DX12 texture cache
+
+`--texture-retention 0|1` explicitly selects the reference or bounded persistent
+cache (default `0`); `--texture-cache-mib 0..4096` sets its allocation target
+(default `512`). The launcher clears inherited selections and records both.
+The target counts owned default texture and upload allocation footprints, not
+all driver memory or physical VRAM residency. Indispensable live batch pins may
+exceed it; `[TEXRESIDENCY]` reports this overage with `--profile-textures`.
+A zero target retains required batch resources until genuine GPU retirement.
+
+Use identical cache targets, validation and profiling settings for comparisons.
+Retention validates every uploaded face with full XXH3; the reference retains
+its sparse source checksum. Complete hashing has a measurable cost. Verify the
+actual selected mode, allocations, evictions and bytes in `[TEXRESIDENCY]`, plus
+the exact executable identity; a requested option is not execution evidence.
+The new cache remains experimental pending native race observation and matched
+measurements. Use the existing normal menu route and resource/ownership guards.
+
+The restored native visibility operation uses explicit `--native-visibility 0|shadow|1` during runs. The default `0` overrides inherited `MS_NATIVE_VISIBILITY`; nonzero choices require a matching `--native-visibility` build and recorded executable identity. Shadow/native preserve the original operation fallback and real completion. Treat shadow results and operation timings separately from gameplay frame-rate acceptance.
+
+A profile may use a `kind: luminance_occupancy` secondary check for an animated
+preview, with explicit `luma_below`, `min_fraction` and `max_fraction` bounds.
+Every observed reference must qualify. The check cannot replace a primary
+button/target screen; independent text matching and owned completed-frame
+checks remain required. Validate real loaded/unloaded/distant/wrong-screen
+cases, preserve reference provenance, and inspect graphics separately: a
+readiness predicate is not graphics acceptance.
