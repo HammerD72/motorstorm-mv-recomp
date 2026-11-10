@@ -21,7 +21,7 @@ static struct {
     ID3D12Fence* fence; u64 fence_values[2]; u32 frame_index; const rsx_state* current_rsx_state;
 } s_d3d;
 static unsigned waits;
-static void wait_for_gpu(void) { ++waits; }
+static int wait_for_gpu(void) { ++waits; return 1; }   /* main: returns whether the fence retired; vp_upload_retire still checks device and fence */
 @VP_UPLOAD_RETIRE@
 #include "rsx_d3d12_guest_sampler.h"
 /* The fields of the production D3D12DrawRecord the sampler owner reads. */
