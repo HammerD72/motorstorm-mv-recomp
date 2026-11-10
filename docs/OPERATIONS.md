@@ -117,7 +117,9 @@ and launcher entry points. It requires Python 3.10+ and `psutil` from
 `39a36296511c445707adabcd312f0b740cfbd694` (Git blob
 `506da3f99dbfa7576dda3d0d53d9d859643e54fb`): the unsupported default must
 reject before launch and explicit toolkit-default must record the selection.
-Without that source, only this optional historical check is skipped. No game
+`--fetch-historical` fetches only that file at the pinned commit (CI uses it on
+Linux and Windows). Without that source, only this optional historical check is
+skipped, and the skip is reported. No game
 inputs or original instructions are used by either check.
 
 CPU surface dependency diagnostics use `scripts/run.py --profile-cpu-surfaces`.

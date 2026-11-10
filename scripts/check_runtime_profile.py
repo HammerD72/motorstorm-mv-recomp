@@ -1,7 +1,8 @@
 """Payload-free #149 checks of profile admission, the build wrapper and launcher.
 
 Run: python scripts/check_runtime_profile.py (psutil from requirements.txt).
-Optional historical source check: --historical-runtime PATH_TO_PINNED_TOOLKIT.
+Optional historical source check: --historical-runtime PATH_TO_PINNED_TOOLKIT, or
+--fetch-historical to fetch just its capability source (explicit skip if unreachable).
 Native process creation and compilation are intercepted; no game runs.
 """
 import argparse
@@ -151,6 +152,29 @@ class ExecutionProfileTests(unittest.TestCase):
         self.assertEqual(record['exe'], str(other.resolve()))
         self.assertEqual(record['build_identity'], self.record)
 
+    def test_native_mode_guard_reads_the_selected_executables_record(self):
+        # The visibility/PCM guards must use the admitted record of the selected
+        # executable, never build/native's (which may belong to another build).
+        other = self.root / 'separate build/ms1_recomp.exe'
+        other.parent.mkdir()
+        other.write_bytes(b'authored second inert executable; never executed')
+        selected = dict(self.record, path=str(other), sha256=hashlib.sha256(other.read_bytes()).hexdigest(),
+                        native_visibility=True)
+        (other.parent / 'build_identity.json').write_text(json.dumps(selected), encoding='utf-8')
+        self.record['native_visibility'] = False
+        self.save_record()
+        self.exe = other
+        record, env = self.launch('--executable', str(other), '--native-visibility', '1')
+        self.assertEqual(env['MS_NATIVE_VISIBILITY'], '1')
+        self.assertEqual(record['build_identity'], selected)
+        selected['native_visibility'] = False
+        (other.parent / 'build_identity.json').write_text(json.dumps(selected), encoding='utf-8')
+        runs = len(list((self.root / 'temp/runs').glob('*/launch.json')))
+        with self.assertRaisesRegex(SystemExit, 'Visibility mode requires a matching'):
+            self.launch('--executable', str(other), '--native-visibility', '1')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(len(list((self.root / 'temp/runs').glob('*/launch.json'))), runs)
+
     def test_missing_record_cannot_fall_back_to_current_checkout(self):
         (self.exe.parent / 'build_identity.json').unlink()
         self.rejected('Rebuild.*runtime capabilities')
@@ -216,12 +240,25 @@ class ExecutionProfileTests(unittest.TestCase):
         self.assertTrue(after['ps3recomp_dirty'])
 
     def build(self, options=(), change_during_build=False):
-        (self.exe.parent / 'native-world-binding.json').write_text('{"authored":true}', encoding='utf-8')
+        binary = self.root / 'build/native'
+        (binary / 'native-world-binding.json').write_text('{"authored":true}', encoding='utf-8')
+        helper = self.root / 'src/renderer_optimization.cmake'
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_text('# authored renderer-optimization helper identity\n', encoding='utf-8')
+        # The wrapper hashes the platform's own output name (ms1_recomp.exe on
+        # Windows, ms1_recomp elsewhere). The mocked compiler creates that inert
+        # output; the launcher's selected executable fixture is left as it is.
+        output = binary / ('ms1_recomp.exe' if os.name == 'nt' else 'ms1_recomp')
         commands = []
         def compile_boundary(command, *args, **kwargs):
             commands.append([str(x) for x in command])
-            if command[1] == '--build' and change_during_build:
-                self.write_source(self.source, UNSUPPORTED)
+            if command[1] == '-S':
+                (binary / 'renderer-optimization.json').write_text('{"enabled":false}', encoding='utf-8')
+            if command[1] == '--build':
+                if not output.exists():
+                    output.write_bytes(b'authored inert build output; never executed')
+                if change_during_build:
+                    self.write_source(self.source, UNSUPPORTED)
         with patch.object(project, 'ROOT', self.root), patch.object(project, 'config', return_value=self.cfg), \
              patch.object(project, 'build_environment', return_value={}), \
              patch.object(project, 'logged_run', side_effect=compile_boundary), \
@@ -232,6 +269,10 @@ class ExecutionProfileTests(unittest.TestCase):
 
     def test_build_wrapper_records_curated_default_and_capabilities(self):
         commands, record = self.build()
+        output = self.root / 'build/native' / ('ms1_recomp.exe' if os.name == 'nt' else 'ms1_recomp')
+        self.assertEqual(record['path'], str(output))
+        self.assertEqual(record['sha256'], hashlib.sha256(output.read_bytes()).hexdigest())
+        self.assertTrue(self.exe.is_file())
         self.assertIn('-DPS3RECOMP_DIR=' + str(self.source.resolve()), commands[0])
         self.assertEqual(record['runtime_capabilities'], {'policy_interpreter': True})
         self.assertEqual(record['runtime_capabilities_source_sha256'], self.record['runtime_capabilities_source_sha256'])
@@ -265,9 +306,37 @@ class ExecutionProfileTests(unittest.TestCase):
         self.assertFalse(any(k.startswith('SPU_') for k in env))
 
 
+HISTORICAL_URL = 'https://github.com/robbe1912/ps3recomp.git'
+HISTORICAL_COMMIT = '39a36296511c445707adabcd312f0b740cfbd694'
+
+
+def fetch_historical(directory):
+    """Fetch only the pinned toolkit commit's capability source (runtime code,
+    no game data). Returns its root, or None with the reason printed."""
+    git = ['git', '-C', str(directory)]
+    try:
+        subprocess.run(['git', 'init', '--quiet', str(directory)], check=True, capture_output=True, timeout=60)
+        subprocess.run(git + ['fetch', '--quiet', '--depth', '1', '--filter=blob:none', HISTORICAL_URL, HISTORICAL_COMMIT],
+                       check=True, capture_output=True, timeout=180)
+        subprocess.run(git + ['sparse-checkout', 'set', '--no-cone', profile.CAPABILITY_SOURCE.as_posix()],
+                       check=True, capture_output=True, timeout=60)
+        subprocess.run(git + ['-c', 'advice.detachedHead=false', 'checkout', '--quiet', 'FETCH_HEAD'],
+                       check=True, capture_output=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f'historical runtime unavailable ({error}); test_historical_real_unsupported_source will skip')
+        return None
+    return directory
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, add_help=False)
     parser.add_argument('--historical-runtime', type=Path)
+    parser.add_argument('--fetch-historical', action='store_true',
+                        help='Fetch the pinned capability source when reachable; otherwise its test skips explicitly')
     options, remaining = parser.parse_known_args()
-    HISTORICAL_ROOT = options.historical_runtime
-    unittest.main(argv=[sys.argv[0], *remaining], verbosity=2)
+    with tempfile.TemporaryDirectory(prefix='runtime-profile-history-') as fetched:
+        HISTORICAL_ROOT = options.historical_runtime
+        if HISTORICAL_ROOT is None and options.fetch_historical:
+            HISTORICAL_ROOT = fetch_historical(Path(fetched))
+        result = unittest.main(argv=[sys.argv[0], *remaining], verbosity=2, exit=False).result
+    sys.exit(0 if result.wasSuccessful() else 1)
