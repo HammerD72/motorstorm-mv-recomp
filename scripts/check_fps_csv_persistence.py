@@ -169,7 +169,9 @@ def main():
 
         # Historical control: the old buffered source loses the tail under
         # the same owned termination (real clock; no flush before exit).
-        if hashlib.sha256(HISTORICAL.read_bytes()).hexdigest() != HISTORICAL_SHA256:
+        # Compare with LF line endings: a Windows checkout (core.autocrlf)
+        # writes the same pinned source with CRLF.
+        if hashlib.sha256(HISTORICAL.read_bytes().replace(b'\r\n', b'\n')).hexdigest() != HISTORICAL_SHA256:
             raise SystemExit('FAIL historical fixture changed; it must stay the pre-#275 source')
         hist = build(out, 'historical', HISTORICAL, False)
         r, path = run(hist, out, 'historical-terminate', 'terminate', 2000, 16667)
