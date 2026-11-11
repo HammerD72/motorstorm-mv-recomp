@@ -89,6 +89,12 @@ jobs:
         run: python scripts/check_rsx_pso_retention.py
       - name: Bounded texture and pipeline working sets
         run: python scripts/check_rsx_working_sets.py
+      - name: Guest sampler tables, checked retirement and compiled-PS mask
+        run: python scripts/check_rsx_sampler_tables.py
+      - name: Native depth textures, packed depth reads and B8 remap
+        run: python scripts/check_rsx_native_depth.py
+      - name: Depth alias clear ownership
+        run: python scripts/check_graphics_review.py --depth-only
       - name: Actual indexed vertex reuse regression
         run: python scripts/check_rsx_indexed_strip.py
       - name: Named SPU extraction identities and rejections
@@ -250,6 +256,12 @@ jobs:
         run: python scripts/check_rsx_pso_retention.py
       - name: Bounded texture and pipeline working sets
         run: python scripts/check_rsx_working_sets.py
+      - name: Guest sampler tables, checked retirement and compiled-PS mask
+        run: python scripts/check_rsx_sampler_tables.py
+      - name: Native depth textures, packed depth reads and B8 remap
+        run: python scripts/check_rsx_native_depth.py
+      - name: Depth alias clear ownership
+        run: python scripts/check_graphics_review.py --depth-only
       - name: Evicted recorded pipelines execute (WARP)
         run: python scripts/check_rsx_pso_gpu.py --warp-only
       - name: Fragment source sign bits and invalid-DXBC control (WARP)
