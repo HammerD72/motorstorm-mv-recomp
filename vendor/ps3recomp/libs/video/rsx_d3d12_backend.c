@@ -69,11 +69,21 @@ static u32 rsx_record_color_masks(const rsx_state* state)
 #define FRAME_COUNT         2   /* double buffering */
 #define MAX_VERTICES    393216  /* per-frame vertex buffer (dbgfont submits
                                  * ~7.5k verts/frame; leave generous headroom) */
-#define MAX_DRAWS         2048  /* per-frame draw records. Sized from the
-                                 * measured worst case (~1841, FRAME_BUDGET);
-                                 * the per-draw constant buffer is
-                                 * VP_CB_STRIDE * MAX_DRAWS * 2 bytes, so 16384
-                                 * asked for a 264 MB upload allocation. */
+/* Per-batch draw records. Sized from the measured worst case (~1841,
+ * FRAME_BUDGET); the per-draw constant buffer is VP_CB_STRIDE * MAX_DRAWS * 2
+ * bytes, so 16384 asked for a 264 MB upload allocation. A MotorStorm race
+ * frame records several thousand draws, so the default fills the batch two
+ * or three times per frame and each capacity drain waits for the GPU.
+ * Build with RSX_MAX_DRAWS=<n> (a power of two, 1024..8192) to measure a
+ * larger batch; 4096 doubles the upload allocations (~69 MB for the VP
+ * constants). Default stays 2048. */
+#ifndef RSX_MAX_DRAWS
+#define RSX_MAX_DRAWS     2048
+#endif
+#if RSX_MAX_DRAWS < 1024 || RSX_MAX_DRAWS > 8192 || (RSX_MAX_DRAWS & (RSX_MAX_DRAWS - 1))
+#error "RSX_MAX_DRAWS must be a power of two in 1024..8192"
+#endif
+#define MAX_DRAWS         RSX_MAX_DRAWS
 /* Per-draw VP constant-buffer slot: vp_c[512] + posscale + posoffset
  * (514 vec4 = 8224 B) rounded up to D3D12's 256-byte CBV alignment.
  * Constants are snapshotted at RECORD time -- wave's passes each set their
