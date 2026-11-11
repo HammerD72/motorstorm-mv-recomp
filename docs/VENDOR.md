@@ -1,5 +1,15 @@
 # Vendor provenance and upstream
 
+## Graphics review corrections (#271, #307)
+
+Own-fork branch `codex/fix-hammer-graphics` pins the reviewed graphics runtime
+and correction `57e64182`. The curated depth alias writer tracks colour clears
+across RT/MRT bindings and respects colour-then-depth clear ordering. Actual
+production-function controls cover masked draws, alias rejection after clears
+and subsequent depth writes. The same branch tests independent cube/volume
+flags for the volume integration. This feature-branch validation preserves the
+canonical fork renderer's separate feature history.
+
 ## Restored warm MFC engine lookup (issue 261)
 
 This selective integration restores own-fork modular `codex/mfc-context-cache`
