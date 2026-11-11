@@ -101,6 +101,9 @@ float rsx_fp_alpha_ref(u32 raw, u32 surface_color_format);
  *                   and a.xy sampling. Pass 0 for the legacy all-2D behavior
  *                   (rsx_fp_decompile forwards 0, so its output is unchanged
  *                   byte-for-byte).
+ *                   Bit 16+N set => unit N is a 3D volume: declared
+ *                   `Texture3D` and sampled with a.xyz (TXP divides all
+ *                   three by w). A unit may not be both cube and 3D.
  *
  * The mask must match what the backend actually binds: a cube unit needs a
  * TextureCube SRV at register tN, and a 2D unit a Texture2D SRV. See the

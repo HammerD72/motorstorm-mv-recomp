@@ -484,8 +484,13 @@ static int rsx_fp_decompile_internal(
     u32 native_mask = 0;
     if (native_depth)
         for (u32 u = 0; u < 16; u++) if (native_depth[u].enabled) native_mask |= 1u << u;
-    if (native_mask & tex_cube_mask) return -1;
-    const u32 typed_mask = tex_cube_mask | native_mask;
+    /* tex_cube_mask bits 0..15 mark cube units; bits 16..31 mark 3D volume
+     * units (Texture3D, sampled with .xyz). A unit is at most one of the
+     * three typed kinds. */
+    const u32 vol_mask = tex_cube_mask >> 16;
+    tex_cube_mask &= 0xFFFFu;
+    if ((native_mask & tex_cube_mask) || (native_mask & vol_mask) || (vol_mask & tex_cube_mask)) return -1;
+    const u32 typed_mask = tex_cube_mask | native_mask | vol_mask;
 
     u32 buffered_constant_count = 0;
     if (buffered) {
@@ -762,8 +767,9 @@ static int rsx_fp_decompile_internal(
         case OP_TEX:
             if ((native_mask >> tex_unit) & 1u)
                 snprintf(rhs, sizeof(rhs), "_rsx_depth%u((%s).xyz)", tex_unit, a);
-            else if ((tex_cube_mask >> tex_unit) & 1u)
-                /* Cubemap: sample with the full 3-component direction vector. */
+            else if (((tex_cube_mask | vol_mask) >> tex_unit) & 1u)
+                /* Cubemap direction or 3D volume coordinate: all three
+                 * components. */
                 snprintf(rhs, sizeof(rhs),
                          "rsx_tex%u.Sample(rsx_samp[%u], (%s).xyz)", tex_unit, tex_unit, a);
             else if (typed_mask)
@@ -781,6 +787,11 @@ static int rsx_fp_decompile_internal(
                  * the direction directly. */
                 snprintf(rhs, sizeof(rhs),
                          "rsx_tex%u.Sample(rsx_samp[%u], (%s).xyz)", tex_unit, tex_unit, a);
+            else if ((vol_mask >> tex_unit) & 1u)
+                /* Projective 3D lookup: divide all three coordinates by w. */
+                snprintf(rhs, sizeof(rhs),
+                         "rsx_tex%u.Sample(rsx_samp[%u], (%s).xyz / (%s).w)",
+                         tex_unit, tex_unit, a, a);
             else if (typed_mask)
                 snprintf(rhs, sizeof(rhs),
                          "rsx_tex%u.Sample(rsx_samp[%u], (%s).xy / (%s).w)",
@@ -797,7 +808,7 @@ static int rsx_fp_decompile_internal(
             /* Biased/explicit-LOD depth reads are not part of the native
              * adapter: the caller keeps the existing path for this program. */
             if ((native_mask >> tex_unit) & 1u) return -1;
-            const int cube = (tex_cube_mask >> tex_unit) & 1u;
+            const int cube = ((tex_cube_mask | vol_mask) >> tex_unit) & 1u;   /* .xyz */
             char tn[32];
             snprintf(tn, sizeof(tn), typed_mask ? "rsx_tex%u" : "rsx_tex[%u]", tex_unit);
             snprintf(rhs, sizeof(rhs), "%s.%s(rsx_samp[%u], (%s).%s, (%s).x)", tn,
@@ -1003,7 +1014,8 @@ static int rsx_fp_decompile_internal(
         char decl[64];
         for (u32 u = 0; u < 16; u++) {
             snprintf(decl, sizeof(decl), "%s rsx_tex%u : register(t%u);\n",
-                     ((tex_cube_mask >> u) & 1u) ? "TextureCube" : "Texture2D  ", u, u);
+                     ((tex_cube_mask >> u) & 1u) ? "TextureCube" :
+                     ((vol_mask >> u) & 1u)      ? "Texture3D  " : "Texture2D  ", u, u);
             out_puts(&p, decl);
         }
     }
@@ -1382,7 +1394,7 @@ int rsx_fp_apply_unnorm_scale(char* hlsl, u32 hlsl_size, u32 unnorm_mask,
 
     for (u32 u = 0; u < 16; u++) {
         if (!((unnorm_mask >> u) & 1u)) continue;
-        if ((cube_mask >> u) & 1u) continue;
+        if (((cube_mask >> u) | (cube_mask >> (16u + u))) & 1u) continue;   /* cube or 3D */
         const u32 w = dim[u][0], h = dim[u][1];
         if (!w || !h) continue;
 

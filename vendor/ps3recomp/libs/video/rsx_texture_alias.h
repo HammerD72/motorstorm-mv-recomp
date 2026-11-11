@@ -53,7 +53,7 @@ static int rsx_texture_alias_apply(char* hlsl, size_t capacity, unsigned mask,
     const unsigned remap[16], unsigned cube_mask, unsigned point_clamp_mask)
 {
     if (!mask) return 0;
-    if (!hlsl || !remap || (mask & cube_mask)) return -1;
+    if (!hlsl || !remap || (mask & (cube_mask | (cube_mask >> 16)))) return -1;   /* cube or 3D unit */
     char* helpers = (char*)calloc(1, 65536);
     if (!helpers) return -1;
     size_t used = 0;
