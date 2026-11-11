@@ -1,5 +1,14 @@
 # Vendor provenance and upstream
 
+## Spilled jump-table review correction (#259)
+
+Own-fork modular `b8e3ba93` and canonical combined `eae442fd` preserve
+one- and two-level spilled table bases while rejecting overlapping stack
+writes and incompatible store/reload widths. The curated lifter uses the same
+byte-range checks. Authored PowerPC vectors cover low-word, byte and partial
+doubleword overwrites, incompatible widths and an adjacent write, alongside
+the existing dispatch cases. No game input or generated guest code is included.
+
 ## Restored warm MFC engine lookup (issue 261)
 
 This selective integration restores own-fork modular `codex/mfc-context-cache`
