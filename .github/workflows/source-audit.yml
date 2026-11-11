@@ -96,7 +96,7 @@ jobs:
       - name: Native depth textures, packed depth reads and B8 remap
         run: python scripts/check_rsx_native_depth.py
       - name: Depth alias clear ownership
-        run: python scripts/check_graphics_review.py --depth-only
+        run: python scripts/check_graphics_review.py
       - name: Actual indexed vertex reuse regression
         run: python scripts/check_rsx_indexed_strip.py
       - name: Named SPU extraction identities and rejections
@@ -263,7 +263,7 @@ jobs:
       - name: Native depth textures, packed depth reads and B8 remap
         run: python scripts/check_rsx_native_depth.py
       - name: Depth alias clear ownership
-        run: python scripts/check_graphics_review.py --depth-only
+        run: python scripts/check_graphics_review.py
       - name: Evicted recorded pipelines execute (WARP)
         run: python scripts/check_rsx_pso_gpu.py --warp-only
       - name: Fragment source sign bits and invalid-DXBC control (WARP)
