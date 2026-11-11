@@ -1,5 +1,18 @@
 # Vendor provenance and upstream
 
+## Staged jobmod identity under load padding (#300)
+
+Curated-only change to `runtime/spu/spu_channels.c` and `spu_context.h`; the
+policy-module staging matcher exists only in this vendored runtime, so no fork
+branch carries it. The accumulator moves into `spu_stage_accumulate` unchanged.
+With `SPU_JOBMOD_HEADER_FNV=1` it also hashes the span a burst's C0DEC0DE
+header declares (image minus the 0x20 trailer, link base equal to the staging
+address) and offers that key once, when the span completes. Default-off
+behaviour is the legacy all-bytes key. Authored images in
+`scripts/check_spu_jobmod_identity.py` cover exact, padded, uneven,
+wrong-base, no-magic, gapped, follow-on, undersized and repeated loads; four
+source mutants fail. No game input or generated code is included.
+
 ## Graphics review corrections (#271, #307)
 
 Own-fork branch `codex/fix-hammer-graphics` pins the reviewed graphics runtime

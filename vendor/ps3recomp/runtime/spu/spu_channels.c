@@ -2243,6 +2243,77 @@ void spu_lockguard_check(spu_context* ctx, uint32_t ea, const uint8_t* src, uint
 static uint32_t s_stage_good_src[8];
 static unsigned s_stage_good_n;
 
+/* ---- Staged jobmod identity ----
+ * Policy-mode staging bursts are fingerprinted with FNV-1a-64 over every byte
+ * of a contiguous burst (the legacy key, offered after each transfer once the
+ * burst holds 0x800 bytes). Registered identities are image minus the 0x20
+ * trailer, so a loader that pads its last transfer (MS1's MP3 job objects:
+ * 0x179B0-byte image staged as 0x17A00) never matches. SPU_JOBMOD_HEADER_FNV=1
+ * also offers, exactly once per burst, the key over the span its C0DEC0DE
+ * header declares. Configure before workers start; unset or 0 = legacy only. */
+static int spu_jobmod_header_fnv_enabled(void)
+{
+    static int mode = -1;
+    if (mode < 0) {
+        const char* value = getenv("SPU_JOBMOD_HEADER_FNV");
+        if (!value || !strcmp(value, "0")) mode = 0;
+        else if (!strcmp(value, "1")) mode = 1;
+        else { fprintf(stderr, "invalid SPU_JOBMOD_HEADER_FNV: expected 0 or 1\n"); abort(); }
+    }
+    return mode;
+}
+
+static uint32_t stage_be32(const uint8_t* p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+/* Identity span declared by a burst's first transfer, or 0: magic at +0x20,
+ * link base at +0x28 equal to the staging address, image size at +0x14. */
+static uint32_t stage_header_span(const uint8_t* ls, uint32_t lsa, uint32_t size)
+{
+    if (size < 0x30 || stage_be32(ls + 0x20) != 0xC0DEC0DEu || stage_be32(ls + 0x28) != lsa)
+        return 0;
+    uint32_t image = stage_be32(ls + 0x14);
+    if (image < 0x820u || image - 0x20u > 0x3E000u - lsa) return 0;
+    return image - 0x20u;
+}
+
+/* Account one policy-mode transfer into LS [lsa, lsa+size). Writes the
+ * candidate registry keys, legacy first, and returns how many (0..2). */
+static unsigned spu_stage_accumulate(spu_context* ctx, const uint8_t* ls, uint32_t lsa,
+                                     uint32_t ea, uint32_t size, int header_identity,
+                                     uint64_t keys[2])
+{
+    if (ctx->stage_hashed == 0 || lsa != ctx->stage_lo + ctx->stage_hashed) {
+        ctx->stage_lo = lsa;
+        ctx->stage_ea0 = ea;
+        ctx->stage_hashed = 0;
+        ctx->stage_fnv = 1469598103934665603ULL;
+        ctx->stage_hdr_span = header_identity ? stage_header_span(ls, lsa, size) : 0;
+        ctx->stage_hdr_len = 0;
+        ctx->stage_hdr_fnv = 1469598103934665603ULL;
+    }
+    for (uint32_t i = 0; i < size; ++i)
+        ctx->stage_fnv = (ctx->stage_fnv ^ ls[i]) * 1099511628211ULL;
+    ctx->stage_hashed += size;
+    int header_ready = 0;
+    if (ctx->stage_hdr_len < ctx->stage_hdr_span) {
+        uint32_t take = ctx->stage_hdr_span - ctx->stage_hdr_len;
+        if (take > size) take = size;
+        for (uint32_t i = 0; i < take; ++i)
+            ctx->stage_hdr_fnv = (ctx->stage_hdr_fnv ^ ls[i]) * 1099511628211ULL;
+        ctx->stage_hdr_len += take;
+        header_ready = ctx->stage_hdr_len == ctx->stage_hdr_span;
+    }
+    if (ctx->stage_hashed < 0x800u) return 0;
+    unsigned n = 0;
+    keys[n++] = ctx->stage_fnv;
+    if (header_ready && ctx->stage_hdr_fnv != ctx->stage_fnv) keys[n++] = ctx->stage_hdr_fnv;
+    return n;
+}
+/* ---- end staged jobmod identity ---- */
+
 void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint32_t size)
 {
     uint32_t lsa = (uint32_t)(ls - ctx->ls);
@@ -2305,24 +2376,29 @@ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint
      * and the PM parks in kExecuteCommands forever (state never 2->3, store
      * phase never commits, the PPU spins on the batch seq). */
     if (ctx->policy_mode && lsa >= 0x4000u && lsa + size <= 0x3E000u) {
-        if (ctx->stage_hashed == 0 || lsa != ctx->stage_lo + ctx->stage_hashed) {
-            ctx->stage_lo = lsa;
-            ctx->stage_ea0 = ea;
-            ctx->stage_hashed = 0;
-            ctx->stage_fnv = 1469598103934665603ULL;
-        }
-        for (uint32_t i = 0; i < size; ++i)
-            ctx->stage_fnv = (ctx->stage_fnv ^ ls[i]) * 1099511628211ULL;
-        ctx->stage_hashed += size;
-        if (ctx->stage_hashed >= 0x800u) {
+        uint64_t keys[2];
+        unsigned nkeys = spu_stage_accumulate(ctx, ls, lsa, ea, size,
+                                              spu_jobmod_header_fnv_enabled(), keys);
+        if (nkeys) {
             int img = 0;
-            spu_workload_find_img(ctx->stage_fnv, &img);
+            uint64_t key = keys[0];
+            for (unsigned k = 0; k < nkeys && img <= 0; ++k) {
+                key = keys[k];
+                spu_workload_find_img(key, &img);
+            }
+            if (img > 0 && key != ctx->stage_fnv) {
+                static int _h = 0; if (_h++ < 16)
+                    fprintf(stderr, "[pm-jobmod] header identity image=%d at LS 0x%05X"
+                                    " span=0x%X staged=0x%X src=0x%08X\n",
+                            img, ctx->stage_lo, ctx->stage_hdr_span, ctx->stage_hashed,
+                            ctx->stage_ea0);
+            }
             if (img > 0) {
                 { uint32_t _s0 = ctx->stage_ea0; int _kn = 0;
                   for (unsigned k = 0; k < s_stage_good_n && k < 8; k++)
                       if (s_stage_good_src[k] == _s0) _kn = 1;
                   if (!_kn && _s0) s_stage_good_src[(s_stage_good_n++) & 7u] = _s0; }
-                uint32_t lift_base = spu_workload_img_base(ctx->stage_fnv);
+                uint32_t lift_base = spu_workload_img_base(key);
                 unsigned pick = 4;
                 for (unsigned slot = 0; slot < 4; ++slot) {
                     if (!ctx->resident_code[slot].image_id ||
