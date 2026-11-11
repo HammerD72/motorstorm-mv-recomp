@@ -31,13 +31,14 @@ FIXTURE = r'''
 typedef uint64_t u64;
 @MIPS_ON@
 /* The backend's level selection, extracted verbatim. */
-static void select_levels(u32 off,u32 w,u32 h,u32 fmt,u32 mips,u32 depth,int vol,
-                          u32* levels_out,u32* bytes_out,rsx_tex_level* lv_out){
+static int select_levels(u32 off,u32 w,u32 h,u32 fmt,u32 mips,u32 depth,int vol,
+                         u32* levels_out,u32* bytes_out,rsx_tex_level* lv_out){
     rsx_tex_layout tl;rsx_texture_layout(fmt,w,h,&tl);
     const int dxt=tl.compressed;u32 bpp=tl.compressed?1u:tl.bytes_per_texel;
     u32 blkrow=dxt?tl.row_bytes:0,blkrows=dxt?tl.rows:0;(void)off;
 @LEVELS@
     *levels_out=levels;*bytes_out=src_bytes;memcpy(lv_out,mip_lv,sizeof mip_lv);
+    return 0;
 }
 /* Independent references. */
 static unsigned morton(unsigned x,unsigned y,unsigned lw,unsigned lh){
@@ -51,7 +52,9 @@ static unsigned level_bytes(unsigned fmt,unsigned w,unsigned h){
     return w*h*(b==0x85?4u:b==0x8B?2u:1u);
 }
 static unsigned ref_levels(unsigned w,unsigned h,unsigned mips){
-    if(!mips)mips=1;unsigned n=0;for(;;){n++;if(n==mips||n==14||(w==1&&h==1))return n;w=half(w);h=half(h);}
+    if(!mips)mips=1;
+    unsigned n=0;
+    for(;;){n++;if(n==mips||n==14||(w==1&&h==1))return n;w=half(w);h=half(h);}
 }
 static void chain(unsigned fmt,unsigned w,unsigned h,unsigned mips){
     rsx_tex_level lv[RSX_MAX_TEXTURE_LEVELS];
@@ -186,7 +189,7 @@ def build_and_run(out, label, levels, mips_on, fingerprint):
         cmd = [env['MV_CLANG'], '/nologo', '/D_CRT_SECURE_NO_WARNINGS', *('/I' + str(p) for p in include),
                str(c), str(VIDEO / 'rsx_texture_layout.c'), '/Fe' + str(exe), '/Fo' + str(target) + os.sep]
     else:
-        cmd = [env.get('CC') or shutil.which('cc'), '-std=gnu11', '-UNDEBUG', '-Wall', '-Wno-unused-function',
+        cmd = [env.get('CC') or shutil.which('cc'), '-std=gnu11', '-UNDEBUG', '-Wall', '-Werror', '-Wno-unused-function',
                *('-I' + str(p) for p in include), '-o', str(exe), str(c), str(VIDEO / 'rsx_texture_layout.c')]
     build = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     (target / 'build.log').write_text(build.stdout + build.stderr)
@@ -238,9 +241,10 @@ def main():
         mutated = source.replace(old, new)
         rec = build_and_run(out, 'mutant-' + name, mutated if where == 'levels' else levels, mips_on,
                             mutated if where == 'fingerprint' else fingerprint)
-        killed = 'runs' not in rec or not passed(rec)
+        # A mutant that does not build proves nothing about the assertions.
+        killed = rec['build'] == 0 and not passed(rec)
         report['mutants'][name] = dict(killed=killed, record=rec)
-        print(f'mutant {name}: {"killed" if killed else "SURVIVED"}')
+        print(f'mutant {name}: {"killed" if killed else "BUILD FAILED" if rec["build"] else "SURVIVED"}')
         ok &= killed
     (out / 'result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print('PASS' if ok else 'FAIL', out)
