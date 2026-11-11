@@ -261,7 +261,7 @@ int main(int argc,char**argv){
  ID3D12Debug*debug=NULL;HR(D3D12GetDebugInterface(&IID_ID3D12Debug,(void**)&debug));debug->lpVtbl->EnableDebugLayer(debug);debug->lpVtbl->Release(debug);
  const char*choice=getenv("RSX_TEST_ADAPTER");int warp=choice&&!strcmp(choice,"warp");IDXGIAdapter*chosen=NULL;
  if(warp){IDXGIFactory4*f=NULL;HR(CreateDXGIFactory1(&IID_IDXGIFactory4,(void**)&f));HR(f->lpVtbl->EnumWarpAdapter(f,&IID_IDXGIAdapter,(void**)&chosen));f->lpVtbl->Release(f);}
- HR(D3D12CreateDevice(chosen,D3D_FEATURE_LEVEL_11_0,&IID_ID3D12Device,(void**)&s_d3d.device));if(chosen)chosen->lpVtbl->Release(chosen);
+ HR(D3D12CreateDevice((IUnknown*)chosen,D3D_FEATURE_LEVEL_11_0,&IID_ID3D12Device,(void**)&s_d3d.device));if(chosen)chosen->lpVtbl->Release(chosen);
  LUID luid;s_d3d.device->lpVtbl->GetAdapterLuid(s_d3d.device,&luid);
  IDXGIFactory4*factory=NULL;IDXGIAdapter1*adapter=NULL;DXGI_ADAPTER_DESC1 ad;
  HR(CreateDXGIFactory1(&IID_IDXGIFactory4,(void**)&factory));
