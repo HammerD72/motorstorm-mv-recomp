@@ -136,6 +136,32 @@ int main(int argc, char** argv)
     CHECK(!pending_flip(), "FIFO flip not complete before its marker");
     drained_and_taken();
     CHECK(pending_flip() == take, "FIFO flip completes once its marker is taken");
+
+    /* D: catch-up beats arrive while a direct flip waits to be taken (a flip
+     * requested during a slow present). With GCM_FLIP_AT_TAKE they leave it
+     * to the take, so the title cannot start its next frame before this one
+     * is taken; off, the beat completes it as before. */
+    s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+    (void)GCM_PENDING_TAKE();
+    s_flip_last_complete_ns = 0;
+    CHECK(gcm_flip_request(0, 0) == CELL_OK, "direct flip accepted (D)");
+    cellGcmTickFlip(); cellGcmTickFlip(); cellGcmTickFlip();
+    CHECK(pending_flip() == !take, "beats leave an untaken flip to the take");
+    if (take) {
+        s_flip_beat_deferred_ns = get_timestamp_ns() - 1500000000ull;   /* first deferred 1.5 s ago */
+        CHECK(cellGcm_take_flip_pending_synced() == 1 && pending_flip(), "take completes the flip the beats left");
+        s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+        s_flip_last_complete_ns = 0;
+        CHECK(gcm_flip_request(0, 0) == CELL_OK, "direct flip accepted (D2)");
+        cellGcmTickFlip();
+        CHECK(!pending_flip(), "next flip's deferral starts at its own first beat");
+        s_flip_beat_deferred_ns = get_timestamp_ns() - 2000000000ull;
+        cellGcmTickFlip();
+        CHECK(pending_flip(), "beat completes a flip left untaken past the fallback");
+    }
+    s_flip_pending = 0;
+    (void)GCM_PENDING_TAKE();
+
     /* C: the real walker over an authored ring -- frame 1's flip with frame 2
      * already queued behind it. With either switch, frame 1 is presented on
      * its own; off, the old get == put gate is kept. */

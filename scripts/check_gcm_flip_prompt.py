@@ -10,8 +10,12 @@ four processes (both switches off, each alone, both on; they are read once):
   of the last completion; direct and FIFO flip requests both qualify;
 - with either switch, the real FIFO walker holds at a flip with the next frame
   queued behind it until that frame is taken, and the frame is presented on
-  its own (no merged frames); off, the get == put gate is unchanged.
-Ten source mutants must build and fail. POSIX only (pthreads, mmap); Linux CI.
+  its own (no merged frames); off, the get == put gate is unchanged;
+- take: beats leave a direct flip that is still waiting to be taken to the
+  take, each flip's wait for its take starts at its own first beat, and a flip
+  left untaken past the fallback is completed by the beat; off, beats complete
+  it as before.
+Fourteen source mutants must build and fail. POSIX only (pthreads, mmap); Linux CI.
 No game input; no performance claim."""
 import datetime
 import json
@@ -40,6 +44,12 @@ MUTANTS = {  # name: (original, replacement, mode that must fail)
     'hold-without-switch': ('static int gcm_flip_hold_enabled(void) { return gcm_flip_prompt() || gcm_flip_at_take(); }',
                             'static int gcm_flip_hold_enabled(void) { return 1; }', 'off'),
     'stale-hold-kept': ('    if (s_flip_hold && !s_flip_pending) s_flip_hold = 0;   /* that flip was not accepted */\n', '', 'take'),
+    'beat-completes-untaken': ('    if (gcm_flip_beat_waits_for_take(now)) return;\n', '', 'take'),
+    'beat-defers-without-switch': ('    if (!gcm_flip_at_take() || !s_flip_pending) return 0;\n    if (!s_flip_beat_deferred_ns)',
+                                   '    if (!s_flip_pending) return 0;\n    if (!s_flip_beat_deferred_ns)', 'off'),
+    'no-beat-fallback': ('    return now - s_flip_beat_deferred_ns < GCM_FLIP_BEAT_FALLBACK_NS;\n', '    return 1;\n', 'take'),
+    'take-keeps-deferral': ('    s_flip_beat_deferred_ns = 0;\n    s_flip_present_gen = s_flip_drained_gen;\n',
+                            '    s_flip_present_gen = s_flip_drained_gen;\n', 'take'),
 }
 
 

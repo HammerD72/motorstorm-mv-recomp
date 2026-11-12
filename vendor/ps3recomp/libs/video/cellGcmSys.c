@@ -932,10 +932,32 @@ static void gcm_flip_ring_waiter(void)
 #endif
 }
 
+/* GCM_FLIP_AT_TAKE: a beat does not complete a flip that is still waiting to
+ * be taken; taking its frame completes it. The frame clock runs its queued
+ * beats before its drain and take, so after a slow present the catch-up beats
+ * completed a flip requested during that present before its frame was taken.
+ * With GCM_FLIP_PROMPT the title started its next frame at once, the drain
+ * ran into it, one present showed both frames, and the next take found
+ * nothing to present (a race lost 3-4 frames per 30 s this way). A flip left
+ * untaken for GCM_FLIP_BEAT_FALLBACK_NS of beats is completed by the beat as
+ * before, so a frame that never drains cannot hold the title. Frame-clock
+ * thread only: the beat and the take both run there. */
+#define GCM_FLIP_BEAT_FALLBACK_NS 1000000000ull
+static u64 s_flip_beat_deferred_ns;   /* first beat that left the pending flip to the take */
+static int gcm_flip_beat_waits_for_take(u64 now)
+{
+    if (!gcm_flip_at_take() || !s_flip_pending) return 0;
+    if (!s_flip_beat_deferred_ns) s_flip_beat_deferred_ns = now;
+    return now - s_flip_beat_deferred_ns < GCM_FLIP_BEAT_FALLBACK_NS;
+}
+
 void cellGcmTickFlip(void)
 {
-    if (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING)
-        gcm_flip_publish(get_timestamp_ns());
+    if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) return;
+    const u64 now = get_timestamp_ns();
+    if (gcm_flip_beat_waits_for_take(now)) return;
+    s_flip_beat_deferred_ns = 0;
+    gcm_flip_publish(now);
 }
 
 /* GCM_FLIP_AT_TAKE=1: cellGcm_take_flip_pending_synced calls this when the
@@ -1448,6 +1470,7 @@ int cellGcm_take_flip_pending_synced(void)
     if (get != put && !(gcm_flip_hold_enabled() && s_flip_hold)) return 0;   /* frame not fully drained yet */
     s_flip_pending = 0;
     s_flip_hold = 0;
+    s_flip_beat_deferred_ns = 0;
     s_flip_present_gen = s_flip_drained_gen;
     cellGcm_flip_lat_present(0);
     gcm_flip_complete_taken(GCM_VBLANK_PERIOD_NS);
