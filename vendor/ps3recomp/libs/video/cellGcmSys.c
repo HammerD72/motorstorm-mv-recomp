@@ -142,6 +142,37 @@ static struct {
     u64 marker_to_pstart, present, present_n, iter, iter_max, iter_n;
 } s_fl;
 static int flip_lat_on(void) { return rsx_env_once("FLIP_LAT") != NULL; }
+
+/* Prompt flip completion (opt-in; both off by default).
+ *
+ * A guest blocked in cellGcmSetWaitFlip is released by a flip completion the
+ * frame clock publishes on a vblank beat and some guest thread later delivers
+ * at an HLE boundary (ppu_gcm_pump). Measured in a MotorStorm race (FLIP_LAT),
+ * delivery took 5-7 ms after the beat, and the beat itself came up to one
+ * vblank period after the frame had already been presented.
+ *
+ * GCM_FLIP_PROMPT=1      a published completion rings the waiter's doorbell
+ *                        and the waiter delivers it itself (the same pump an
+ *                        HLE boundary runs, on a guest thread).
+ * GCM_FLIP_AT_PRESENT=1  the frame clock completes the flip as soon as the
+ *                        frame that carries it has been presented, provided
+ *                        at least one vblank period has passed since the last
+ *                        completion; the 59.94 Hz cap is kept, and the beat
+ *                        remains the fallback.
+ *
+ * Generations tie a present to the wait it completes: each new wait
+ * (ResetFlipStatus, or a flip request that sets WAITING) opens a generation,
+ * a drained flip stamps the generation it belongs to, and taking the frame for
+ * present records that stamp. A present of an older frame never completes a
+ * newer wait. */
+static volatile u32 s_flip_wait_gen, s_flip_drained_gen, s_flip_present_gen;
+static volatile u64 s_flip_last_complete_ns;
+void ppu_gcm_pump(void);
+static int gcm_flip_prompt(void) { return rsx_env_once("GCM_FLIP_PROMPT") != NULL; }
+static int gcm_flip_at_present(void) { return rsx_env_once("GCM_FLIP_AT_PRESENT") != NULL; }
+static void gcm_flip_wait_opened(void) { s_flip_wait_gen++; }
+static void gcm_flip_drained(void) { s_flip_drained_gen = s_flip_wait_gen; }
+static void gcm_flip_ring_waiter(void);
 /* Present edges from the frame clock: 0 = present starts, 1 = it returned. */
 void cellGcm_flip_lat_present(int phase)
 {
@@ -704,15 +735,20 @@ void cellGcmSetWaitFlip(void)
     const int lat = flip_lat_on();
     const u64 lat_enter = lat ? get_timestamp_ns() : 0;
     unsigned lat_timeouts = 0;
+    const int prompt = gcm_flip_prompt();
     for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++) {
+        if (prompt) { ppu_gcm_pump(); if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) break; }
         if (ev) { if (WaitForSingleObject(ev, 33) == WAIT_TIMEOUT) lat_timeouts++; }
         else gcm_sleep1_precise();
     }
     if (lat) flip_lat_wait_done(lat_enter, get_timestamp_ns(), lat_timeouts);
 #else
     /* elsewhere: runtime/platform/win32_compat.h provides Sleep() */
-    for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++)
+    const int prompt = gcm_flip_prompt();
+    for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++) {
+        if (prompt) { ppu_gcm_pump(); if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) break; }
         Sleep(1);
+    }
 #endif
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
 }
@@ -729,6 +765,7 @@ void cellGcmResetFlipStatus(void)
       if (rsx_env_once("FLIP_DBG") && n++ < 12)
           fprintf(stderr, "[FLIP] ResetFlipStatus%c", 10); }
     if (flip_lat_on()) s_fl_reset = get_timestamp_ns();
+    gcm_flip_wait_opened();
     s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
 }
 
@@ -862,12 +899,40 @@ void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); }
  * and its handler runs code that puts the status back to WAITING, so the
  * poll never saw DONE and the game never rendered another frame. On hardware
  * the callback IS the flip interrupt -- no flip, no callback. */
+static void gcm_flip_publish(u64 now)
+{
+    if (flip_lat_on()) s_fl_tick = now;
+    s_flip_last_complete_ns = now;
+    GCM_PENDING_SET(2);
+    if (gcm_flip_prompt()) gcm_flip_ring_waiter();
+}
+
+static void gcm_flip_ring_waiter(void)
+{
+#ifdef _WIN32
+    HANDLE ev = gcm_flip_done_event();
+    if (ev) SetEvent(ev);
+#endif
+}
+
 void cellGcmTickFlip(void)
 {
-    if (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING) {
-        if (flip_lat_on()) s_fl_tick = get_timestamp_ns();
-        GCM_PENDING_SET(2);
-    }
+    if (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING)
+        gcm_flip_publish(get_timestamp_ns());
+}
+
+/* GCM_FLIP_AT_PRESENT=1: the frame clock calls this right after presenting a
+ * frame taken by cellGcm_take_flip_pending_synced. Returns 1 when it
+ * completed the current flip. */
+int cellGcm_flip_presented(u64 min_interval_ns)
+{
+    if (!gcm_flip_at_present()) return 0;
+    if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) return 0;
+    if (s_flip_present_gen != s_flip_wait_gen) return 0;   /* an older frame */
+    const u64 now = get_timestamp_ns();
+    if (now - s_flip_last_complete_ns < min_interval_ns) return 0;   /* keep the vblank cap */
+    gcm_flip_publish(now);
+    return 1;
 }
 
 /* Drain the game's GCM FIFO into the RSX backend. Called from the present thread
@@ -1364,6 +1429,7 @@ int cellGcm_take_flip_pending_synced(void)
     u32 get = vm_read32(GCM_CONTROL_GUEST_ADDR + 4);
     if (get != put) return 0;   /* frame not fully drained yet */
     s_flip_pending = 0;
+    s_flip_present_gen = s_flip_drained_gen;
     cellGcm_flip_lat_present(0);
     return 1;
 }
@@ -1720,6 +1786,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
                  * guest-visible half of the request. */
                 s_current_display_buffer_id = w & 7u;
                 if (flip_lat_on()) s_fl_marker = get_timestamp_ns();
+                gcm_flip_drained();
                 s_flip_pending = 1;
                 s_flip_request_count++;
                 /* FPS_STATS=1: statically-linked libgcm (MotorStorm) sends its
@@ -2225,13 +2292,17 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
 
     /* in_fifo: the flip sits in the command stream as a GCM_FLIP_MARKER, and
      * the drain does this half when it reaches it (see the 0xFEAD case). */
+    /* Flip requested but not yet shown: a subsequent cellGcmSetWaitFlip blocks
+     * until the present thread's cellGcmTickFlip marks it done (vsync).
+     * This request opens its own wait generation; a direct flip is "drained"
+     * at once, a FIFO one when the drain reaches its marker. */
+    gcm_flip_wait_opened();
     if (!in_fifo) {
         s_current_display_buffer_id = bufferId;
+        gcm_flip_drained();
         s_flip_pending = 1;   /* ticker: present BEFORE the next drain */
         s_flip_request_count++;
     }
-    /* Flip requested but not yet shown: a subsequent cellGcmSetWaitFlip blocks
-     * until the present thread's cellGcmTickFlip marks it done (vsync). */
     s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
     s_last_flip_time = get_timestamp_ns();
 
