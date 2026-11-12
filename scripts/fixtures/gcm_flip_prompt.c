@@ -1,6 +1,6 @@
 /* Game-free fixture for prompt flip completion in the vendored cellGcmSys.c.
- * argv[1] = the mode the process was started in: off | prompt | present | both
- * (GCM_FLIP_PROMPT / GCM_FLIP_AT_PRESENT are read once, so each mode is its
+ * argv[1] = the mode the process was started in: off | prompt | take | both
+ * (GCM_FLIP_PROMPT / GCM_FLIP_AT_TAKE are read once, so each mode is its
  * own process). Prints PASS or "FAIL <check>" and exits nonzero on failure. */
 #include GCM_SOURCE
 #include <pthread.h>
@@ -56,7 +56,8 @@ static double ms_now(void)
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
 }
-/* A flip the drain reached and the frame clock took for present. */
+/* A flip the drain reached and the frame clock took for present (which, with
+ * GCM_FLIP_AT_TAKE, may complete it). */
 static void drained_and_taken(void)
 {
     gcm_flip_drained();
@@ -69,7 +70,7 @@ int main(int argc, char** argv)
 {
     if (argc < 2) return 2;
     const int prompt = !strcmp(argv[1], "prompt") || !strcmp(argv[1], "both");
-    const int present = !strcmp(argv[1], "present") || !strcmp(argv[1], "both");
+    const int take = !strcmp(argv[1], "take") || !strcmp(argv[1], "both");
     vm_base = mmap(NULL, 1ull << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     CHECK(vm_base != MAP_FAILED, "vm reservation");
     g_ps3_guest_caller = callback;
@@ -91,48 +92,50 @@ int main(int argc, char** argv)
     (void)GCM_PENDING_TAKE();
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
 
-    /* B1: the presented frame carries the current wait; a period has passed. */
+    /* B: completion when the frame clock takes the frame (GCM_FLIP_AT_TAKE).
+     * s_flip_last_complete_ns = 0 means the last completion was long ago. */
+    /* B1: the taken frame carries the current wait; a period has passed. */
     s_flip_last_complete_ns = 0;
     cellGcmResetFlipStatus(); drained_and_taken();
-    CHECK(cellGcm_flip_presented(16683333ull) == present, "present completes the current flip");
-    CHECK(pending_flip() == present, "completion published only when enabled");
+    CHECK(pending_flip() == take, "taking the frame completes the current flip");
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
 
-    /* B2: completed less than the interval ago: the beat stays in charge. */
+    /* B2: completed less than one vblank period ago: the beat stays in charge. */
     s_flip_last_complete_ns = get_timestamp_ns();
     cellGcmResetFlipStatus(); drained_and_taken();
-    CHECK(cellGcm_flip_presented(1000000000ull) == 0 && !pending_flip(), "vblank cap kept");
+    CHECK(!pending_flip(), "vblank cap kept");
 
-    /* B3: the guest opened a newer wait before the older frame's present returned. */
+    /* B3: the guest opened a newer wait before the older frame was taken. */
     s_flip_last_complete_ns = 0;
-    cellGcmResetFlipStatus(); drained_and_taken();
+    cellGcmResetFlipStatus(); gcm_flip_drained();
     cellGcmResetFlipStatus();
-    CHECK(cellGcm_flip_presented(0) == 0 && !pending_flip(), "older frame never completes a newer wait");
-    /* ...and once that newer flip is drained and presented, it does. */
+    s_flip_pending = 1; (void)cellGcm_take_flip_pending_synced();
+    CHECK(!pending_flip(), "older frame never completes a newer wait");
+    /* ...and once that newer flip is drained and taken, it does. */
     drained_and_taken();
-    CHECK(cellGcm_flip_presented(0) == present, "newer frame completes its own wait");
-    (void)GCM_PENDING_TAKE();
+    CHECK(pending_flip() == take, "newer frame completes its own wait");
 
     /* B4: nothing is waiting. */
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
     s_flip_last_complete_ns = 0;
-    CHECK(cellGcm_flip_presented(0) == 0 && !pending_flip(), "no completion without a waiting flip");
+    drained_and_taken();
+    CHECK(!pending_flip(), "no completion without a waiting flip");
 
     /* B5: a direct (non-FIFO) flip request is its own drained wait. */
     s_display_buffer_set[0] = 1;
     s_flip_handler_opd = 0;
     CHECK(gcm_flip_request(0, 0) == CELL_OK, "direct flip accepted");
     CHECK(cellGcm_take_flip_pending_synced() == 1, "direct flip taken for present");
-    CHECK(cellGcm_flip_presented(0) == present, "direct flip completes at present");
-    (void)GCM_PENDING_TAKE();
+    CHECK(pending_flip() == take, "direct flip completes when taken");
 
     /* B6: a FIFO flip request waits for its marker. */
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+    s_flip_last_complete_ns = 0;
     CHECK(gcm_flip_request(0, 1) == CELL_OK, "FIFO flip accepted");
     s_flip_pending = 1; (void)cellGcm_take_flip_pending_synced();   /* an earlier frame */
-    CHECK(cellGcm_flip_presented(0) == 0 && !pending_flip(), "FIFO flip not complete before its marker");
+    CHECK(!pending_flip(), "FIFO flip not complete before its marker");
     drained_and_taken();
-    CHECK(cellGcm_flip_presented(0) == present, "FIFO flip completes once its marker presented");
+    CHECK(pending_flip() == take, "FIFO flip completes once its marker is taken");
     /* C: the real walker over an authored ring -- frame 1's flip with frame 2
      * already queued behind it. With either switch, frame 1 is presented on
      * its own; off, the old get == put gate is kept. */
@@ -145,7 +148,7 @@ int main(int argc, char** argv)
     vm_write32(GCM_CONTROL_GUEST_ADDR + 0, 16);     /* the title is inside frame 2 */
     cellGcm_rsx_process_fifo();
     CHECK(s_fifo_getoff == 8 && s_flip_pending, "walker stops at frame 1's flip");
-    if (prompt || present) {
+    if (prompt || take) {
         cellGcm_rsx_process_fifo();
         CHECK(s_fifo_getoff == 8, "drain holds at an untaken flip");
         CHECK(cellGcm_take_flip_pending_synced() == 1, "frame 1 presents with frame 2 queued");

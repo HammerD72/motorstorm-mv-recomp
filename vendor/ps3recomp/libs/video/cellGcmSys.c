@@ -149,27 +149,31 @@ static int flip_lat_on(void) { return rsx_env_once("FLIP_LAT") != NULL; }
  * frame clock publishes on a vblank beat and some guest thread later delivers
  * at an HLE boundary (ppu_gcm_pump). Measured in a MotorStorm race (FLIP_LAT),
  * delivery took 5-7 ms after the beat, and the beat itself came up to one
- * vblank period after the frame had already been presented.
+ * vblank period after the frame had been taken for present.
  *
  * GCM_FLIP_PROMPT=1      a published completion rings the waiter's doorbell
  *                        and the waiter delivers it itself (the same pump an
  *                        HLE boundary runs, on a guest thread).
- * GCM_FLIP_AT_PRESENT=1  the frame clock completes the flip as soon as the
- *                        frame that carries it has been presented, provided
- *                        at least one vblank period has passed since the last
- *                        completion; the 59.94 Hz cap is kept, and the beat
- *                        remains the fallback.
+ * GCM_FLIP_AT_TAKE=1     the frame clock completes the flip as soon as it
+ *                        takes the frame that carries it for present (all of
+ *                        its commands drained), provided at least one vblank
+ *                        period has passed since the last completion; the
+ *                        59.94 Hz cap is kept, and the beat remains the
+ *                        fallback. Completing after the present instead held
+ *                        the title through every present, so one slow present
+ *                        (225 ms in a traced race) became a ~340 ms frame;
+ *                        the beat never waited for the present either.
  *
  * Generations tie a present to the wait it completes: each new wait
  * (ResetFlipStatus, or a flip request that sets WAITING) opens a generation,
  * a drained flip stamps the generation it belongs to, and taking the frame for
- * present records that stamp. A present of an older frame never completes a
- * newer wait. */
+ * present records that stamp. Taking an older frame never completes a newer
+ * wait. */
 static volatile u32 s_flip_wait_gen, s_flip_drained_gen, s_flip_present_gen;
 static volatile u64 s_flip_last_complete_ns;
 void ppu_gcm_pump(void);
 static int gcm_flip_prompt(void) { return rsx_env_once("GCM_FLIP_PROMPT") != NULL; }
-static int gcm_flip_at_present(void) { return rsx_env_once("GCM_FLIP_AT_PRESENT") != NULL; }
+static int gcm_flip_at_take(void) { return rsx_env_once("GCM_FLIP_AT_TAKE") != NULL; }
 static void gcm_flip_wait_opened(void) { s_flip_wait_gen++; }
 static void gcm_flip_drained(void) { s_flip_drained_gen = s_flip_wait_gen; }
 static void gcm_flip_ring_waiter(void);
@@ -185,7 +189,7 @@ static void gcm_flip_ring_waiter(void);
  * clock has taken that frame, and the frame clock presents a held flip even
  * when put is already past it. Both switches off: unchanged. */
 static volatile u32 s_flip_hold;             /* drain stopped at an untaken flip */
-static int gcm_flip_hold_enabled(void) { return gcm_flip_prompt() || gcm_flip_at_present(); }
+static int gcm_flip_hold_enabled(void) { return gcm_flip_prompt() || gcm_flip_at_take(); }
 /* Present edges from the frame clock: 0 = present starts, 1 = it returned. */
 void cellGcm_flip_lat_present(int phase)
 {
@@ -934,12 +938,13 @@ void cellGcmTickFlip(void)
         gcm_flip_publish(get_timestamp_ns());
 }
 
-/* GCM_FLIP_AT_PRESENT=1: the frame clock calls this right after presenting a
- * frame taken by cellGcm_take_flip_pending_synced. Returns 1 when it
- * completed the current flip. */
-int cellGcm_flip_presented(u64 min_interval_ns)
+/* GCM_FLIP_AT_TAKE=1: cellGcm_take_flip_pending_synced calls this when the
+ * frame clock has taken a frame for present. Returns 1 when it completed the
+ * current flip. */
+#define GCM_VBLANK_PERIOD_NS 16683333ull   /* 59.94 Hz */
+static int gcm_flip_complete_taken(u64 min_interval_ns)
 {
-    if (!gcm_flip_at_present()) return 0;
+    if (!gcm_flip_at_take()) return 0;
     if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) return 0;
     if (s_flip_present_gen != s_flip_wait_gen) return 0;   /* an older frame */
     const u64 now = get_timestamp_ns();
@@ -1445,6 +1450,7 @@ int cellGcm_take_flip_pending_synced(void)
     s_flip_hold = 0;
     s_flip_present_gen = s_flip_drained_gen;
     cellGcm_flip_lat_present(0);
+    gcm_flip_complete_taken(GCM_VBLANK_PERIOD_NS);
     return 1;
 }
 
@@ -1662,7 +1668,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
      * by s_gcm_ctx_out_ea, which stays 0 on that path. */
     if (!s_gcm_context_ea && !s_gcm_syscall_mode) return;
     /* Present the flip this drain stopped at before decoding the frame
-     * queued behind it (GCM_FLIP_PROMPT / GCM_FLIP_AT_PRESENT). */
+     * queued behind it (GCM_FLIP_PROMPT / GCM_FLIP_AT_TAKE). */
     if (s_flip_hold && !s_flip_pending) s_flip_hold = 0;   /* that flip was not accepted */
     if (s_flip_hold && s_flip_pending && gcm_flip_hold_enabled()) return;
     if (!s_inited) { rsx_state_init(&s_state); s_inited = 1; }

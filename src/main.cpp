@@ -98,7 +98,6 @@ void     cellGcmTickFlip(void);
 int      cellGcm_take_flip_pending_synced(void);
 void     cellGcm_flip_lat_present(int phase);
 void     cellGcm_flip_lat_iteration(unsigned long long ns);
-int      cellGcm_flip_presented(unsigned long long min_interval_ns);
 void     cellGcm_rsx_process_fifo(void);      /* drain get -> put */
 unsigned cellGcm_flip_request_count(void);
 /* A guest thread whose fence wait found the FIFO dry sets this; waiting on it
@@ -205,9 +204,6 @@ static int frame_clock_iteration(int rsx_ok)
     if (cellGcm_take_flip_pending_synced()) {
         present_guest_frame();
         cellGcm_flip_lat_present(1);   /* FLIP_LAT=1 diagnostic only */
-        /* GCM_FLIP_AT_PRESENT=1: complete the flip now that its frame is on
-         * screen, at most once per 59.94 Hz vblank period. */
-        cellGcm_flip_presented(16683333ull);
         return 1;
     }
     /* Boot fallback: before the first flip, present freely so the window is

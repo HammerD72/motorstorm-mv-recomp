@@ -1,17 +1,17 @@
-"""Game-free checks for prompt flip completion (GCM_FLIP_PROMPT, GCM_FLIP_AT_PRESENT).
+"""Game-free checks for prompt flip completion (GCM_FLIP_PROMPT, GCM_FLIP_AT_TAKE).
 
 Compiles the vendored cellGcmSys.c with scripts/fixtures/gcm_flip_prompt.c in
 four processes (both switches off, each alone, both on; they are read once):
 - off: the waiter leaves delivery to HLE boundaries and presents complete
   nothing, as before;
 - prompt: a published completion is delivered by the waiting thread itself;
-- present: a presented frame completes the wait it belongs to, never a newer
-  one, never with nothing waiting, and not within one vblank period of the
-  last completion; direct and FIFO flip requests both qualify;
+- take: taking a frame for present completes the wait it belongs to, never
+  a newer one, never with nothing waiting, and not within one vblank period
+  of the last completion; direct and FIFO flip requests both qualify;
 - with either switch, the real FIFO walker holds at a flip with the next frame
   queued behind it until that frame is taken, and the frame is presented on
   its own (no merged frames); off, the get == put gate is unchanged.
-Nine source mutants must build and fail. POSIX only (pthreads, mmap); Linux CI.
+Ten source mutants must build and fail. POSIX only (pthreads, mmap); Linux CI.
 No game input; no performance claim."""
 import datetime
 import json
@@ -24,21 +24,22 @@ ROOT = Path(__file__).resolve().parent.parent
 PS3 = ROOT / 'vendor/ps3recomp'
 SOURCE = PS3 / 'libs/video/cellGcmSys.c'
 FIXTURE = ROOT / 'scripts/fixtures/gcm_flip_prompt.c'
-MODES = {'off': {}, 'prompt': {'GCM_FLIP_PROMPT': '1'}, 'present': {'GCM_FLIP_AT_PRESENT': '1'},
-         'both': {'GCM_FLIP_PROMPT': '1', 'GCM_FLIP_AT_PRESENT': '1'}}
+MODES = {'off': {}, 'prompt': {'GCM_FLIP_PROMPT': '1'}, 'take': {'GCM_FLIP_AT_TAKE': '1'},
+         'both': {'GCM_FLIP_PROMPT': '1', 'GCM_FLIP_AT_TAKE': '1'}}
 MUTANTS = {  # name: (original, replacement, mode that must fail)
     'waiter-does-not-pump': ('        if (prompt) { ppu_gcm_pump(); if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) break; }\n        Sleep(1);',
                              '        Sleep(1);', 'prompt'),
-    'older-frame-completes': ('    if (s_flip_present_gen != s_flip_wait_gen) return 0;   /* an older frame */\n', '', 'present'),
-    'no-vblank-cap': ('    if (now - s_flip_last_complete_ns < min_interval_ns) return 0;   /* keep the vblank cap */\n', '', 'present'),
-    'completes-without-wait': ('    if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) return 0;\n    if (s_flip_present_gen', '    if (s_flip_present_gen', 'present'),
+    'older-frame-completes': ('    if (s_flip_present_gen != s_flip_wait_gen) return 0;   /* an older frame */\n', '', 'take'),
+    'no-vblank-cap': ('    if (now - s_flip_last_complete_ns < min_interval_ns) return 0;   /* keep the vblank cap */\n', '', 'take'),
+    'completes-without-wait': ('    if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) return 0;\n    if (s_flip_present_gen', '    if (s_flip_present_gen', 'take'),
     'direct-flip-not-drained': ('        s_current_display_buffer_id = bufferId;\n        gcm_flip_drained();\n',
-                                '        s_current_display_buffer_id = bufferId;\n', 'present'),
+                                '        s_current_display_buffer_id = bufferId;\n', 'take'),
+    'take-does-not-complete': ('    gcm_flip_complete_taken(GCM_VBLANK_PERIOD_NS);\n', '', 'take'),
     'drain-ignores-hold': ('    if (s_flip_hold && s_flip_pending && gcm_flip_hold_enabled()) return;\n', '', 'prompt'),
-    'present-needs-caught-up': ('if (get != put && !(gcm_flip_hold_enabled() && s_flip_hold)) return 0;', 'if (get != put) return 0;', 'present'),
-    'hold-without-switch': ('static int gcm_flip_hold_enabled(void) { return gcm_flip_prompt() || gcm_flip_at_present(); }',
+    'present-needs-caught-up': ('if (get != put && !(gcm_flip_hold_enabled() && s_flip_hold)) return 0;', 'if (get != put) return 0;', 'take'),
+    'hold-without-switch': ('static int gcm_flip_hold_enabled(void) { return gcm_flip_prompt() || gcm_flip_at_take(); }',
                             'static int gcm_flip_hold_enabled(void) { return 1; }', 'off'),
-    'stale-hold-kept': ('    if (s_flip_hold && !s_flip_pending) s_flip_hold = 0;   /* that flip was not accepted */\n', '', 'present'),
+    'stale-hold-kept': ('    if (s_flip_hold && !s_flip_pending) s_flip_hold = 0;   /* that flip was not accepted */\n', '', 'take'),
 }
 
 
@@ -60,7 +61,7 @@ def build(out, label, source_text):
 
 
 def run(exe, mode):
-    env = {k: v for k, v in os.environ.items() if k not in ('GCM_FLIP_PROMPT', 'GCM_FLIP_AT_PRESENT')}
+    env = {k: v for k, v in os.environ.items() if k not in ('GCM_FLIP_PROMPT', 'GCM_FLIP_AT_TAKE')}
     env.update(MODES[mode])
     r = subprocess.run([str(exe), mode], capture_output=True, text=True, timeout=120, env=env)
     return r.returncode, (r.stdout + r.stderr).strip().splitlines()[-1:] or ['']
