@@ -21,7 +21,7 @@ SOURCE = r'''
 #define VP_TEX_SLOTS 4
 typedef uint32_t u32;typedef uint64_t u64;
 typedef uint8_t u8;
-typedef struct {void*res;u32 key,w,h,fmt,off,mips;u64 csum,last_use;int cube,used;} VPTexSlot;
+typedef struct {void*res;u32 key,w,h,fmt,off,mips,depth;u64 csum,last_use;int cube,used;} VPTexSlot;
 static struct {unsigned vp_tex_capacity;VPTexSlot vp_tex[4];u64 vp_tex_use_serial;} s_d3d;
 static u8 source_bytes[256];
 static u8* vm_base=source_bytes;
@@ -30,10 +30,13 @@ static u8* vm_base=source_bytes;
 @RETENTION@
 @SOURCE_CHECKSUM@
 @HINT@
-static int production_lookup(u32 off,u32 w,u32 h,u32 fmt,int cube,rsx_texture_profile_call*profile){
+static int production_lookup_depth(u32 off,u32 w,u32 h,u32 fmt,int cube,u32 depth,rsx_texture_profile_call*profile){
     u32 key_off=off,bpp=4,blkrow=0,blkrows=0,mips=1;int dxt=0;
 @LOOKUP@
     return slot>=0?slot:-100;
+}
+static int production_lookup(u32 off,u32 w,u32 h,u32 fmt,int cube,rsx_texture_profile_call*profile){
+    return production_lookup_depth(off,w,h,fmt,cube,1,profile);
 }
 typedef struct {double t; unsigned reads;} test_clock;
 static double clock_read(void* p){test_clock*c=p;c->reads++;return c->t;}
@@ -47,7 +50,7 @@ int main(void){
     rsx_texture_profile_finish(&probe,slot);
     assert(slot==1&&measured.outcomes[RSX_TEX_FRAME_HIT]==1&&measured.examined==2&&!measured.checksum_calls);
     s_d3d.vp_tex[1].used=0;
-    s_d3d.vp_tex[1].csum=texture_source_csum(NULL,source_bytes+64,16,2,2,0x85,0,1);
+    s_d3d.vp_tex[1].csum=texture_source_csum(NULL,source_bytes+64,16,2,2,0x85,0,1,1);
     rsx_texture_profile_begin(&probe,&measured,clock_read,&fake);
     slot=production_lookup(64,2,2,0x85,0,&probe);
     rsx_texture_profile_finish(&probe,slot);
@@ -83,6 +86,13 @@ int main(void){
         slot=production_lookup(64,4,2,0x85,0,NULL);assert(slot==-100);
         s_vp_tex_hint[vp_tex_hint_hash(64,2,2,0x85,1)]=3;
         slot=production_lookup(64,2,2,0x85,1,NULL);assert(slot==-100);
+        /* ...nor a different volume depth. The hint hash has no depth, so a
+         * 3D lookup finds the 2D slot's hint; trusting it would skip the scan
+         * and miss the depth-4 slot that does exist (a duplicate upload). */
+        s_d3d.vp_tex[3]=s_d3d.vp_tex[2];s_d3d.vp_tex[3].depth=4;
+        s_vp_tex_hint[vp_tex_hint_hash(64,2,2,0x85,0)]=3;
+        slot=production_lookup_depth(64,2,2,0x85,0,4,NULL);assert(slot==3);
+        s_d3d.vp_tex[3]=(VPTexSlot){0};
         s_d3d.vp_tex[1].key=64;s_d3d.vp_tex[2]=(VPTexSlot){0};
         memset(s_vp_tex_hint,0,sizeof(s_vp_tex_hint));
         puts("hint cases pass");
@@ -168,15 +178,21 @@ if __name__ == '__main__':
             subprocess.run([str(binary)], cwd=directory, env=dict(environment, RSX_TEX_HINT='0', RSX_TEXTURE_RETENTION=mode), check=True)
         # Mutant: trusting the hint without checking the slot's key must fail.
         verified = ('            if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt\n'
-                    '                && c->cube == cube && (!retention || c->mips == mips)) hinted = (int)(hs - 1u);')
+                    '                && c->cube == cube && (c->depth ? c->depth : 1u) == depth\n'
+                    '                && (!retention || c->mips == mips)) hinted = (int)(hs - 1u);')
         assert fixture.count(verified) == 1
-        mutant = directory / 'mutant.c'
-        mutant.write_text(fixture.replace(verified, '            (void)c; hinted = (int)(hs - 1u);'))
-        mbinary = directory / ('mutant.exe' if os.name == 'nt' else 'mutant')
-        mcommand = [str(mutant) if x == str(source) else x for x in command]
-        mcommand = [('/Fe:' + str(mbinary)) if x.startswith('/Fe:') else (str(mbinary) if x == str(binary) else x) for x in mcommand]
-        subprocess.run(mcommand, cwd=directory, check=True)
-        bad = subprocess.run([str(mbinary)], cwd=directory, env=dict(environment, RSX_TEXTURE_RETENTION='1'), capture_output=True, text=True)
-        assert bad.returncode != 0, 'unverified hint mutant passed'
-        print('mutant unverified-hint rejected')
+        no_depth = verified.replace('                && c->cube == cube && (c->depth ? c->depth : 1u) == depth\n',
+                                    '                && c->cube == cube\n')
+        mutants = {'unverified-hint': '            (void)c; hinted = (int)(hs - 1u);',
+                   'hint-ignores-depth': no_depth}
+        for name, replacement in mutants.items():
+            mutant = directory / f'mutant-{name}.c'
+            mutant.write_text(fixture.replace(verified, replacement))
+            mbinary = directory / (f'mutant-{name}.exe' if os.name == 'nt' else f'mutant-{name}')
+            mcommand = [str(mutant) if x == str(source) else x for x in command]
+            mcommand = [('/Fe:' + str(mbinary)) if x.startswith('/Fe:') else (str(mbinary) if x == str(binary) else x) for x in mcommand]
+            subprocess.run(mcommand, cwd=directory, check=True)
+            bad = subprocess.run([str(mbinary)], cwd=directory, env=dict(environment, RSX_TEXTURE_RETENTION='1'), capture_output=True, text=True)
+            assert bad.returncode != 0, f'{name} mutant passed'
+            print(f'mutant {name} rejected')
     print('PASS: actual cache lookup/checksum with verified hints (and RSX_TEX_HINT=0) under reference and retention, disjoint phase accounting, disabled clock and visible failure')
