@@ -173,6 +173,19 @@ static int gcm_flip_at_present(void) { return rsx_env_once("GCM_FLIP_AT_PRESENT"
 static void gcm_flip_wait_opened(void) { s_flip_wait_gen++; }
 static void gcm_flip_drained(void) { s_flip_drained_gen = s_flip_wait_gen; }
 static void gcm_flip_ring_waiter(void);
+
+/* Present a drained flip at its marker (with either switch above).
+ *
+ * The walker already stops at a flip, but the frame clock presented only at
+ * get == put. A waiter released before its frame was presented (a beat that
+ * lands before the present) could start the next frame first; the drain then
+ * ran on into it and one present showed two guest frames -- in a race, 1-3
+ * frames of ~2x length per 30 s, each with one flip never shown. So with
+ * either switch on, the drain holds at the flip it stopped at until the frame
+ * clock has taken that frame, and the frame clock presents a held flip even
+ * when put is already past it. Both switches off: unchanged. */
+static volatile u32 s_flip_hold;             /* drain stopped at an untaken flip */
+static int gcm_flip_hold_enabled(void) { return gcm_flip_prompt() || gcm_flip_at_present(); }
 /* Present edges from the frame clock: 0 = present starts, 1 = it returned. */
 void cellGcm_flip_lat_present(int phase)
 {
@@ -1427,8 +1440,9 @@ int cellGcm_take_flip_pending_synced(void)
     if (!s_flip_pending) return 0;
     u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
     u32 get = vm_read32(GCM_CONTROL_GUEST_ADDR + 4);
-    if (get != put) return 0;   /* frame not fully drained yet */
+    if (get != put && !(gcm_flip_hold_enabled() && s_flip_hold)) return 0;   /* frame not fully drained yet */
     s_flip_pending = 0;
+    s_flip_hold = 0;
     s_flip_present_gen = s_flip_drained_gen;
     cellGcm_flip_lat_present(0);
     return 1;
@@ -1647,6 +1661,10 @@ static void gcm_rsx_process_fifo_unlocked(void)
      * that does read the context (the ring-recycle heuristic) is separately guarded
      * by s_gcm_ctx_out_ea, which stays 0 on that path. */
     if (!s_gcm_context_ea && !s_gcm_syscall_mode) return;
+    /* Present the flip this drain stopped at before decoding the frame
+     * queued behind it (GCM_FLIP_PROMPT / GCM_FLIP_AT_PRESENT). */
+    if (s_flip_hold && !s_flip_pending) s_flip_hold = 0;   /* that flip was not accepted */
+    if (s_flip_hold && s_flip_pending && gcm_flip_hold_enabled()) return;
     if (!s_inited) { rsx_state_init(&s_state); s_inited = 1; }
 
     /* Walk the FIFO exactly like the RSX: chase the guest-written `put` (an IO
@@ -1812,6 +1830,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
              * does not measure backlog. Present this frame before consuming
              * commands after the flip, even when later frames are submitted. */
             why = "flip";
+            s_flip_hold = 1;
             break;
         }
 

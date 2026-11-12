@@ -22,6 +22,21 @@ uint32_t sysmem_spu_alias_fixup(uint32_t ea) { return ea; }
 volatile unsigned char vm_read_sync_pages[1u << 20];
 void vm_read_sync_dispatch(uint32_t a, uint32_t n) { (void)a; (void)n; }
 void rsx_fps_stats_on_flip(void) {}
+u32 g_rsx_last_reference;
+void rsx_d3d12_composite_from_offscreen(u32 raw_off) { (void)raw_off; }
+int rsx_draw_engine_enabled(void) { return 0; }
+void rsx_draw_engine_method(u32 method, u32 arg) { (void)method; (void)arg; }
+int rsx_live_draw_enabled(void) { return 0; }
+void rsx_live_draw_method(u32 method, u32 arg) { (void)method; (void)arg; }
+void rsx_live_draw_note_resolve(u32 a, u32 b, u32 c, u32 d) { (void)a; (void)b; (void)c; (void)d; }
+int rsx_live_draw_blit(u32 a, u32 b, u32 c, u32 d, u32 e, u32 f, u32 w, u32 h)
+{ (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)w; (void)h; return 0; }
+int rsx_live_draw_resolve_blit(u32 a, u32 b, u32 c, u32 d, u32 e, u32 f, u32 g, u32 h,
+                               u32 x, u32 y, u32 w, u32 hh)
+{ (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)g; (void)h; (void)x; (void)y; (void)w; (void)hh; return 0; }
+void rsx_state_init(rsx_state* state) { (void)state; }
+int rsx_process_method(rsx_state* state, u32 method, u32 data) { (void)state; (void)method; (void)data; return 0; }
+void rsx_raise_user_cmd(u32 arg) { (void)arg; }
 ps3_guest_caller_fn g_ps3_guest_caller;
 PPU_THREAD_LOCAL ppu_context* g_active_ctx;
 void ppu_dump_guest_stack(ppu_context* c, const char* t) { (void)c; (void)t; }
@@ -118,6 +133,33 @@ int main(int argc, char** argv)
     CHECK(cellGcm_flip_presented(0) == 0 && !pending_flip(), "FIFO flip not complete before its marker");
     drained_and_taken();
     CHECK(cellGcm_flip_presented(0) == present, "FIFO flip completes once its marker presented");
+    /* C: the real walker over an authored ring -- frame 1's flip with frame 2
+     * already queued behind it. With either switch, frame 1 is presented on
+     * its own; off, the old get == put gate is kept. */
+    s_flip_pending = 0; s_flip_hold = 0;
+    s_gcm_syscall_mode = 1;
+    s_ea_address_table[0] = 0x100;                 /* IO page 0 -> EA 0x10000000 */
+    const u32 ring[] = { 0, GCM_FLIP_MARKER, 0, 0, GCM_FLIP_MARKER, 0 };
+    for (u32 i = 0; i < 6; i++) vm_write32(0x10000000u + 4 * i, ring[i]);
+    s_fifo_getoff = 0;
+    vm_write32(GCM_CONTROL_GUEST_ADDR + 0, 16);     /* the title is inside frame 2 */
+    cellGcm_rsx_process_fifo();
+    CHECK(s_fifo_getoff == 8 && s_flip_pending, "walker stops at frame 1's flip");
+    if (prompt || present) {
+        cellGcm_rsx_process_fifo();
+        CHECK(s_fifo_getoff == 8, "drain holds at an untaken flip");
+        CHECK(cellGcm_take_flip_pending_synced() == 1, "frame 1 presents with frame 2 queued");
+        cellGcm_rsx_process_fifo();
+        CHECK(s_fifo_getoff == 16 && !s_flip_pending, "drain resumes into frame 2 only after the take");
+    } else {
+        CHECK(cellGcm_take_flip_pending_synced() == 0, "off: present still waits for get == put");
+        cellGcm_rsx_process_fifo();
+        CHECK(s_fifo_getoff == 16, "off: drain does not hold");
+    }
+    /* A stale hold (flip not accepted) never lets a later flip skip the gate. */
+    s_flip_hold = 1; s_flip_pending = 0;
+    cellGcm_rsx_process_fifo();
+    CHECK(!s_flip_hold, "stale hold cleared");
     printf("PASS mode=%s\n", argv[1]);
     return 0;
 }
