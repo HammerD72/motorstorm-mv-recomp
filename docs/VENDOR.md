@@ -1,5 +1,21 @@
 # Vendor provenance and upstream
 
+## Read-once renderer switches (#155)
+
+Curated change to `libs/video`: new `rsx_env_once.h`, used by
+`rsx_d3d12_backend.c` and `cellGcmSys.c`. Diagnostic switches read on every
+draw, bind, upload, present or FIFO pass called `getenv`, which walks the whole
+environment block; a sampled native race put that walk (`strchr`) at 14.5% of
+the renderer thread. `rsx_env_once(name)` returns a private copy of the value
+at the first lookup, keyed by the name literal's address in a fixed lock-free
+table that falls back to `getenv` when full. Sites already behind a one-time
+guard, startup-only reads and the CPU surface files are unchanged. Every switch
+keeps its meaning; a value changed after launch is no longer seen.
+`check_rsx_env_once.py` tests the header (copies, first-lookup values,
+overflow, concurrent first lookups, three mutants) and audits the hot-path
+functions for raw reads. The triangle-capacity and VP-upload fixtures include
+the header. No game input or generated code is included.
+
 ## Graphics review corrections (#271, #307)
 
 Own-fork branch `codex/fix-hammer-graphics` pins the reviewed graphics runtime
