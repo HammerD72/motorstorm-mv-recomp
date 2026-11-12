@@ -21,6 +21,8 @@ jobs:
       - name: Native mode admission
         run: python scripts/check_native_mode_guard.py
           python scripts/check_menu_luminance_gate.py
+      - name: Runtime execution profile admission (issue 149)
+        run: python scripts/check_runtime_profile.py --fetch-historical
       - name: Checked renderer optimization scope
         run: python scripts/check_renderer_optimization.py
       - name: Run retention filesystem safety
@@ -295,6 +297,8 @@ jobs:
       - name: Native mode admission
         run: python scripts/check_native_mode_guard.py
           python scripts/check_menu_luminance_gate.py
+      - name: Runtime execution profile admission (issue 149)
+        run: python scripts/check_runtime_profile.py --fetch-historical
       - name: Checked renderer optimization scope
         run: python scripts/check_renderer_optimization.py
       - name: Run retention filesystem safety
