@@ -17,6 +17,11 @@ def fixture(source):
         while depth:
             depth+=(source[end]=='{')-(source[end]=='}');end+=1
         helper=source[start:end]
+    if '#define VP_TEX_HINTS' in source:
+        # Verified lookup hints are part of the production lookup.
+        hint_start=source.index('#define VP_TEX_HINTS')
+        hint_end=source.index('\n}\n',source.index('static int vp_tex_hint_on(void)'))+3
+        helper+='\n'+source[hint_start:hint_end]
     return r"""
 #include <stdint.h>
 #include <stdio.h>

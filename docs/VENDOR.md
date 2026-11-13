@@ -1,17 +1,80 @@
 # Vendor provenance and upstream
 
-## Staged jobmod identity under load padding (#300)
+## Padded job-module header identity (#300)
 
-Curated-only change to `runtime/spu/spu_channels.c` and `spu_context.h`; the
-policy-module staging matcher exists only in this vendored runtime, so no fork
-branch carries it. The accumulator moves into `spu_stage_accumulate` unchanged.
-With `SPU_JOBMOD_HEADER_FNV=1` it also hashes the span a burst's C0DEC0DE
-header declares (image minus the 0x20 trailer, link base equal to the staging
-address) and offers that key once, when the span completes. Default-off
-behaviour is the legacy all-bytes key. Authored images in
-`scripts/check_spu_jobmod_identity.py` cover exact, padded, uneven,
-wrong-base, no-magic, gapped, follow-on, undersized and repeated loads; four
-source mutants fail. No game input or generated code is included.
+The reusable header decoder, selector and diagnostic limit in
+`runtime/spu/spu_jobmod_identity.h` and its authored
+`runtime/spu/tests/test_spu_jobmod_identity.c`, retained locally as
+`scripts/fixtures/spu_jobmod_identity_threads.c.in`, come byte-identically from
+own-fork modular `codex/spu-jobmod-header-identity`, commit
+`a4e725d6f7eaa27fc5b2aff34fcb9bfae4712d38`, then fast-forwarded into `combined`.
+The curated contiguous-load matcher retains its existing policy-module
+integration and legacy all-byte fingerprint. Default-off
+`SPU_JOBMOD_HEADER_FNV=1` also offers the header-declared image-minus-trailer
+span when the link base matches, allowing padded loads to identify once.
+
+The selector cache and sixteen-message diagnostic cap are worker-local.
+Eight real simultaneous first callers verify distinct live cache/counter
+storage; shared-state mutants fail. The curated authored staging fixture
+retains eleven identity cases and four span/switch mutants, and compiles the
+same worker fixture with both shared-state mutants on Windows and POSIX.
+Native decoded-PCM parity and matched game performance remain unverified.
+No guest payload or generated code is included.
+
+## SPU EA alias page-cache publication (#155)
+
+Selective integration from own-fork PR #5, modular commit
+`db15251858f8f63e3ad579a77fcf4af259f112b2`, merged into `combined` as
+`3a512ae05aa21ae6bcbd538694b09ecb94cb71e5`. Follow-up writer serialization
+was authored on own-fork `codex/spu-alias-writer-serialization`, commit
+`16fc783e311deb5e50ed8cc4b4275eba99e3fc86`, then fast-forwarded into `combined`.
+`runtime/syscalls/spu_ea_alias.c` is byte-identical to that final revision.
+Cached 4 KiB page answers use acquire/release publication. An atomic range
+count publishes initialized, append-only records for mixed-page fallback.
+An internal blocking mutex serializes allocator and mapper registration;
+the curated mapper registers after releasing its allocator lock. Guest
+address lookups retain the lock-free atomic page/scan path.
+
+The own-fork authored fixture checks four concurrent readers, four concurrent
+writers, 6,746,751 reference-equivalent fixups and nine compiled mutants.
+Type assertions reject the original unsynchronized page/count declarations.
+Disabling the writer lock fails an actual held-lock registration control.
+Local MinGW, clang-cl and POSIX GCC checks and Ubuntu/Windows CI pass. The
+existing memory-capacity and allocation-exhaustion contract passes locally.
+Game performance remains unverified by this review. No guest bytes or
+generated code are included.
+
+## Fragment-program snapshot identity reuse (#155)
+
+Curated change to `libs/video/rsx_d3d12_backend.c` and `rsx_fp_decompiler.c/.h`.
+Each draw walked the same fragment program up to seven times: the snapshot
+refresh hashed it, `vp_fp_snap_take` sized and hashed it again and cleared all
+4 KiB of its slot, and `vp_get_fp_pso`, called once when compiling and once when
+replaying the draw, hashed and sized it each time. `vp_fp_snap_take` now copies
+the program once, hashes and sizes that copy in one walk
+(`rsx_fp_structural_hash_sized`, same hash), takes no ring slot when the copy
+does not verify, and clears only the tail a longer previous occupant left.
+`vp_get_fp_pso` uses a verified snapshot's stored hash and size instead of
+rehashing its bytes; a live read is still hashed. Hash values, PSO keys and
+`rsx_fp_snapshot_check` are unchanged. `check_rsx_fp_snap_cache.py` exercises the
+extracted production ring and PSO identity selection with authored bytecode and
+four mutants. No game input or generated code is included.
+
+## Read-once renderer switches (#155)
+
+Curated change to `libs/video`: new `rsx_env_once.h`, used by
+`rsx_d3d12_backend.c` and `cellGcmSys.c`. Diagnostic switches read on every
+draw, bind, upload, present or FIFO pass called `getenv`, which walks the whole
+environment block; a sampled native race put that walk (`strchr`) at 14.5% of
+the renderer thread. `rsx_env_once(name)` returns a private copy of the value
+at the first lookup, keyed by the name literal's address in a fixed lock-free
+table that falls back to `getenv` when full. Sites already behind a one-time
+guard, startup-only reads and the CPU surface files are unchanged. Every switch
+keeps its meaning; a value changed after launch is no longer seen.
+`check_rsx_env_once.py` tests the header (copies, first-lookup values,
+overflow, concurrent first lookups, three mutants) and audits the hot-path
+functions for raw reads. The triangle-capacity and VP-upload fixtures include
+the header. No game input or generated code is included.
 
 ## Graphics review corrections (#271, #307)
 

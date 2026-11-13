@@ -12,6 +12,7 @@
  * embed one), in a small lazily-populated registry.
  */
 
+#include "spu_jobmod_identity.h"
 #include "spu_native_owned.h"
 #include "spu_dma.h"
 #include "ps3emu/native_atomic_observer.h"
@@ -2251,34 +2252,6 @@ static unsigned s_stage_good_n;
  * 0x179B0-byte image staged as 0x17A00) never matches. SPU_JOBMOD_HEADER_FNV=1
  * also offers, exactly once per burst, the key over the span its C0DEC0DE
  * header declares. Configure before workers start; unset or 0 = legacy only. */
-static int spu_jobmod_header_fnv_enabled(void)
-{
-    static int mode = -1;
-    if (mode < 0) {
-        const char* value = getenv("SPU_JOBMOD_HEADER_FNV");
-        if (!value || !strcmp(value, "0")) mode = 0;
-        else if (!strcmp(value, "1")) mode = 1;
-        else { fprintf(stderr, "invalid SPU_JOBMOD_HEADER_FNV: expected 0 or 1\n"); abort(); }
-    }
-    return mode;
-}
-
-static uint32_t stage_be32(const uint8_t* p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
-/* Identity span declared by a burst's first transfer, or 0: magic at +0x20,
- * link base at +0x28 equal to the staging address, image size at +0x14. */
-static uint32_t stage_header_span(const uint8_t* ls, uint32_t lsa, uint32_t size)
-{
-    if (size < 0x30 || stage_be32(ls + 0x20) != 0xC0DEC0DEu || stage_be32(ls + 0x28) != lsa)
-        return 0;
-    uint32_t image = stage_be32(ls + 0x14);
-    if (image < 0x820u || image - 0x20u > 0x3E000u - lsa) return 0;
-    return image - 0x20u;
-}
-
 /* Account one policy-mode transfer into LS [lsa, lsa+size). Writes the
  * candidate registry keys, legacy first, and returns how many (0..2). */
 static unsigned spu_stage_accumulate(spu_context* ctx, const uint8_t* ls, uint32_t lsa,
@@ -2387,7 +2360,7 @@ void spu_overlay_note_get(spu_context* ctx, uint32_t ea, const uint8_t* ls, uint
                 spu_workload_find_img(key, &img);
             }
             if (img > 0 && key != ctx->stage_fnv) {
-                static int _h = 0; if (_h++ < 16)
+                if (spu_jobmod_header_log_enabled())
                     fprintf(stderr, "[pm-jobmod] header identity image=%d at LS 0x%05X"
                                     " span=0x%X staged=0x%X src=0x%08X\n",
                             img, ctx->stage_lo, ctx->stage_hdr_span, ctx->stage_hashed,

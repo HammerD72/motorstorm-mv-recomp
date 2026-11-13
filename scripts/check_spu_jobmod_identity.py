@@ -3,7 +3,7 @@
 Compiles the production staging accumulator from spu_channels.c with an
 authored fixture. Images are synthetic C0DEC0DE headers over pseudo-random
 bytes; nothing is read from a game. Each case stages chunked transfers the
-way a policy module does and records which registry keys are offered. Four
+way a policy module does and records which registry keys are offered. Six
 source mutants must each fail. No native execution or speed claim."""
 import argparse
 import datetime
@@ -22,6 +22,7 @@ END = '/* ---- end staged jobmod identity ---- */'
 
 FIXTURE = r'''
 #include "spu_context.h"
+#include "spu_jobmod_identity.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,11 +128,13 @@ MUTANTS = {
 }
 
 
-def compile_and_run(out, label, identity):
+def compile_and_run(out, label, identity, fixture=FIXTURE, header=None):
     target = out / label
     target.mkdir()
     c = target / 'check.c'
-    c.write_text(FIXTURE.replace('@IDENTITY@', identity))
+    c.write_text(fixture.replace('@IDENTITY@', identity), encoding='utf-8')
+    if header is not None:
+        (target / 'spu_jobmod_identity.h').write_text(header, encoding='utf-8')
     exe = target / ('check.exe' if os.name == 'nt' else 'check')
     includes = [SDK / 'include', SDK / 'runtime/spu', SDK / 'runtime/platform']
     env = os.environ.copy()
@@ -141,7 +144,7 @@ def compile_and_run(out, label, identity):
         cmd = [env['MV_CLANG'], '/nologo', '/D_CRT_SECURE_NO_WARNINGS', *('/I' + str(p) for p in includes),
                str(c), '/Fe' + str(exe), '/Fo' + str(target) + os.sep]
     else:
-        cmd = [env.get('CC') or shutil.which('cc'), '-std=gnu11', '-UNDEBUG', '-Wall', '-Wno-unused-function',
+        cmd = [env.get('CC') or shutil.which('cc'), '-std=gnu11', '-pthread', '-UNDEBUG', '-Wall', '-Wno-unused-function',
                *('-I' + str(p) for p in includes), '-o', str(exe), str(c)]
     build = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     (target / 'build.log').write_text(build.stdout + build.stderr)
@@ -168,6 +171,7 @@ def main():
     out.mkdir(parents=True)
     report = dict(game_inputs=False, source=str(SOURCE), source_sha256=hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
                   identity_sha256=hashlib.sha256(identity.encode()).hexdigest(), mutants={})
+    header = (SDK / 'runtime/spu/spu_jobmod_identity.h').read_text(encoding='utf-8')
     ok = True
     production = compile_and_run(out, 'production', identity)
     report['production'] = production
@@ -177,9 +181,25 @@ def main():
     ok &= modes.get('None', {}).get('stdout') == '0' and modes.get('0', {}).get('stdout') == '0'
     ok &= modes.get('1', {}).get('stdout') == '1' and modes.get('2', {}).get('returncode') != 0
     for name, (old, new) in MUTANTS.items():
-        assert identity.count(old) == 1, name
-        mutant = compile_and_run(out, 'mutant-' + name, identity.replace(old, new))
-        killed = mutant.get('build') != 0 or mutant.get('returncode') != 0
+        assert identity.count(old) + header.count(old) == 1, name
+        mutant = compile_and_run(out, 'mutant-' + name, identity.replace(old, new),
+                                 header=header.replace(old, new))
+        killed = mutant.get('build') == 0 and mutant.get('returncode') not in (None, 0)
+        report['mutants'][name] = dict(killed=killed, output=mutant.get('output') or mutant.get('log'))
+        print(f'mutant {name}: {"killed" if killed else "SURVIVED"}')
+        ok &= killed
+    workers = (ROOT / 'scripts/fixtures/spu_jobmod_identity_threads.c.in').read_text(encoding='utf-8')
+    workers = workers.replace('../spu_jobmod_identity.h', 'spu_jobmod_identity.h')
+    concurrent = compile_and_run(out, 'concurrent-workers', identity, fixture=workers)
+    report['concurrent_workers'] = concurrent
+    print(concurrent.get('output') or concurrent.get('log'))
+    ok &= concurrent.get('build') == 0 and concurrent.get('returncode') == 0
+    for name, declaration in [('shared-selector', 'int'), ('shared-log-counter', 'unsigned')]:
+        old = 'static SPU_JOBMOD_THREAD_LOCAL ' + declaration
+        assert header.count(old) == 1, name
+        mutant = compile_and_run(out, 'mutant-' + name, identity, fixture=workers,
+                                 header=header.replace(old, 'static ' + declaration))
+        killed = mutant.get('build') == 0 and mutant.get('returncode') not in (None, 0)
         report['mutants'][name] = dict(killed=killed, output=mutant.get('output') or mutant.get('log'))
         print(f'mutant {name}: {"killed" if killed else "SURVIVED"}')
         ok &= killed
