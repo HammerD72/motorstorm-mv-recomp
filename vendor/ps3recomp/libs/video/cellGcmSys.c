@@ -17,6 +17,7 @@
 #include "rsx_commands.h"                    /* rsx_state, rsx_process_command_buffer */
 #include "../../include/ps3emu/guest_call.h" /* g_ps3_guest_caller for direct handler dispatch */
 #include "rsx_fps_stats.h"                   /* FPS_STATS=1 flip-rate counter */
+#include "rsx_env_once.h"                   /* read-once debug switches on hot paths */
 
 /* Guest EA of the GCM context (begin/end/current/callback) the title writes its
  * command stream into; recorded by cellGcmSetupContext, drained by the RSX. */
@@ -655,7 +656,7 @@ void cellGcmSetWaitFlipUnsafe(void) { cellGcmSetWaitFlip(); }
 void cellGcmResetFlipStatus(void)
 {
     { static int n = 0;
-      if (getenv("FLIP_DBG") && n++ < 12)
+      if (rsx_env_once("FLIP_DBG") && n++ < 12)
           fprintf(stderr, "[FLIP] ResetFlipStatus%c", 10); }
     s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
 }
@@ -671,7 +672,7 @@ u32 cellGcmGetFlipStatus(void)
      * every wait-for-flip loop exit on its first poll, so titles ran
      * completely unpaced (wave: 95 fps with a fixed-dt simulation). */
     { static int n = 0;
-      if (getenv("FLIP_DBG") && n++ < 24)
+      if (rsx_env_once("FLIP_DBG") && n++ < 24)
           fprintf(stderr, "[FLIP] GetFlipStatus -> %u (0=DONE 1=WAITING)%c",
                   s_flip_status, 10); }
     return s_flip_status;
@@ -1336,7 +1337,7 @@ static u32 s_tr_i = 0;
 static void gcm_fifo_dump_around(u32 getoff)
 {
     static int d = 0;
-    if (!getenv("GCM_RECDBG") || d++ >= 3) return;
+    if (!rsx_env_once("GCM_RECDBG") || d++ >= 3) return;
     for (u32 t = 0; t < GCM_TRACE_N; t++) {
         u32 k = (s_tr_i + t) % GCM_TRACE_N;
         if (!s_tr_w[k]) continue;
@@ -1486,7 +1487,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
     { static unsigned _n = 0; static unsigned long long _t0 = 0;
       extern unsigned long long ps3_ms_now(void);
       _n++;
-      if (getenv("GCM_RATE")) {
+      if (rsx_env_once("GCM_RATE")) {
           unsigned long long now = ps3_ms_now();
           if (_t0 == 0) _t0 = now;
           if (now - _t0 >= 2000) {
@@ -1527,7 +1528,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
      * once at init; if the title repoints gCellGcmCurrentContext at a buffer of
      * its own, every field below moves with it and the FIFO the runtime walks
      * stops being the one the title fills. Reported on change, not per tick. */
-    if (getenv("GCM_CTXDBG") && s_gcm_ctx_out_ea) {
+    if (rsx_env_once("GCM_CTXDBG") && s_gcm_ctx_out_ea) {
         static u32 last_ptr = 0xFFFFFFFFu, last_cur = 0xFFFFFFFFu;
         u32 ptr = vm_read32(s_gcm_ctx_out_ea);
         u32 cur = ptr ? vm_read32(ptr + 0x8) : 0;
@@ -1543,7 +1544,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
     }
 
     u32 start_off = s_fifo_getoff;
-    if (getenv("GCM_DRAINDBG")) {
+    if (rsx_env_once("GCM_DRAINDBG")) {
         static int n = 0;
         if (n++ % 60 == 0)
             printf("[DRAIN] getoff=%08X put=%08X ref=%08X ctx.current=%08X\n",
@@ -1556,7 +1557,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
      * two very different causes -- we missed the command, or it was never
      * submitted -- and only a direct scan of the ring separates them. */
     { static int scanned = 0;
-      if (!scanned && getenv("GCM_SCANREF") && put >= 0x19F0) { scanned = 1;
+      if (!scanned && rsx_env_once("GCM_SCANREF") && put >= 0x19F0) { scanned = 1;
         unsigned found = 0;
         for (u32 io = 0; io + 8 <= put; io += 4) {
             u32 ea = gcm_io2ea(io); if (!ea) continue;
@@ -1659,7 +1660,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
              * the flip-gated present shows the finished frame. */
             { static u32 comp = 0; static int comp_init = 0;
               if (!comp_init) { comp_init = 1;
-                  const char* e = getenv("GCM_COMPOSITE_RT");
+                  const char* e = rsx_env_once("GCM_COMPOSITE_RT");
                   comp = e ? (u32)strtoul(e, NULL, 0) : 0; }
               if (comp) {
                   extern void rsx_d3d12_composite_from_offscreen(u32 raw_off);
@@ -1753,7 +1754,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
                     u32 m = (type == 0) ? method + i * 4 : method;
                     u32 v = vm_read32(dea);
                     u32 la = GCM_LABEL_GUEST_BASE + (s_sema_offset & 0xFFFFu);
-                    { static int sn = 0; if (getenv("GCM_RECDBG") && sn++ < 12)
+                    { static int sn = 0; if (rsx_env_once("GCM_RECDBG") && sn++ < 12)
                         fprintf(stderr, "[SEMA] m=0x%02X v=0x%08X off=0x%X\n", m, v, s_sema_offset); }
                     if (m == 0x64u)      s_sema_offset = v;
                     else if (m == 0x6Cu) vm_write32(la, v);
@@ -1936,7 +1937,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
      * per tick (gcm_ref_push/gcm_ref_publish_one above) so every SET_REFERENCE
      * value stays observable to equality-waiters. The wrap recycle path polls
      * the drained EA. */
-    if (getenv("GCM_DRAINDBG")) {
+    if (rsx_env_once("GCM_DRAINDBG")) {
         static int n2 = 0;
         if (n2++ % 60 == 0)
             fprintf(stderr, "[DRAINEND] %s: %08X -> %08X (%u bytes), put=%08X\n",
@@ -1984,7 +1985,7 @@ void cellGcm_fifo_recycle(u32 ctx_ea)
     u32 current = vm_read32(ctx_ea + 0x8);
     if (current <= begin) return;                       /* nothing to recycle */
 
-    if (getenv("CELLMARK_BLINKDBG"))
+    if (rsx_env_once("CELLMARK_BLINKDBG"))
         printf("[RECYCLE] ring wrap: current=0x%08X -> begin=0x%08X\n", current, begin);
 
     static int s_recdbg = -1;
@@ -2131,7 +2132,7 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
           }
       } }
 
-    { static int _n=0; if (getenv("FLIP_DBG") && _n++ < 20)
+    { static int _n=0; if (rsx_env_once("FLIP_DBG") && _n++ < 20)
         fprintf(stderr, "[FLIP] SetFlipCommand(buf=%u) set=%d\n",
                 bufferId, bufferId < CELL_GCM_MAX_DISPLAY_BUFFER_NUM ? s_display_buffer_set[bufferId] : -1); }
     if (bufferId >= CELL_GCM_MAX_DISPLAY_BUFFER_NUM)
