@@ -41,8 +41,11 @@ FIXTURE = r'''
 #include "rsx_env_once.h"
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);exit(1);}}while(0)
 static const char* NAMES[8]={"RSXENV_T0","RSXENV_T1","RSXENV_T2","RSXENV_T3","RSXENV_T4","RSXENV_T5","RSXENV_T6","RSXENV_T7"};
+static atomic_int first_ready, first_go;
 static void* worker(void* arg){
     (void)arg;
+    atomic_fetch_add(&first_ready, 1);
+    while(!atomic_load(&first_go)) {}
     for(int r=0;r<20000;r++){const char* v=rsx_env_once(NAMES[r&7]);
         if((r&7)%2){if(v)return (void*)1;}else{if(!v||strcmp(v,"on"))return (void*)1;}}
     return NULL;
@@ -57,6 +60,18 @@ int main(void){
     CHECK(rsx_env_once("RSXENV_UNSET")==NULL);
     unsetenv("RSXENV_SET");CHECK(!strcmp(rsx_env_once("RSXENV_SET"),"abc"));
     setenv("RSXENV_OTHER","xyz",1);CHECK(!strcmp(rsx_env_once("RSXENV_OTHER"),"xyz"));  /* distinct name */
+    /* Exercise first publication while the cache still has free slots. */
+    for(int i=0;i<8;i++)if(i%2==0)setenv(NAMES[i],"on",1);else unsetenv(NAMES[i]);
+    pthread_t t[8];for(int i=0;i<8;i++)CHECK(!pthread_create(&t[i],NULL,worker,NULL));
+    while(atomic_load(&first_ready)!=8) {}
+    atomic_store(&first_go, 1);
+    for(int i=0;i<8;i++){void* r;CHECK(!pthread_join(t[i],&r));CHECK(r==NULL);}
+    for(int i=0;i<8;i++){
+        unsigned matches=0;
+        for(unsigned slot=0;slot<RSX_ENV_ONCE_SLOTS;slot++)
+            matches += atomic_load(&s_rsx_env_once[slot].key)==NAMES[i];
+        CHECK(matches==1);
+    }
     /* Table overflow: heap-allocated names are distinct keys; past the table
      * every lookup still answers correctly through getenv. */
     for(unsigned i=0;i<RSX_ENV_ONCE_SLOTS+64;i++){
@@ -65,9 +80,6 @@ int main(void){
         const char* got=rsx_env_once(name);CHECK((i%3==0)?(got&&!strcmp(got,"y")):(got==NULL));
     }
     CHECK(!strcmp(rsx_env_once("RSXENV_OTHER"),"xyz"));       /* earlier entries survive */
-    for(int i=0;i<8;i++)if(i%2==0)setenv(NAMES[i],"on",1);else unsetenv(NAMES[i]);
-    pthread_t t[8];for(int i=0;i<8;i++)CHECK(!pthread_create(&t[i],NULL,worker,NULL));
-    for(int i=0;i<8;i++){void* r;CHECK(!pthread_join(t[i],&r));CHECK(r==NULL);}
     puts("PASS read-once values, private copy, overflow fallback and concurrent first lookups");
     return 0;
 }
