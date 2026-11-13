@@ -1,5 +1,26 @@
 # Vendor provenance and upstream
 
+## Padded job-module header identity (#300)
+
+The reusable header decoder, selector and diagnostic limit in
+`runtime/spu/spu_jobmod_identity.h` and its authored
+`runtime/spu/tests/test_spu_jobmod_identity.c`, retained locally as
+`scripts/fixtures/spu_jobmod_identity_threads.c.in`, come byte-identically from
+own-fork modular `codex/spu-jobmod-header-identity`, commit
+`a4e725d6f7eaa27fc5b2aff34fcb9bfae4712d38`, then fast-forwarded into `combined`.
+The curated contiguous-load matcher retains its existing policy-module
+integration and legacy all-byte fingerprint. Default-off
+`SPU_JOBMOD_HEADER_FNV=1` also offers the header-declared image-minus-trailer
+span when the link base matches, allowing padded loads to identify once.
+
+The selector cache and sixteen-message diagnostic cap are worker-local.
+Eight real simultaneous first callers verify distinct live cache/counter
+storage; shared-state mutants fail. The curated authored staging fixture
+retains eleven identity cases and four span/switch mutants, and compiles the
+same worker fixture with both shared-state mutants on Windows and POSIX.
+Native decoded-PCM parity and matched game performance remain unverified.
+No guest payload or generated code is included.
+
 ## SPU EA alias page-cache publication (#155)
 
 Selective integration from own-fork PR #5, modular commit
