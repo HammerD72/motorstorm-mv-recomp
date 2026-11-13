@@ -1,5 +1,21 @@
 # Vendor provenance and upstream
 
+## Fragment-program snapshot identity reuse (#155)
+
+Curated change to `libs/video/rsx_d3d12_backend.c` and `rsx_fp_decompiler.c/.h`.
+Each draw walked the same fragment program up to seven times: the snapshot
+refresh hashed it, `vp_fp_snap_take` sized and hashed it again and cleared all
+4 KiB of its slot, and `vp_get_fp_pso`, called once when compiling and once when
+replaying the draw, hashed and sized it each time. `vp_fp_snap_take` now copies
+the program once, hashes and sizes that copy in one walk
+(`rsx_fp_structural_hash_sized`, same hash), takes no ring slot when the copy
+does not verify, and clears only the tail a longer previous occupant left.
+`vp_get_fp_pso` uses a verified snapshot's stored hash and size instead of
+rehashing its bytes; a live read is still hashed. Hash values, PSO keys and
+`rsx_fp_snapshot_check` are unchanged. `check_rsx_fp_snap_cache.py` exercises the
+extracted production ring and PSO identity selection with authored bytecode and
+four mutants. No game input or generated code is included.
+
 ## Read-once renderer switches (#155)
 
 Curated change to `libs/video`: new `rsx_env_once.h`, used by

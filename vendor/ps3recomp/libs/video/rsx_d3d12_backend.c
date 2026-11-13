@@ -2714,14 +2714,24 @@ static u32 vp_fp_snap_take(u32 off)
     if (!vm_base || off == 0xFFFFFFFFu) return 0;
     const u8* src = vm_base + off;
     u32 size = rsx_fp_program_size(src, 4096);
-    u64 h = rsx_fp_structural_hash(src, 4096, 0);
-    if (!size || !h) return 0;               /* malformed: fall back live */
+    if (!size) return 0;                     /* malformed: fall back live */
+    /* Identity and extent come from one stable copy of the bytes, in one
+     * walk, so every later use can trust them without rehashing. A guest
+     * rewrite racing the copy that changes the extent takes no slot. */
+    static u8 copy[4096];                    /* render path is single-threaded */
+    memcpy(copy, src, size);
+    u32 copied = 0;
+    u64 h = rsx_fp_structural_hash_sized(copy, size, 0, &copied);
+    if (!h || copied != size) return 0;      /* malformed: fall back live */
     u32 idx = s_fp_snap_head;
     s_fp_snap_head = (s_fp_snap_head + 1) % VP_FPSNAP_MAX;
     VPFP_snap* s = &s_fp_snap[idx];
+    /* Bytes past a slot's program stay zero: only the tail the previous,
+     * longer occupant left behind needs clearing, not all 4 KiB. */
+    const u32 previous = s->size <= sizeof(s->bytes) ? s->size : (u32)sizeof(s->bytes);
     s->off = off; s->size = size; s->hash = h;
-    memset(s->bytes, 0, sizeof(s->bytes));
-    memcpy(s->bytes, src, size);
+    memcpy(s->bytes, copy, size);
+    if (previous > size) memset(s->bytes + size, 0, previous - size);
     s_fp_snap_cur[(off >> 12) & 4095] = idx + 1;
     return idx + 1;
 }
@@ -2754,14 +2764,21 @@ static u32 vp_fp_snap_for(u32 prog)
     return vp_fp_snap_take(off);
 }
 
-/* Bytes a record/PSO must use for `snap` (idx+1) at resolved offset `off`.
- * NULL when the snapshot does not verify (recycled ring slot). */
-static const u8* vp_fp_snap_bytes(u32 snap, u32 off)
+/* Snapshot a record/PSO must use for `snap` (idx+1) at resolved offset
+ * `off`; NULL when it does not verify (recycled ring slot). Its hash and size
+ * were taken from exactly its bytes. */
+static const VPFP_snap* vp_fp_snap_entry(u32 snap, u32 off)
 {
     if (snap && snap <= VP_FPSNAP_MAX && s_fp_snap[snap - 1].off == off
         && s_fp_snap[snap - 1].hash)
-        return s_fp_snap[snap - 1].bytes;
+        return &s_fp_snap[snap - 1];
     return NULL;
+}
+
+static const u8* vp_fp_snap_bytes(u32 snap, u32 off)
+{
+    const VPFP_snap* s = vp_fp_snap_entry(snap, off);
+    return s ? s->bytes : NULL;
 }
 
 static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, int nrt,
@@ -2804,8 +2821,8 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     /* Program bytes: the record's snapshot when it verifies (the bytes that
      * were resident when the guest BOUND this program -- the address may have
      * been recycled since), else a live read (legacy/no-snapshot path). */
-    const u8* uc = vp_fp_snap_bytes(snap_idx, off);
-    if (!uc) uc = vm_base + off;
+    const VPFP_snap* snap = vp_fp_snap_entry(snap_idx, off);
+    const u8* uc = snap ? snap->bytes : vm_base + off;
 
     /* PSO identity: the structural hash covers instruction words and SKIPS
      * inline-CONST payloads -- with constants hoisted into the per-draw b1
@@ -2814,9 +2831,12 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
      * address still misses and recompiles, as it must. Hashing the SNAPSHOT
      * keeps the identity stable from bind to replay even when the guest
      * overwrites the ucode window mid-frame. */
-    u64 uhash = rsx_fp_structural_hash(uc, 4096, 0);
+    /* A verified snapshot already carries the hash and extent of its own
+     * bytes (taken in one walk); only a live read is hashed here. */
+    u32 usize = snap ? snap->size : 0;
+    u64 uhash = snap ? snap->hash : rsx_fp_structural_hash_sized(uc, 4096, 0, &usize);
     if (uhash == 0) return NULL;                    /* malformed ucode */
-    s_perf_pso_hashbytes += (int)rsx_fp_program_size(uc, 4096);
+    s_perf_pso_hashbytes += (int)usize;
     int exp32 = (fp_ctrl & 0x40u) ? 1 : 0;
     /* Fold the unnormalized-scale state (mask + per-unit dims) into the key. */
     u32 unnorm_key = 0;
