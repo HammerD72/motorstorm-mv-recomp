@@ -1,5 +1,110 @@
 # Vendor provenance and upstream
 
+## Prompt flip completion and latency state (#155)
+
+The opt-in GCM completion, FIFO hold and latency diagnostics are reconciled
+with current main directly on PR #316 following the maintainer's direction.
+Both completion switches and `FLIP_LAT` remain off by default. The SPURS
+publication wake-up selectively imports own-fork PR #4, combined merge
+`367c7e87b269ee7ae347a646ca2186d51dfa47c6`. Its selector cache is worker-local.
+
+A blocking state lock serializes wait generations, frame stamps, completion
+publication and delivery claims. Each completion stores a generation-tagged
+payload beside the notification bit, and resetting a wait invalidates older work. Status/frame flags use
+C11 atomics for their other cross-thread accesses. Guest callbacks execute
+after releasing the state lock. A returning or timed-out waiter can complete
+only its captured generation. The Win32 completion event and timestamp
+frequency initialize through `InitOnceExecuteOnce`.
+
+Latency timestamps and aggregates use an independent blocking lock. Reporting
+copies and resets one coherent window, then prints after unlocking. The
+frame-clock diagnostic timestamp is sampled only when diagnostics are enabled.
+
+The authored fixture compiles the actual GCM implementation on Windows and
+POSIX, using reserved virtual memory with authored control/ring contents. It
+covers four switch combinations, diagnostics off, FIFO holds, vblank bounds,
+beat fallback, a real producer and blocked Win32 waiter, replacement waits,
+128 cross-thread queued-generation replacements and concurrent diagnostic
+reporting. Eighteen compiled mutants must fail on both hosts. Windows adds a
+nineteenth control removing the publication doorbell. The queued-generation
+regression fails on the original PR in take/both modes. No guest bytes or
+generated guest code are included. Corrected native gameplay, visuals and
+matched frame-time performance remain unverified.
+
+## Texture mip chains (#97)
+
+Curated change to `libs/video/rsx_d3d12_backend.c` and
+`rsx_texture_fingerprint.h`. With `RSX_TEX_MIPS=1` (default 0) the VP texture
+upload creates 2D and cube resources with the guest's mip levels, clamped by
+`rsx_texture_mip_chain` to the halvings the dimensions allow. Each (face,
+level) is decoded at its own layout into the placed footprint
+`GetCopyableFootprints` assigns and copied to its own subresource; level 0
+keeps the historical row pitch. The level count joins the cache key and slot
+reuse check, and the retained identity widens to every uploaded level of each
+face (`rsx_texture_source_view_extend`). `srv_write_ex` views every level of a
+non-null resource, which is unchanged for single-level resources. Volumes stay
+single-level. Lower levels of a linear chain are read packed at their own width,
+as `rsx_texture_mip_chain` already describes; no hardware capture confirms that
+rule. `check_rsx_texture_mips.py` covers offsets, per-level decode, identity and
+selection with five mutants; the Windows GPU fixture adds a `mips-only` phase
+(per-subresource readback, per-level Load, lower-level mutation) and passes the
+volume `depth` argument `vp_upload_tex_slot_impl` gained in #307. No game input
+or generated code is included.
+
+
+Current-main integration preserves the verified texture lookup hint. Hint
+acceptance, its diagnostic verification scan and the ordinary scan all compare
+the normalized uploaded level count. `check_rsx_texture_profile.py` now checks
+a stale single-level hint beside a chained slot and rejects independently
+removing the level check from each path, under both retention modes and with
+hints disabled. Authored integrated DX12 allocation/upload/readback checks also
+pass on the RTX 3080 with zero validation messages. Guest linear-chain packing
+and matched native visuals remain unverified.
+
+## Padded job-module header identity (#300)
+
+The reusable header decoder, selector and diagnostic limit in
+`runtime/spu/spu_jobmod_identity.h` and its authored
+`runtime/spu/tests/test_spu_jobmod_identity.c`, retained locally as
+`scripts/fixtures/spu_jobmod_identity_threads.c.in`, come byte-identically from
+own-fork modular `codex/spu-jobmod-header-identity`, commit
+`a4e725d6f7eaa27fc5b2aff34fcb9bfae4712d38`, then fast-forwarded into `combined`.
+The curated contiguous-load matcher retains its existing policy-module
+integration and legacy all-byte fingerprint. Default-off
+`SPU_JOBMOD_HEADER_FNV=1` also offers the header-declared image-minus-trailer
+span when the link base matches, allowing padded loads to identify once.
+
+The selector cache and sixteen-message diagnostic cap are worker-local.
+Eight real simultaneous first callers verify distinct live cache/counter
+storage; shared-state mutants fail. The curated authored staging fixture
+retains eleven identity cases and four span/switch mutants, and compiles the
+same worker fixture with both shared-state mutants on Windows and POSIX.
+Native decoded-PCM parity and matched game performance remain unverified.
+No guest payload or generated code is included.
+
+## SPU EA alias page-cache publication (#155)
+
+Selective integration from own-fork PR #5, modular commit
+`db15251858f8f63e3ad579a77fcf4af259f112b2`, merged into `combined` as
+`3a512ae05aa21ae6bcbd538694b09ecb94cb71e5`. Follow-up writer serialization
+was authored on own-fork `codex/spu-alias-writer-serialization`, commit
+`16fc783e311deb5e50ed8cc4b4275eba99e3fc86`, then fast-forwarded into `combined`.
+`runtime/syscalls/spu_ea_alias.c` is byte-identical to that final revision.
+Cached 4 KiB page answers use acquire/release publication. An atomic range
+count publishes initialized, append-only records for mixed-page fallback.
+An internal blocking mutex serializes allocator and mapper registration;
+the curated mapper registers after releasing its allocator lock. Guest
+address lookups retain the lock-free atomic page/scan path.
+
+The own-fork authored fixture checks four concurrent readers, four concurrent
+writers, 6,746,751 reference-equivalent fixups and nine compiled mutants.
+Type assertions reject the original unsynchronized page/count declarations.
+Disabling the writer lock fails an actual held-lock registration control.
+Local MinGW, clang-cl and POSIX GCC checks and Ubuntu/Windows CI pass. The
+existing memory-capacity and allocation-exhaustion contract passes locally.
+Game performance remains unverified by this review. No guest bytes or
+generated code are included.
+
 ## Fragment-program snapshot identity reuse (#155)
 
 Curated change to `libs/video/rsx_d3d12_backend.c` and `rsx_fp_decompiler.c/.h`.

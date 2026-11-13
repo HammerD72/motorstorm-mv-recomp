@@ -2,10 +2,51 @@
  * argv[1] = the mode the process was started in: off | prompt | take | both
  * (GCM_FLIP_PROMPT / GCM_FLIP_AT_TAKE are read once, so each mode is its
  * own process). Prints PASS or "FAIL <check>" and exits nonzero on failure. */
-#include GCM_SOURCE
+#include <stdatomic.h>
+#ifdef _WIN32
+#include <windows.h>
+static DWORD fixture_wait(HANDLE handle, DWORD timeout);
+#define WaitForSingleObject fixture_wait
+#else
 #include <pthread.h>
 #include <sys/mman.h>
+#include "../../runtime/platform/win32_compat.h"
+static void fixture_sleep(DWORD milliseconds);
+#define Sleep fixture_sleep
+#endif
+#include GCM_SOURCE
+#ifdef _WIN32
+#undef WaitForSingleObject
+#else
+#undef Sleep
+#endif
 #include <time.h>
+
+static atomic_int waiter_entered;
+static atomic_int waiter_woke_on_event;
+#ifdef _WIN32
+static DWORD fixture_wait(HANDLE handle, DWORD timeout)
+{
+    if (handle == gcm_flip_done_event()) atomic_store(&waiter_entered, 1);
+    DWORD result = WaitForSingleObject(handle, timeout);
+    if (handle == gcm_flip_done_event() && result == WAIT_OBJECT_0)
+        atomic_store(&waiter_woke_on_event, 1);
+    return result;
+}
+typedef DWORD fixture_thread_id;
+#define current_thread_id() GetCurrentThreadId()
+#define same_thread(a, b) ((a) == (b))
+#else
+static pthread_t fixture_waiter;
+static void fixture_sleep(DWORD milliseconds)
+{
+    if (pthread_equal(pthread_self(), fixture_waiter)) atomic_store(&waiter_entered, 1);
+    Sleep(milliseconds);
+}
+typedef pthread_t fixture_thread_id;
+#define current_thread_id() pthread_self()
+#define same_thread(a, b) pthread_equal(a, b)
+#endif
 
 uint8_t* vm_base;
 uint32_t ppu_vm_size;
@@ -44,17 +85,16 @@ void ppu_dump_bctrl_ring(uint32_t id, const char* t) { (void)id; (void)t; }
 
 #define CHECK(x, name) do { if (!(x)) { printf("FAIL %s\n", name); return 1; } } while (0)
 static unsigned flip_calls;
-static pthread_t flip_thread;
+static fixture_thread_id flip_thread;
 static void callback(uint32_t opd, uint64_t a, uint64_t b, uint64_t c,
                      uint64_t d, uint64_t e, uint64_t f, uint64_t h, uint64_t i)
 {
     (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; (void)h; (void)i;
-    if (opd == 0x500) { flip_calls++; flip_thread = pthread_self(); }
+    if (opd == 0x500) { flip_calls++; flip_thread = current_thread_id(); }
 }
 static double ms_now(void)
 {
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
-    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+    return get_timestamp_ns() * 1e-6;
 }
 /* A flip the drain reached and the frame clock took for present (which, with
  * GCM_FLIP_AT_TAKE, may complete it). */
@@ -66,13 +106,201 @@ static void drained_and_taken(void)
 }
 static int pending_flip(void) { return (GCM_PENDING_TAKE() & 2) != 0; }
 
+static void (*thread_work)(void);
+#ifdef _WIN32
+static DWORD WINAPI fixture_thread_main(void* unused)
+{
+    (void)unused;
+    thread_work();
+    return 0;
+}
+typedef HANDLE fixture_thread;
+static fixture_thread start_thread(void (*work)(void))
+{
+    thread_work = work;
+    return CreateThread(NULL, 0, fixture_thread_main, NULL, 0, NULL);
+}
+static void join_thread(fixture_thread thread)
+{
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+}
+#else
+static void* fixture_thread_main(void* unused)
+{
+    (void)unused;
+    thread_work();
+    return NULL;
+}
+typedef pthread_t fixture_thread;
+static fixture_thread start_thread(void (*work)(void))
+{
+    pthread_t thread;
+    thread_work = work;
+    if (pthread_create(&thread, NULL, fixture_thread_main, NULL)) abort();
+    return thread;
+}
+static void join_thread(fixture_thread thread) { pthread_join(thread, NULL); }
+#endif
+static atomic_int worker_entered, worker_done, worker_error, requested, published;
+static void publish_for_blocked_waiter(void)
+{
+    for (unsigned i = 0; !atomic_load(&waiter_entered); ++i) {
+        if (i == 2000) { atomic_store(&worker_error, 1); return; }
+        Sleep(1);
+    }
+    Sleep(10);
+    cellGcmTickFlip();
+}
+static void replace_blocked_wait(void)
+{
+    for (unsigned i = 0; !atomic_load(&waiter_entered); ++i) {
+        if (i == 2000) { atomic_store(&worker_error, 1); return; }
+        Sleep(1);
+    }
+    Sleep(10);
+    cellGcmResetFlipStatus();
+}
+static void reset_while_locked(void)
+{
+    atomic_store(&worker_entered, 1);
+    cellGcmResetFlipStatus();
+    atomic_store(&worker_done, 1);
+}
+static void measure_while_locked(void)
+{
+    atomic_store(&worker_entered, 1);
+    cellGcm_flip_lat_iteration(100);
+    atomic_store(&worker_done, 1);
+}
+static void publish_generations(void)
+{
+    for (int round = 1; round <= 128; ++round) {
+        while (atomic_load(&requested) < round) Sleep(1);
+        cellGcmTickFlip();
+        cellGcm_flip_lat_present(0);
+        cellGcm_flip_lat_present(1);
+        cellGcm_flip_lat_iteration(100);
+        atomic_store(&published, round);
+    }
+}
+static void measure_concurrently(void)
+{
+    atomic_store(&worker_entered, 1);
+    while (!atomic_load(&worker_done)) {
+        cellGcm_flip_lat_present(0);
+        cellGcm_flip_lat_present(1);
+        cellGcm_flip_lat_iteration(100);
+    }
+}
+static int check_threads(int prompt)
+{
+    (void)GCM_PENDING_TAKE();
+    s_flip_pending = 0;
+    s_flip_handler_opd = 0x500;
+    if (prompt) {
+        cellGcmResetFlipStatus();
+#ifdef _WIN32
+        ResetEvent(gcm_flip_done_event());
+        atomic_store(&waiter_entered, 0);
+#endif
+        atomic_store(&waiter_entered, 0);
+        atomic_store(&waiter_woke_on_event, 0);
+        unsigned before = flip_calls;
+        fixture_thread producer = start_thread(publish_for_blocked_waiter);
+        cellGcmSetWaitFlip();
+        join_thread(producer);
+        CHECK(!atomic_load(&worker_error), "producer observed wait entry");
+        CHECK(flip_calls == before + 1 && same_thread(flip_thread, current_thread_id()),
+              "blocked waiter delivers its producer's completion");
+#ifdef _WIN32
+        CHECK(atomic_load(&waiter_woke_on_event), "publication rings blocked Win32 waiter");
+#endif
+    }
+
+    cellGcmResetFlipStatus();
+#ifdef _WIN32
+    ResetEvent(gcm_flip_done_event());
+    atomic_store(&waiter_entered, 0);
+#endif
+    atomic_store(&waiter_entered, 0);
+    fixture_thread replacement = start_thread(replace_blocked_wait);
+    cellGcmSetWaitFlip();
+    join_thread(replacement);
+    CHECK(!atomic_load(&worker_error), "replacement observed wait entry");
+    CHECK(cellGcmGetFlipStatus() == CELL_GCM_FLIP_STATUS_WAITING,
+          "returning waiter preserves a replacement generation");
+
+    /* Both the state transition and diagnostic reset must respect their locks. */
+    atomic_store(&worker_entered, 0);
+    atomic_store(&worker_done, 0);
+    AcquireSRWLockExclusive(&s_flip_lock);
+    fixture_thread worker = start_thread(reset_while_locked);
+    while (!atomic_load(&worker_entered)) Sleep(1);
+    Sleep(20);
+    int bypassed = atomic_load(&worker_done);
+    ReleaseSRWLockExclusive(&s_flip_lock);
+    join_thread(worker);
+    CHECK(!bypassed, "reset respects held state lock");
+    if (flip_lat_on()) {
+        atomic_store(&worker_entered, 0);
+        atomic_store(&worker_done, 0);
+        AcquireSRWLockExclusive(&s_flip_lat_lock);
+        worker = start_thread(measure_while_locked);
+        while (!atomic_load(&worker_entered)) Sleep(1);
+        Sleep(20);
+        bypassed = atomic_load(&worker_done);
+        ReleaseSRWLockExclusive(&s_flip_lat_lock);
+        join_thread(worker);
+        CHECK(!bypassed, "measurement respects held diagnostic lock");
+    }
+
+    worker = start_thread(publish_generations);
+    unsigned before = flip_calls;
+    for (int round = 1; round <= 128; ++round) {
+        cellGcmResetFlipStatus();
+        atomic_store(&requested, round);
+        while (atomic_load(&published) < round) Sleep(1);
+        cellGcmResetFlipStatus();
+        ppu_gcm_pump();
+        CHECK(cellGcmGetFlipStatus() == CELL_GCM_FLIP_STATUS_WAITING,
+              "concurrent queued completion preserves replacement wait");
+        CHECK(flip_calls == before, "concurrent stale completion has no callback");
+    }
+    join_thread(worker);
+
+    /* Reporting repeatedly snapshots and resets while the frame clock writes. */
+    atomic_store(&worker_entered, 0);
+    atomic_store(&worker_done, 0);
+    worker = start_thread(measure_concurrently);
+    while (!atomic_load(&worker_entered)) Sleep(1);
+    for (unsigned i = 0; i < 128; ++i) {
+        u64 now = get_timestamp_ns();
+        if (flip_lat_on()) flip_lat_wait_done(now, now + 100, 0);
+    }
+    atomic_store(&worker_done, 1);
+    join_thread(worker);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
+#ifndef _WIN32
+    fixture_waiter = pthread_self();
+#endif
     if (argc < 2) return 2;
     const int prompt = !strcmp(argv[1], "prompt") || !strcmp(argv[1], "both");
     const int take = !strcmp(argv[1], "take") || !strcmp(argv[1], "both");
+#ifdef _WIN32
+    vm_base = VirtualAlloc(NULL, 1ull << 32, MEM_RESERVE, PAGE_NOACCESS);
+    CHECK(vm_base != NULL, "vm reservation");
+    CHECK(VirtualAlloc(vm_base, 0x10000, MEM_COMMIT, PAGE_READWRITE), "handler page");
+    CHECK(VirtualAlloc(vm_base + 0x10000000, 0x10000, MEM_COMMIT, PAGE_READWRITE), "authored ring");
+    CHECK(VirtualAlloc(vm_base + VM_HLE_INJECT_BASE, 0x10000, MEM_COMMIT, PAGE_READWRITE), "GCM control");
+#else
     vm_base = mmap(NULL, 1ull << 32, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     CHECK(vm_base != MAP_FAILED, "vm reservation");
+#endif
     g_ps3_guest_caller = callback;
     s_flip_handler_opd = 0x500;
 
@@ -83,7 +311,7 @@ int main(int argc, char** argv)
     cellGcmSetWaitFlip();
     double waited = ms_now() - t0;
     if (prompt) {
-        CHECK(flip_calls == 1 && pthread_equal(flip_thread, pthread_self()), "waiter delivers the flip itself");
+        CHECK(flip_calls == 1 && same_thread(flip_thread, current_thread_id()), "waiter delivers the flip itself");
         CHECK(waited < 20.0, "prompt waiter returns at once");
     } else {
         CHECK(flip_calls == 0, "off: waiter leaves delivery to HLE boundaries");
@@ -114,6 +342,18 @@ int main(int argc, char** argv)
     /* ...and once that newer flip is drained and taken, it does. */
     drained_and_taken();
     CHECK(pending_flip() == take, "newer frame completes its own wait");
+
+    /* Publication must retain its generation until the pump claims delivery. */
+    (void)GCM_PENDING_TAKE();
+    s_flip_last_complete_ns = 0;
+    cellGcmResetFlipStatus();
+    drained_and_taken();
+    cellGcmResetFlipStatus();
+    unsigned before_stale = flip_calls;
+    ppu_gcm_pump();
+    CHECK(cellGcmGetFlipStatus() == CELL_GCM_FLIP_STATUS_WAITING,
+          "published older flip must preserve the newer wait");
+    CHECK(flip_calls == before_stale, "stale completion has no callback");
 
     /* B4: nothing is waiting. */
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
@@ -189,6 +429,7 @@ int main(int argc, char** argv)
     s_flip_hold = 1; s_flip_pending = 0;
     cellGcm_rsx_process_fifo();
     CHECK(!s_flip_hold, "stale hold cleared");
+    CHECK(check_threads(prompt) == 0, "real producer/waiter and diagnostic concurrency");
     printf("PASS mode=%s\n", argv[1]);
     return 0;
 }

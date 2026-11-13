@@ -26,6 +26,7 @@ static u32 s_gcm_context_ea = 0;
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -77,12 +78,18 @@ static void gcm_sleep1_precise(void)
 /* Doorbell for flip completion: the pump (on whatever guest thread crosses an
  * HLE boundary) sets it when a pending flip completes; cellGcmSetWaitFlip
  * sleeps on it and wakes the instant the flip lands instead of polling. */
+static INIT_ONCE s_flip_event_once = INIT_ONCE_STATIC_INIT;
+static HANDLE s_flip_event;
+static BOOL CALLBACK gcm_flip_event_init(PINIT_ONCE once, PVOID parameter, PVOID* context)
+{
+    (void)once; (void)parameter; (void)context;
+    s_flip_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    return s_flip_event != NULL;
+}
 static HANDLE gcm_flip_done_event(void)
 {
-    static HANDLE ev;
-    HANDLE h = ev;
-    if (!h) { h = CreateEventW(NULL, FALSE, FALSE, NULL); ev = h; }
-    return h;
+    if (!InitOnceExecuteOnce(&s_flip_event_once, gcm_flip_event_init, NULL, NULL)) return NULL;
+    return s_flip_event;
 }
 #endif
 
@@ -92,14 +99,15 @@ static HANDLE gcm_flip_done_event(void)
 
 #ifdef _WIN32
 static LARGE_INTEGER s_qpc_freq;
-static int           s_qpc_init = 0;
-
+static INIT_ONCE s_qpc_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK gcm_qpc_init(PINIT_ONCE once, PVOID parameter, PVOID* context)
+{
+    (void)once; (void)parameter; (void)context;
+    return QueryPerformanceFrequency(&s_qpc_freq);
+}
 static void ensure_qpc_init(void)
 {
-    if (!s_qpc_init) {
-        QueryPerformanceFrequency(&s_qpc_freq);
-        s_qpc_init = 1;
-    }
+    InitOnceExecuteOnce(&s_qpc_once, gcm_qpc_init, NULL, NULL);
 }
 
 static u64 get_timestamp_ns(void)
@@ -125,7 +133,7 @@ static u64 get_timestamp_ns(void)
 
 static int  s_gcm_initialized = 0;
 static u32  s_flip_mode   = CELL_GCM_DISPLAY_VSYNC;
-static u32  s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+static _Atomic u32 s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
 
 /* FLIP_LAT=1 (diagnostic, read once): where a guest's flip wait goes.
  * Timestamps of the latest edge of each kind; at each cellGcmSetWaitFlip
@@ -136,12 +144,24 @@ static u32  s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
  * plus whether the frame drained and presented before that beat, and the
  * length of the frame clock iterations (drain + present) that beats queue
  * behind. Every 64 waits one [FLIPLAT] line; no behaviour change. */
-static volatile u64 s_fl_reset, s_fl_marker, s_fl_pstart, s_fl_pend, s_fl_tick, s_fl_pump;
-static struct {
+/* All latency timestamps and aggregates are protected by this independent lock.
+ * Copy/reset the reporting window under the lock and print after releasing it. */
+static SRWLOCK s_flip_lat_lock = SRWLOCK_INIT;
+static u64 s_fl_reset, s_fl_marker, s_fl_pstart, s_fl_pend, s_fl_tick, s_fl_pump;
+typedef struct {
     u64 n, wait, wait_max, to_tick, to_pump, to_wake, timeouts, presented_first, untimed;
     u64 marker_to_pstart, present, present_n, iter, iter_max, iter_n;
-} s_fl;
+} GcmFlipLatency;
+static GcmFlipLatency s_fl;
 static int flip_lat_on(void) { return rsx_env_once("FLIP_LAT") != NULL; }
+int cellGcm_flip_lat_enabled(void) { return flip_lat_on(); }
+static void flip_lat_edge(u64* edge, u64 now)
+{
+    if (!flip_lat_on()) return;
+    AcquireSRWLockExclusive(&s_flip_lat_lock);
+    *edge = now;
+    ReleaseSRWLockExclusive(&s_flip_lat_lock);
+}
 
 /* Prompt flip completion (opt-in; both off by default).
  *
@@ -169,13 +189,35 @@ static int flip_lat_on(void) { return rsx_env_once("FLIP_LAT") != NULL; }
  * a drained flip stamps the generation it belongs to, and taking the frame for
  * present records that stamp. Taking an older frame never completes a newer
  * wait. */
-static volatile u32 s_flip_wait_gen, s_flip_drained_gen, s_flip_present_gen;
-static volatile u64 s_flip_last_complete_ns;
+/* Status/generation transitions, completion publication and delivery claims
+ * share this blocking lock. Guest callbacks run after releasing it. */
+static SRWLOCK s_flip_lock = SRWLOCK_INIT;
+static u64 s_flip_wait_gen, s_flip_drained_gen, s_flip_present_gen;
+static u64 s_flip_pending_gen, s_flip_last_complete_ns;
+static int s_flip_completion_pending;
 void ppu_gcm_pump(void);
 static int gcm_flip_prompt(void) { return rsx_env_once("GCM_FLIP_PROMPT") != NULL; }
 static int gcm_flip_at_take(void) { return rsx_env_once("GCM_FLIP_AT_TAKE") != NULL; }
-static void gcm_flip_wait_opened(void) { s_flip_wait_gen++; }
-static void gcm_flip_drained(void) { s_flip_drained_gen = s_flip_wait_gen; }
+/* Caller holds s_flip_lock through the corresponding status/frame publication. */
+static void gcm_flip_wait_opened(void)
+{
+    s_flip_wait_gen++;
+    s_flip_completion_pending = 0;
+    s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
+}
+static void gcm_flip_drained(void)
+{
+    AcquireSRWLockExclusive(&s_flip_lock);
+    s_flip_drained_gen = s_flip_wait_gen;
+    ReleaseSRWLockExclusive(&s_flip_lock);
+}
+static int gcm_flip_waiting(u64 generation)
+{
+    AcquireSRWLockExclusive(&s_flip_lock);
+    int waiting = s_flip_wait_gen == generation && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING;
+    ReleaseSRWLockExclusive(&s_flip_lock);
+    return waiting;
+}
 static void gcm_flip_ring_waiter(void);
 
 /* Present a drained flip at its marker (with either switch above).
@@ -188,13 +230,14 @@ static void gcm_flip_ring_waiter(void);
  * either switch on, the drain holds at the flip it stopped at until the frame
  * clock has taken that frame, and the frame clock presents a held flip even
  * when put is already past it. Both switches off: unchanged. */
-static volatile u32 s_flip_hold;             /* drain stopped at an untaken flip */
+static _Atomic u32 s_flip_hold;             /* drain stopped at an untaken flip */
 static int gcm_flip_hold_enabled(void) { return gcm_flip_prompt() || gcm_flip_at_take(); }
 /* Present edges from the frame clock: 0 = present starts, 1 = it returned. */
 void cellGcm_flip_lat_present(int phase)
 {
     if (!flip_lat_on()) return;
     u64 now = get_timestamp_ns();
+    AcquireSRWLockExclusive(&s_flip_lat_lock);
     if (phase == 0) {
         s_fl_pstart = now;
         if (s_fl_marker && now >= s_fl_marker) s_fl.marker_to_pstart += now - s_fl_marker;
@@ -202,16 +245,20 @@ void cellGcm_flip_lat_present(int phase)
         s_fl_pend = now;
         if (s_fl_pstart && now >= s_fl_pstart) { s_fl.present += now - s_fl_pstart; s_fl.present_n++; }
     }
+    ReleaseSRWLockExclusive(&s_flip_lat_lock);
 }
 /* One frame clock iteration (drain + optional present), in ns. */
 void cellGcm_flip_lat_iteration(u64 ns)
 {
     if (!flip_lat_on()) return;
+    AcquireSRWLockExclusive(&s_flip_lat_lock);
     s_fl.iter += ns; s_fl.iter_n++;
     if (ns > s_fl.iter_max) s_fl.iter_max = ns;
+    ReleaseSRWLockExclusive(&s_flip_lat_lock);
 }
 static void flip_lat_wait_done(u64 enter, u64 leave, unsigned timeouts)
 {
+    AcquireSRWLockExclusive(&s_flip_lat_lock);
     s_fl.n++;
     u64 wait = leave - enter;
     s_fl.wait += wait; if (wait > s_fl.wait_max) s_fl.wait_max = wait;
@@ -223,21 +270,24 @@ static void flip_lat_wait_done(u64 enter, u64 leave, unsigned timeouts)
     } else {
         s_fl.untimed++;   /* no wait, or completed before entry */
     }
-    if (s_fl.n % 64 == 0) {
+    GcmFlipLatency report = s_fl;
+    int print = s_fl.n % 64 == 0;
+    if (print) memset(&s_fl, 0, sizeof s_fl);
+    ReleaseSRWLockExclusive(&s_flip_lat_lock);
+    if (print) {
         const double k = 1e-6;
-        const u64 timed = s_fl.n - s_fl.untimed;
+        const u64 timed = report.n - report.untimed;
         fprintf(stderr, "[FLIPLAT] waits=%llu wait_avg=%.2fms wait_max=%.2fms timed=%llu to_tick=%.2fms to_pump=%.3fms "
                 "to_wake=%.3fms presented_before_tick=%llu timeouts=%llu marker_to_present=%.2fms present_avg=%.2fms "
                 "iter_avg=%.3fms iter_max=%.2fms iters=%llu%c",
-                (unsigned long long)s_fl.n, k * s_fl.wait / s_fl.n, k * s_fl.wait_max, (unsigned long long)timed,
-                timed ? k * s_fl.to_tick / timed : 0, timed ? k * s_fl.to_pump / timed : 0,
-                timed ? k * s_fl.to_wake / timed : 0, (unsigned long long)s_fl.presented_first,
-                (unsigned long long)s_fl.timeouts,
-                s_fl.present_n ? k * s_fl.marker_to_pstart / s_fl.present_n : 0,
-                s_fl.present_n ? k * s_fl.present / s_fl.present_n : 0,
-                s_fl.iter_n ? k * s_fl.iter / s_fl.iter_n : 0, k * s_fl.iter_max,
-                (unsigned long long)s_fl.iter_n, 10);
-        memset(&s_fl, 0, sizeof s_fl);
+                (unsigned long long)report.n, k * report.wait / report.n, k * report.wait_max, (unsigned long long)timed,
+                timed ? k * report.to_tick / timed : 0, timed ? k * report.to_pump / timed : 0,
+                timed ? k * report.to_wake / timed : 0, (unsigned long long)report.presented_first,
+                (unsigned long long)report.timeouts,
+                report.present_n ? k * report.marker_to_pstart / report.present_n : 0,
+                report.present_n ? k * report.present / report.present_n : 0,
+                report.iter_n ? k * report.iter / report.iter_n : 0, k * report.iter_max,
+                (unsigned long long)report.iter_n, 10);
     }
 }
 
@@ -247,7 +297,7 @@ static void flip_lat_wait_done(u64 enter, u64 leave, unsigned timeouts)
  * a fixed 16ms clock, and a drain that catches the guest mid-frame -- e.g.
  * while it's blocked in the FIFO-wrap recycle callback -- would show a
  * clear+few-draws frame as a visible flicker). */
-static volatile u32 s_flip_request_count = 0;
+static _Atomic u32 s_flip_request_count = 0;
 
 u32 cellGcm_flip_request_count(void)
 {
@@ -263,7 +313,7 @@ static u32 s_current_display_buffer_id = 0;
  * the ticker, which presents the accumulated batch BEFORE draining further --
  * presenting on a raw flip-count change raced the drain and showed empty or
  * mixed batches (wave: black flashes, layout flicker). */
-static volatile int s_flip_pending = 0;
+static _Atomic int s_flip_pending = 0;
 /* A flip _cellGcmSetFlipCommand queued in the FIFO: | bufferId, bit 8 = ours. */
 #define GCM_FLIP_MARKER 0xFEAD0100u
 /* ponytail: fixed headroom, far above one frame's commands (Simpsons ~10 KB);
@@ -272,9 +322,7 @@ static volatile int s_flip_pending = 0;
 
 int cellGcm_take_flip_pending(void)
 {
-    int v = s_flip_pending;
-    s_flip_pending = 0;
-    return v;
+    return atomic_exchange(&s_flip_pending, 0);
 }
 
 
@@ -747,27 +795,32 @@ void cellGcmSetWaitFlip(void)
      * render loop every frame (Ice::Render::KickAndDisplayRenderTarget) --
      * MotorStorm's menu lost 15-31 ms per frame here. Sleep on the flip-done
      * doorbell the pump rings; the 33 ms timeout only bounds a missed beat. */
-#ifdef _WIN32
-    HANDLE ev = gcm_flip_done_event();
+    AcquireSRWLockExclusive(&s_flip_lock);
+    const u64 generation = s_flip_wait_gen;
+    ReleaseSRWLockExclusive(&s_flip_lock);
     const int lat = flip_lat_on();
     const u64 lat_enter = lat ? get_timestamp_ns() : 0;
     unsigned lat_timeouts = 0;
     const int prompt = gcm_flip_prompt();
-    for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++) {
-        if (prompt) { ppu_gcm_pump(); if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) break; }
+#ifdef _WIN32
+    HANDLE ev = gcm_flip_done_event();
+    for (int i = 0; i < 64 && gcm_flip_waiting(generation); i++) {
+        if (prompt) { ppu_gcm_pump(); if (!gcm_flip_waiting(generation)) break; }
         if (ev) { if (WaitForSingleObject(ev, 33) == WAIT_TIMEOUT) lat_timeouts++; }
         else gcm_sleep1_precise();
     }
-    if (lat) flip_lat_wait_done(lat_enter, get_timestamp_ns(), lat_timeouts);
 #else
     /* elsewhere: runtime/platform/win32_compat.h provides Sleep() */
-    const int prompt = gcm_flip_prompt();
-    for (int i = 0; i < 64 && s_flip_status == CELL_GCM_FLIP_STATUS_WAITING; i++) {
-        if (prompt) { ppu_gcm_pump(); if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) break; }
+    for (int i = 0; i < 64 && gcm_flip_waiting(generation); i++) {
+        if (prompt) { ppu_gcm_pump(); if (!gcm_flip_waiting(generation)) break; }
         Sleep(1);
+        lat_timeouts++;
     }
 #endif
-    s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+    if (lat) flip_lat_wait_done(lat_enter, get_timestamp_ns(), lat_timeouts);
+    AcquireSRWLockExclusive(&s_flip_lock);
+    if (s_flip_wait_gen == generation) s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+    ReleaseSRWLockExclusive(&s_flip_lock);
 }
 
 /* NID: 0xDF6476BD. The same wait without libgcm's command-buffer space check;
@@ -781,9 +834,10 @@ void cellGcmResetFlipStatus(void)
     { static int n = 0;
       if (rsx_env_once("FLIP_DBG") && n++ < 12)
           fprintf(stderr, "[FLIP] ResetFlipStatus%c", 10); }
-    if (flip_lat_on()) s_fl_reset = get_timestamp_ns();
+    AcquireSRWLockExclusive(&s_flip_lock);
+    if (flip_lat_on()) flip_lat_edge(&s_fl_reset, get_timestamp_ns());
     gcm_flip_wait_opened();
-    s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
+    ReleaseSRWLockExclusive(&s_flip_lock);
 }
 
 /* NID: 0xE315A0B2 */
@@ -833,6 +887,30 @@ static atomic_flag s_gcm_pumping = ATOMIC_FLAG_INIT;
 #define GCM_PUMP_LEAVE()     atomic_flag_clear_explicit(&s_gcm_pumping, memory_order_release)
 #endif
 
+/* Caller holds s_flip_lock. A pending bit only wakes the pump; the tagged
+ * payload determines which wait may actually be completed. */
+static void gcm_flip_queue_locked(void)
+{
+    s_flip_pending_gen = s_flip_wait_gen;
+    s_flip_completion_pending = 1;
+    GCM_PENDING_SET(2);
+}
+static void gcm_flip_queue(void)
+{
+    AcquireSRWLockExclusive(&s_flip_lock);
+    gcm_flip_queue_locked();
+    ReleaseSRWLockExclusive(&s_flip_lock);
+}
+static int gcm_flip_claim(void)
+{
+    AcquireSRWLockExclusive(&s_flip_lock);
+    int current = s_flip_completion_pending && s_flip_pending_gen == s_flip_wait_gen;
+    s_flip_completion_pending = 0;
+    if (current) s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+    ReleaseSRWLockExclusive(&s_flip_lock);
+    return current;
+}
+
 /* Called by the vblank ticker thread. NO guest code -- advance the vblank count
  * and mark a vblank+flip tick pending for the main thread to deliver. */
 static u32 s_fifo_getoff;   /* tentative: defined below */
@@ -854,10 +932,12 @@ void cellGcm_request_tick(void)
       if (need < 0) { const char* e = getenv("GCM_FLIP_NEEDS_FIFO"); need = e ? atoi(e) : 0; }
       if (need) {
           u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
-          GCM_PENDING_SET(s_fifo_getoff == put ? 3 : 1);
+          GCM_PENDING_SET(1);
+          if (s_fifo_getoff == put) gcm_flip_queue();
           return;
       } }
-    GCM_PENDING_SET(3);
+    GCM_PENDING_SET(1);
+    gcm_flip_queue();
 }
 
 /* Deliver pending handlers on the calling host thread. Serialize the entire
@@ -882,9 +962,8 @@ void ppu_gcm_pump(void)
         g_ps3_guest_caller(s_vblank_handler_opd, (uint64_t)s_vblank_count,
                            0, 0, 0, 0, 0, 0, 0);
     }
-    if (p & 2) {
-        if (flip_lat_on()) s_fl_pump = get_timestamp_ns();
-        s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
+    if ((p & 2) && gcm_flip_claim()) {
+        if (flip_lat_on()) flip_lat_edge(&s_fl_pump, get_timestamp_ns());
 #ifdef _WIN32
         { HANDLE ev = gcm_flip_done_event(); if (ev) SetEvent(ev); }
 #endif
@@ -916,11 +995,12 @@ void cellGcmTickVBlank(void) { s_vblank_count++; GCM_PENDING_SET(1); }
  * and its handler runs code that puts the status back to WAITING, so the
  * poll never saw DONE and the game never rendered another frame. On hardware
  * the callback IS the flip interrupt -- no flip, no callback. */
+/* Caller holds s_flip_lock through payload publication. */
 static void gcm_flip_publish(u64 now)
 {
-    if (flip_lat_on()) s_fl_tick = now;
+    flip_lat_edge(&s_fl_tick, now);
     s_flip_last_complete_ns = now;
-    GCM_PENDING_SET(2);
+    gcm_flip_queue_locked();
     if (gcm_flip_prompt()) gcm_flip_ring_waiter();
 }
 
@@ -953,18 +1033,22 @@ static int gcm_flip_beat_waits_for_take(u64 now)
 
 void cellGcmTickFlip(void)
 {
-    if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) return;
-    const u64 now = get_timestamp_ns();
-    if (gcm_flip_beat_waits_for_take(now)) return;
-    s_flip_beat_deferred_ns = 0;
-    gcm_flip_publish(now);
+    AcquireSRWLockExclusive(&s_flip_lock);
+    if (s_flip_status == CELL_GCM_FLIP_STATUS_WAITING) {
+        const u64 now = get_timestamp_ns();
+        if (!gcm_flip_beat_waits_for_take(now)) {
+            s_flip_beat_deferred_ns = 0;
+            gcm_flip_publish(now);
+        }
+    }
+    ReleaseSRWLockExclusive(&s_flip_lock);
 }
 
 /* GCM_FLIP_AT_TAKE=1: cellGcm_take_flip_pending_synced calls this when the
  * frame clock has taken a frame for present. Returns 1 when it completed the
  * current flip. */
 #define GCM_VBLANK_PERIOD_NS 16683333ull   /* 59.94 Hz */
-static int gcm_flip_complete_taken(u64 min_interval_ns)
+static int gcm_flip_complete_taken_locked(u64 min_interval_ns)
 {
     if (!gcm_flip_at_take()) return 0;
     if (s_flip_status != CELL_GCM_FLIP_STATUS_WAITING) return 0;
@@ -973,6 +1057,14 @@ static int gcm_flip_complete_taken(u64 min_interval_ns)
     if (now - s_flip_last_complete_ns < min_interval_ns) return 0;   /* keep the vblank cap */
     gcm_flip_publish(now);
     return 1;
+}
+
+static int gcm_flip_complete_taken(u64 min_interval_ns)
+{
+    AcquireSRWLockExclusive(&s_flip_lock);
+    int completed = gcm_flip_complete_taken_locked(min_interval_ns);
+    ReleaseSRWLockExclusive(&s_flip_lock);
+    return completed;
 }
 
 /* Drain the game's GCM FIFO into the RSX backend. Called from the present thread
@@ -1468,10 +1560,15 @@ int cellGcm_take_flip_pending_synced(void)
     u32 put = vm_read32(GCM_CONTROL_GUEST_ADDR + 0);
     u32 get = vm_read32(GCM_CONTROL_GUEST_ADDR + 4);
     if (get != put && !(gcm_flip_hold_enabled() && s_flip_hold)) return 0;   /* frame not fully drained yet */
-    s_flip_pending = 0;
+    AcquireSRWLockExclusive(&s_flip_lock);
+    if (!atomic_exchange(&s_flip_pending, 0)) {
+        ReleaseSRWLockExclusive(&s_flip_lock);
+        return 0;
+    }
     s_flip_hold = 0;
     s_flip_beat_deferred_ns = 0;
     s_flip_present_gen = s_flip_drained_gen;
+    ReleaseSRWLockExclusive(&s_flip_lock);
     cellGcm_flip_lat_present(0);
     gcm_flip_complete_taken(GCM_VBLANK_PERIOD_NS);
     return 1;
@@ -1832,7 +1929,7 @@ static void gcm_rsx_process_fifo_unlocked(void)
                 /* Queued by _cellGcmSetFlipCommand, which already did the
                  * guest-visible half of the request. */
                 s_current_display_buffer_id = w & 7u;
-                if (flip_lat_on()) s_fl_marker = get_timestamp_ns();
+                if (flip_lat_on()) flip_lat_edge(&s_fl_marker, get_timestamp_ns());
                 gcm_flip_drained();
                 s_flip_pending = 1;
                 s_flip_request_count++;
@@ -2344,14 +2441,15 @@ static s32 gcm_flip_request(u32 bufferId, int in_fifo)
      * until the present thread's cellGcmTickFlip marks it done (vsync).
      * This request opens its own wait generation; a direct flip is "drained"
      * at once, a FIFO one when the drain reaches its marker. */
+    AcquireSRWLockExclusive(&s_flip_lock);
     gcm_flip_wait_opened();
     if (!in_fifo) {
         s_current_display_buffer_id = bufferId;
-        gcm_flip_drained();
+        s_flip_drained_gen = s_flip_wait_gen;
         s_flip_pending = 1;   /* ticker: present BEFORE the next drain */
         s_flip_request_count++;
     }
-    s_flip_status = CELL_GCM_FLIP_STATUS_WAITING;
+    ReleaseSRWLockExclusive(&s_flip_lock);
     s_last_flip_time = get_timestamp_ns();
 
     /* Invoke via OPD resolution, not a raw call into guest code.
@@ -3354,7 +3452,10 @@ s32 cellGcmSetFlipImmediate(u32 bufferId)
 /* Set flip status directly */
 void cellGcmSetFlipStatus(u32 status)
 {
-    s_flip_status = status;
+    AcquireSRWLockExclusive(&s_flip_lock);
+    if (status == CELL_GCM_FLIP_STATUS_WAITING) gcm_flip_wait_opened();
+    else s_flip_status = status;
+    ReleaseSRWLockExclusive(&s_flip_lock);
 }
 
 /* Store graphics handler callback */

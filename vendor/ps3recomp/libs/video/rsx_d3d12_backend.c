@@ -71,11 +71,21 @@ static u32 rsx_record_color_masks(const rsx_state* state)
 #define FRAME_COUNT         2   /* double buffering */
 #define MAX_VERTICES    393216  /* per-frame vertex buffer (dbgfont submits
                                  * ~7.5k verts/frame; leave generous headroom) */
-#define MAX_DRAWS         2048  /* per-frame draw records. Sized from the
-                                 * measured worst case (~1841, FRAME_BUDGET);
-                                 * the per-draw constant buffer is
-                                 * VP_CB_STRIDE * MAX_DRAWS * 2 bytes, so 16384
-                                 * asked for a 264 MB upload allocation. */
+/* Per-batch draw records. Sized from the measured worst case (~1841,
+ * FRAME_BUDGET); the per-draw constant buffer is VP_CB_STRIDE * MAX_DRAWS * 2
+ * bytes, so 16384 asked for a 264 MB upload allocation. A MotorStorm race
+ * frame records several thousand draws, so the default fills the batch two
+ * or three times per frame and each capacity drain waits for the GPU.
+ * Build with RSX_MAX_DRAWS=<n> (a power of two, 1024..8192) to measure a
+ * larger batch; 4096 doubles the upload allocations (~69 MB for the VP
+ * constants). Default stays 2048. */
+#ifndef RSX_MAX_DRAWS
+#define RSX_MAX_DRAWS     2048
+#endif
+#if RSX_MAX_DRAWS < 1024 || RSX_MAX_DRAWS > 8192 || (RSX_MAX_DRAWS & (RSX_MAX_DRAWS - 1))
+#error "RSX_MAX_DRAWS must be a power of two in 1024..8192"
+#endif
+#define MAX_DRAWS         RSX_MAX_DRAWS
 /* Per-draw VP constant-buffer slot: vp_c[512] + posscale + posoffset
  * (514 vec4 = 8224 B) rounded up to D3D12's 256-byte CBV alignment.
  * Constants are snapshotted at RECORD time -- wave's passes each set their
@@ -245,6 +255,7 @@ typedef struct {
     int used;           /* referenced this frame */
     u32 mips;           /* cube source stride depends on the mip chain */
     u32 depth;          /* 3D volume depth; 0/1 = 2D or cube */
+    u32 levels;         /* uploaded mip levels (RSX_TEX_MIPS); 0/1 = level 0 only */
     u64 last_use, allocation_bytes;
 } VPTexSlot;
 /* Distinct textures uploadable per frame. Four was enough for a UI/atlas-style
@@ -253,6 +264,31 @@ typedef struct {
  * slots") and drew UNTEXTURED. That reads as a correctly-lit but solid black
  * object, which is indistinguishable from a missing texture upload. */
 #define INITIAL_VP_TEX_SLOTS 96
+
+/* Lookup hint for vp_upload_tex_slot: hash of the full cache key -> slot+1,
+ * written when a slot takes a key or is found by a scan. A race frame makes
+ * ~16k lookups over a pool of hundreds to thousands of slots, and each one
+ * scanned the pool linearly. A hint is only a starting guess: it is used
+ * only after the slot it names is checked against the whole key, so a stale,
+ * overwritten or colliding hint just falls back to the full scan. Keys are
+ * unique in the pool (a stale match reuses its own slot; a miss takes a free
+ * one), so the hinted slot is the slot the scan would have found.
+ * RSX_TEX_HINT=0 always scans. */
+#define VP_TEX_HINTS 8192u
+static u32 s_vp_tex_hint[VP_TEX_HINTS];
+static u32 vp_tex_hint_hash(u32 key, u32 w, u32 h, u32 fmt, int cube)
+{
+    u32 x = key * 0x9E3779B1u;
+    x ^= (w * 0x85EBCA77u) ^ (h * 0xC2B2AE3Du) ^ (fmt * 0x27D4EB2Fu) ^ ((u32)cube * 0x165667B1u);
+    x ^= x >> 15; x *= 0x2C1B3C6Du; x ^= x >> 12;
+    return x & (VP_TEX_HINTS - 1u);
+}
+static int vp_tex_hint_on(void)
+{
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RSX_TEX_HINT"); v = !(e && e[0] == '0'); }
+    return v;
+}
 
 /* Decompiled-VS cache: one entry per distinct vertex-program ucode seen at
  * draw time (hashed). Apps switch VPs between draws (gcm/cube: its MVP cube VP
@@ -1654,6 +1690,7 @@ static void gpu_working_sets_release(void)
         texture_slot_release(t);
     }
     free(s_d3d.vp_tex);s_d3d.vp_tex=NULL;s_d3d.vp_tex_capacity=0;
+    memset(s_vp_tex_hint,0,sizeof(s_vp_tex_hint));
 }
 
 static void move_to_next_frame(void)
@@ -3402,8 +3439,26 @@ static int texture_retention_on(void)
 #include "rsx_d3d12_texture_residency.h"
 #include "rsx_texture_fingerprint.h"
 
+/* RSX_TEX_MIPS=1 uploads the mip levels SET_TEXTURE_FORMAT declares below
+ * level 0 for 2D and cube textures (volumes keep one level). Default 0 keeps
+ * the single-level upload; configure before the first texture is uploaded. */
+static int texture_mips_on(void)
+{
+    static int value = -1;
+    if (value < 0) {
+        const char* e = getenv("RSX_TEX_MIPS");
+        if (!e || !strcmp(e, "0")) value = 0;
+        else if (!strcmp(e, "1")) value = 1;
+        else { fprintf(stderr, "[RSXTEXTURE] invalid RSX_TEX_MIPS; use 0 or 1\n"); abort(); }
+    }
+    return value;
+}
+
+/* levels > 1: reference_bytes and the identity cover the uploaded chain of
+ * each face, not only level 0. */
 static u64 texture_source_csum(rsx_texture_profile_call* profile, const u8* source,
-        u32 reference_bytes, u32 w, u32 h, u32 format, int cube, u32 mips, u32 depth)
+        u32 reference_bytes, u32 w, u32 h, u32 format, int cube, u32 mips, u32 depth,
+        u32 levels)
 {
     extern u8* vm_base;
     if (!texture_retention_on()) return texture_profile_csum(profile,source,reference_bytes);
@@ -3421,7 +3476,9 @@ static u64 texture_source_csum(rsx_texture_profile_call* profile, const u8* sour
     const u64 offset = (u64)(source - vm_base);
     rsx_texture_source_view view;
     if (offset >= (UINT64_C(1)<<32) || !rsx_texture_source_view_init(w,h,format,cube,mips,
-                (UINT64_C(1)<<32)-offset,&view)) {
+                (UINT64_C(1)<<32)-offset,&view) ||
+        (levels > 1u && !rsx_texture_source_view_extend(&view,reference_bytes,
+                (UINT64_C(1)<<32)-offset))) {
         fprintf(stderr,"[RSXTEXTURE] invalid source span off=%llu w=%u h=%u fmt=%u cube=%d mips=%u\n",
                 (unsigned long long)offset,w,h,format,cube,mips);
         abort();
@@ -3492,33 +3549,82 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
         if (!warned++) fprintf(stderr, "[RSXTEXTURE] 3D volume %ux%ux%u fmt=%02X swz=%d is outside the bounded volume path\n", w, h, depth, fmt, tl.swizzled);
         return -1;
     }
+    /* RSX_TEX_MIPS: the levels below level 0, packed after it in each face
+     * (rsx_texture_mip_chain owns where each starts). `levels` is the guest's
+     * count clamped to the halvings the dimensions allow; 1 = level 0 only,
+     * the historical upload. `src_bytes` is what the identity covers. */
+    rsx_tex_level mip_lv[RSX_MAX_TEXTURE_LEVELS];
+    const u32 levels = (!vol && mips > 1u && texture_mips_on())
+        ? rsx_texture_mip_chain(fmt, w, h, mips, 0, mip_lv) : 1u;
+    if (!levels) return -1;
+    const u32 src_bytes = levels > 1u
+        ? mip_lv[levels - 1u].offset + mip_lv[levels - 1u].tl.face_bytes
+        : (dxt ? (blkrow * blkrows) : (w * h * bpp * depth));
     const u32 key_off = off;         /* lookup key: the offset as bound */
     /* Sparse checksum of a texture's source bytes -- enough to notice an
      * animated surface changing, cheap enough to run on every bind. */
     /* (portable helper tex_csum() -- see above; a statement-expression macro
      * here was a GCC/Clang extension MSVC rejects.) */
-    #define TEX_CSUM(base, nbytes) texture_source_csum(profile, (base), (nbytes), w, h, fmt, cube, mips, depth)
+    #define TEX_CSUM(base, nbytes) texture_source_csum(profile, (base), (nbytes), w, h, fmt, cube, mips, depth, levels)
     int slot = -1, freeslot = -1;
     const int retention = texture_retention_on();
     const u64 serial = retention ? ++s_d3d.vp_tex_use_serial : 0;
     int empty = -1, oldest = -1;
     u64 oldest_age = 0;
     rsx_texture_profile_lookup_begin(profile);
-    for (unsigned i = 0; i < s_d3d.vp_tex_capacity; i++) {
+    /* A verified hint examines just that slot; otherwise scan the pool. */
+    const u32 hint_at = vp_tex_hint_hash(key_off, w, h, fmt, cube);
+    int hinted = -1;
+    if (vp_tex_hint_on()) {
+        u32 hs = s_vp_tex_hint[hint_at];
+        if (hs && hs - 1u < s_d3d.vp_tex_capacity) {
+            VPTexSlot* c = &s_d3d.vp_tex[hs - 1u];
+            if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt
+                && c->cube == cube && (c->depth ? c->depth : 1u) == depth
+                && (!retention || c->mips == mips)
+                && (c->levels ? c->levels : 1u) == levels) hinted = (int)(hs - 1u);
+        }
+    }
+    /* RSX_TEX_HINT_VERIFY=1 (diagnostic): also scan and report any lookup
+     * where the scan's first match is not the hinted slot. */
+    { static int verify = -1;
+      if (verify < 0) { const char* e = getenv("RSX_TEX_HINT_VERIFY"); verify = e && e[0] == '1'; }
+      if (verify && hinted >= 0) {
+          static unsigned long long checked, mismatched;
+          unsigned first = s_d3d.vp_tex_capacity;
+          for (unsigned i = 0; i < s_d3d.vp_tex_capacity; i++) {
+              VPTexSlot* c = &s_d3d.vp_tex[i];
+              if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt
+                  && c->cube == cube && (c->depth ? c->depth : 1u) == depth
+                  && (!retention || c->mips == mips)
+                  && (c->levels ? c->levels : 1u) == levels) { first = i; break; }
+          }
+          ++checked;
+          if (first != (unsigned)hinted && mismatched++ < 16)
+              fprintf(stderr, "[RSXTEXHINT] MISMATCH off=%08X %ux%u fmt=%02X hint=%d scan=%u\n",
+                      key_off, w, h, fmt, hinted, first);
+          if ((checked & 0xFFFFu) == 0)
+              fprintf(stderr, "[RSXTEXHINT] verified=%llu mismatched=%llu capacity=%u\n",
+                      checked, mismatched, s_d3d.vp_tex_capacity);
+      } }
+    const unsigned scan_n = hinted >= 0 ? 1u : s_d3d.vp_tex_capacity;
+    for (unsigned j = 0; j < scan_n; j++) {
+        const unsigned i = hinted >= 0 ? (unsigned)hinted : j;
         VPTexSlot* c = &s_d3d.vp_tex[i];
         if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt
-            && c->cube == cube && (c->depth ? c->depth : 1u) == depth && (!retention || c->mips == mips)) {
-            if (c->used) { if (retention) c->last_use = serial; rsx_texture_profile_lookup_end(profile, i + 1, RSX_TEX_FRAME_HIT); return i; }                /* already bound this frame */
+            && c->cube == cube && (c->depth ? c->depth : 1u) == depth && (!retention || c->mips == mips)
+            && (c->levels ? c->levels : 1u) == levels) {
+            s_vp_tex_hint[hint_at] = i + 1u;
+            if (c->used) { if (retention) c->last_use = serial; rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_FRAME_HIT); return i; }                /* already bound this frame */
             { static int nocache = -1;            /* TEX_NOCACHE=1: always re-upload */
               if (nocache < 0) { const char* e = getenv("TEX_NOCACHE");
                                  nocache = e ? atoi(e) : 0; }
-              if (nocache) { rsx_texture_profile_lookup_end(profile, i + 1, RSX_TEX_FORCED); slot = i; break; } }
+              if (nocache) { rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_FORCED); slot = i; break; } }
             /* Held from an earlier frame: re-upload only if the guest bytes
              * changed. Most of this scene's textures are static, and converting
              * every one of them every frame was ~70% of the frame's CPU time. */
-            u32 nb = dxt ? (blkrow * blkrows) : (w * h * bpp * depth);
-            rsx_texture_profile_lookup_end(profile, i + 1, RSX_TEX_VALIDATED_HIT);
-            u64 cs = TEX_CSUM(vm_base + c->off, nb);
+            rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_VALIDATED_HIT);
+            u64 cs = TEX_CSUM(vm_base + c->off, src_bytes);
             if (cs == c->csum) { c->used = 1; if (retention) c->last_use = serial; return i; }
             if (profile) profile->outcome = RSX_TEX_STALE;
             slot = i; break;                      /* stale: fall through and redo */
@@ -3656,24 +3762,45 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
      * format rsx_texture_decode unpacks. */
     u32 pitch = (tl.dst_row_bytes + 255) & ~255u;
     int fresh = 0;
+    const u32 _nfaces = cube ? 6u : 1u;
+    D3D12_RESOURCE_DESC td = {0};
+    td.Dimension = vol ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = w; td.Height = h;
+    td.DepthOrArraySize = cube ? 6 : (UINT16)depth;   /* cube = 6 array slices; volume = depth */
+    td.MipLevels = (UINT16)levels;
+    td.Format = dxfmt; td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    /* A chained upload places every (face, level) subresource where D3D12
+     * says it goes: subresource f*levels+l, rows RowPitch apart. Level 0 keeps
+     * the single-level row pitch, so the per-face code below is unchanged. */
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT mip_fp[6 * RSX_MAX_TEXTURE_LEVELS];
+    u64 mip_total = 0;
+    if (levels > 1u) {
+        s_d3d.device->lpVtbl->GetCopyableFootprints(s_d3d.device, &td, 0, _nfaces * levels,
+                                                     0, mip_fp, NULL, NULL, &mip_total);
+        if (!mip_total || mip_total == ~(u64)0 || mip_fp[0].Footprint.RowPitch != pitch) {
+            fprintf(stderr, "[RSXTEXTURE] mip footprint failed %ux%u fmt=%02X levels=%u total=%llu pitch=%u/%u\n",
+                    w, h, fmt, levels, (unsigned long long)mip_total, mip_fp[0].Footprint.RowPitch, pitch);
+            abort();
+        }
+        /* Which classes the title chains: a linear (LN) chain's lower-level
+         * packing is the one layout rule not cross-checked against hardware. */
+        { static unsigned _n = 0; if (_n++ < 24)
+            fprintf(stderr, "[RSXTEXMIP] off=0x%08X %ux%u fmt=0x%02X %s cube=%d mips=%u levels=%u bytes=%u\n",
+                    key_off, w, h, fmt, dxt ? "block" : tl.swizzled ? "swizzled" : "linear",
+                    cube, mips, levels, src_bytes); }
+    }
 
     /* Also recreate when the CUBE-ness changes: a slot holding a 2D texture of
      * the same dimensions would otherwise be reused with 1 array slice while the
      * cube path copies 6 subresources and writes a 6x upload buffer -- which
      * crashes. */
     if (t->res && (t->w != w || t->h != h || t->fmt != fmt || t->cube != cube ||
-                   (t->depth ? t->depth : 1u) != depth)) {
+                   (t->depth ? t->depth : 1u) != depth || (t->levels ? t->levels : 1u) != levels)) {
         texture_slot_release(t);
     }
     if (!t->res) {
         D3D12_HEAP_PROPERTIES hp = {0}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
-        D3D12_RESOURCE_DESC td = {0};
-        td.Dimension = vol ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        td.Width = w; td.Height = h;
-        td.DepthOrArraySize = cube ? 6 : (UINT16)depth;   /* cube = 6 array slices; volume = depth */
-        td.MipLevels = 1;
-        td.Format = dxfmt; td.SampleDesc.Count = 1;
-        td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         HRESULT hr = s_d3d.device->lpVtbl->CreateCommittedResource(
                 s_d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &td,
                 D3D12_RESOURCE_STATE_COPY_DEST, NULL,
@@ -3682,7 +3809,7 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
         D3D12_HEAP_PROPERTIES hu = {0}; hu.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC bd = {0};
         bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        bd.Width = (u64)pitch * (dxt ? blkrows : h) * (cube ? 6 : 1) * depth;
+        bd.Width = levels > 1u ? mip_total : (u64)pitch * (dxt ? blkrows : h) * (cube ? 6 : 1) * depth;
         bd.Height = 1; bd.DepthOrArraySize = 1;
         bd.MipLevels = 1; bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         hr = s_d3d.device->lpVtbl->CreateCommittedResource(
@@ -3733,11 +3860,12 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
      * first a progressively smaller copy of the first. */
     rsx_texture_source_view upload_view;
     if (!rsx_texture_source_view_init(w,h,fmt,cube,mips,
-                (UINT64_C(1)<<32)-off,&upload_view)) {
+                (UINT64_C(1)<<32)-off,&upload_view) ||
+        (levels > 1u && !rsx_texture_source_view_extend(&upload_view,src_bytes,
+                (UINT64_C(1)<<32)-off))) {
         fprintf(stderr,"[RSXTEXTURE] invalid upload source span\n");abort();
     }
     const u32 _face_bytes = (u32)upload_view.face_stride;
-    const u32 _nfaces     = cube ? 6u : 1u;
     const u32 _off0 = off; u8* const _map0 = (u8*)mapped;
     for (u32 _f = 0; _f < _nfaces; _f++) {
     off    = _off0 + _f * _face_bytes;
@@ -3745,7 +3873,8 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
         for (u32 _i = 0; _i < _face_bytes; _i += 97) _s = _s*131 + _p[_i];
         fprintf(stderr, "[CUBEFACE] f=%u off=0x%X bytes=%u bpp=%u swz=%d csum=%08X%c",
                 _f, off, _face_bytes, bpp, swz, _s, 10); }
-    mapped = _map0 + (u64)_f * pitch * _face_rows;
+    mapped = levels > 1u ? _map0 + mip_fp[(u64)_f * levels].Offset
+                         : _map0 + (u64)_f * pitch * _face_rows;
     /* Pixel conversion -- deswizzle, channel order, block copy -- is RSX
      * semantics and lives in rsx_texture_layout.c, so a second backend gets
      * it by calling this rather than porting the loops again. */
@@ -3758,9 +3887,18 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
             fprintf(stderr, "[RSXTEXTURE] 3D volume decode failed off=%08X %ux%ux%u fmt=%02X\n", off, w, h, depth, fmt);
             abort();
         }
-    } else
+    } else {
     rsx_texture_decode(mapped, pitch, vm_base + off, w, h, &tl,
                        rsx_texture_argb_is_rgba());
+    /* Levels below 0, each decoded at its own size and layout into its own
+     * placed footprint. Diagnostics below look at level 0 only. */
+    for (u32 _l = 1; _l < levels; _l++) {
+        const D3D12_PLACED_SUBRESOURCE_FOOTPRINT* _fp = &mip_fp[(u64)_f * levels + _l];
+        rsx_texture_decode(_map0 + _fp->Offset, _fp->Footprint.RowPitch,
+                           vm_base + off + mip_lv[_l].offset, mip_lv[_l].w, mip_lv[_l].h,
+                           &mip_lv[_l].tl, rsx_texture_argb_is_rgba());
+    }
+    }
 
     /* The diagnostics below only apply to the linear 8-bit case (Bink video
      * planes); they used to sit inside that branch of the conversion. */
@@ -4045,6 +4183,13 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     src.PlacedFootprint.Footprint.Height   = h;
     src.PlacedFootprint.Footprint.Depth    = depth;   /* 1 unless a 3D volume */
     src.PlacedFootprint.Footprint.RowPitch = pitch;
+    if (levels > 1u) {
+        for (u32 _s = 0; _s < _nfaces * levels; _s++) {
+            dst.SubresourceIndex = _s;         /* face * levels + level */
+            src.PlacedFootprint  = mip_fp[_s];
+            s_d3d.cmd_list->lpVtbl->CopyTextureRegion(s_d3d.cmd_list, &dst, 0, 0, 0, &src, NULL);
+        }
+    } else
     for (u32 _f = 0; _f < _nfaces; _f++) {
         dst.SubresourceIndex        = _f;      /* cube face = array slice */
         src.PlacedFootprint.Offset  = (u64)_f * pitch * _face_rows;
@@ -4065,9 +4210,10 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     t->off = off; t->key = key_off; t->w = w; t->h = h; t->fmt = fmt;
     t->dxgi = (u32)dxfmt;   /* the decoded image's format, from the layout */
     t->cube = cube; t->depth = depth; t->used = 1; t->mips = mips; t->last_use = serial;
+    t->levels = levels;
+    s_vp_tex_hint[vp_tex_hint_hash(key_off, w, h, fmt, cube)] = (u32)slot + 1u;
     if (retention) texture_retention_trim();
-    { u32 nb = dxt ? (blkrow * blkrows) : (w * h * bpp * depth);
-      t->csum = TEX_CSUM(vm_base + off, nb); }
+    t->csum = TEX_CSUM(vm_base + off, src_bytes);
     #undef TEX_CSUM
     return slot;
 }
@@ -4631,7 +4777,10 @@ static void srv_write_ex(u32 heap_slot, ID3D12Resource* res, DXGI_FORMAT fmt,
     sv.Format = fmt;
     sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sv.Shader4ComponentMapping = mapping;
-    sv.Texture2D.MipLevels = 1;
+    /* Every level the resource has (RSX_TEX_MIPS chains); a null SRV keeps the
+     * explicit single level. */
+    const UINT view_levels = res ? (UINT)-1 : 1u;
+    sv.Texture2D.MipLevels = view_levels;
     if (cube == 2) {   /* 3D volume: must match the Texture3D declaration */
         sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
         sv.Texture3D.MipLevels = 1;
@@ -4639,7 +4788,7 @@ static void srv_write_ex(u32 heap_slot, ID3D12Resource* res, DXGI_FORMAT fmt,
         sv.Texture3D.ResourceMinLODClamp = 0.0f;
     } else if (cube) {   /* must match the TextureCube declaration in the HLSL */
         sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-        sv.TextureCube.MipLevels = 1;
+        sv.TextureCube.MipLevels = view_levels;
         sv.TextureCube.MostDetailedMip = 0;
         sv.TextureCube.ResourceMinLODClamp = 0.0f;
     }

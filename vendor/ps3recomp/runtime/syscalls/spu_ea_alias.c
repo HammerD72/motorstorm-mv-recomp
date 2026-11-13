@@ -28,6 +28,21 @@
  */
 
 #include <stdint.h>
+#include <stdatomic.h>
+
+/* Allocation and mapper paths can register concurrently. Serialize writers
+ * here while leaving all guest-address readers lock-free. */
+#ifdef _WIN32
+#include <windows.h>
+static SRWLOCK s_alias_writer_lock = SRWLOCK_INIT;
+static void spu_alias_record_lock(void) { AcquireSRWLockExclusive(&s_alias_writer_lock); }
+static void spu_alias_record_unlock(void) { ReleaseSRWLockExclusive(&s_alias_writer_lock); }
+#else
+#include <pthread.h>
+static pthread_mutex_t s_alias_writer_lock = PTHREAD_MUTEX_INITIALIZER;
+static void spu_alias_record_lock(void) { pthread_mutex_lock(&s_alias_writer_lock); }
+static void spu_alias_record_unlock(void) { pthread_mutex_unlock(&s_alias_writer_lock); }
+#endif
 
 #define SPU_ALIAS_MAX 32
 
@@ -37,11 +52,12 @@ typedef struct spu_alias_range {
 } spu_alias_range;
 
 static spu_alias_range s_alias[SPU_ALIAS_MAX];
-static int             s_alias_n;
+static _Atomic int     s_alias_n;
 
 static int spu_alias_in_table(uint32_t ea)
 {
-    for (int i = 0; i < s_alias_n; i++)
+    const int count = atomic_load_explicit(&s_alias_n, memory_order_acquire);
+    for (int i = 0; i < count; i++)
         if (ea >= s_alias[i].addr && ea < s_alias[i].addr + s_alias[i].size)
             return 1;
     return 0;
@@ -53,20 +69,21 @@ static int spu_alias_in_table(uint32_t ea)
  * sysmem_spu_alias_fixup, and a title's heap can live there, so the two
  * linear scans above ran on ordinary loads and stores. The answer is a pure
  * function of the recorded ranges, which change only in sysmem_alias_record
- * (rare, under the sys_memory bump lock), so each 4 KiB page caches it:
+ * (rare, under the internal writer lock), so each 4 KiB page caches it:
  *   IDENTITY  every EA in the page maps to itself
  *   ALIAS     every EA in the page maps to EA - 0x05000000
  *   MIXED     the page or its primary is partly covered: scan as before
- * Zero (identity) is correct for an empty table. Entries are single bytes
- * written once per change, so a concurrent reader sees the old or the new
- * answer for a page -- never a blend -- just as a concurrent scan sees the
- * old or the new s_alias_n. */
+ * Zero (identity) is correct for an empty table. Atomic page publication
+ * lets concurrent readers see the old or new answer while registration is
+ * in progress. The atomic range count publishes fully initialized entries
+ * before a mixed-page reader can scan them. The internal blocking mutex
+ * serializes writers; published range entries are immutable. */
 #define SPU_ALIAS_PAGE_SHIFT 12u
 #define SPU_ALIAS_WINDOW_LO  0x45000000u
 #define SPU_ALIAS_WINDOW_HI  0x50000000u
 #define SPU_ALIAS_PAGES      ((SPU_ALIAS_WINDOW_HI - SPU_ALIAS_WINDOW_LO) >> SPU_ALIAS_PAGE_SHIFT)
 enum { SPU_ALIAS_PAGE_IDENTITY = 0, SPU_ALIAS_PAGE_ALIAS = 1, SPU_ALIAS_PAGE_MIXED = 2 };
-static volatile uint8_t s_alias_page[SPU_ALIAS_PAGES];
+static _Atomic uint8_t s_alias_page[SPU_ALIAS_PAGES];
 
 /* How much of [lo, lo + 4 KiB) the recorded ranges cover, with the same
  * 32-bit end arithmetic as spu_alias_in_table: 0 none, 1 partly, 2 all. */
@@ -75,7 +92,8 @@ static int spu_alias_page_cover(uint32_t lo)
     const uint64_t page_end = (uint64_t)lo + (1u << SPU_ALIAS_PAGE_SHIFT);
     uint64_t start[SPU_ALIAS_MAX], end[SPU_ALIAS_MAX];
     int n = 0;
-    for (int i = 0; i < s_alias_n; i++) {
+    const int count = atomic_load_explicit(&s_alias_n, memory_order_acquire);
+    for (int i = 0; i < count; i++) {
         uint64_t a = s_alias[i].addr, b = (uint32_t)(s_alias[i].addr + s_alias[i].size);
         if (b <= a) continue;                        /* wrapped: matches nothing */
         if (a < lo) a = lo;
@@ -103,7 +121,7 @@ static void spu_alias_page_update(uint32_t page)
     if (self == 2 || prim == 0) state = SPU_ALIAS_PAGE_IDENTITY;
     else if (prim == 2 && self == 0) state = SPU_ALIAS_PAGE_ALIAS;
     else state = SPU_ALIAS_PAGE_MIXED;
-    s_alias_page[page] = state;
+    atomic_store_explicit(&s_alias_page[page], state, memory_order_release);
 }
 
 /* Refresh the pages whose answer [addr, addr + size) can change: the range
@@ -126,12 +144,15 @@ static void spu_alias_pages_refresh(uint32_t addr, uint32_t size)
 /* sys_memory.c records each handed-out allocation window here. */
 void sysmem_alias_record(uint32_t addr, uint32_t size)
 {
-    if (s_alias_n < SPU_ALIAS_MAX && size) {
-        s_alias[s_alias_n].addr = addr;
-        s_alias[s_alias_n].size = size;
-        s_alias_n++;
+    spu_alias_record_lock();
+    const int count = atomic_load_explicit(&s_alias_n, memory_order_relaxed);
+    if (count < SPU_ALIAS_MAX && size) {
+        s_alias[count].addr = addr;
+        s_alias[count].size = size;
+        atomic_store_explicit(&s_alias_n, count + 1, memory_order_release);
         spu_alias_pages_refresh(addr, size);
     }
+    spu_alias_record_unlock();
 }
 
 /* Normalize an SPU/PPU-side EA through the LV1 dual mapping. Returns the EA
@@ -169,7 +190,9 @@ uint32_t sysmem_spu_alias_fixup(uint32_t ea)
     if (ea < 0x45000000u) return ea;
     uint32_t prim = ea - 0x05000000u;
     if (ea < SPU_ALIAS_WINDOW_HI) {
-        const uint8_t state = s_alias_page[(ea - SPU_ALIAS_WINDOW_LO) >> SPU_ALIAS_PAGE_SHIFT];
+        const uint8_t state = atomic_load_explicit(
+            &s_alias_page[(ea - SPU_ALIAS_WINDOW_LO) >> SPU_ALIAS_PAGE_SHIFT],
+            memory_order_acquire);
         if (state == SPU_ALIAS_PAGE_IDENTITY) return ea;
         if (state == SPU_ALIAS_PAGE_ALIAS) return prim;
     }
@@ -186,7 +209,8 @@ uint32_t sysmem_spu_alias_fixup(uint32_t ea)
  * block's image was an impossible layout and made every EA in it ambiguous. */
 int sysmem_alias_va_conflicts(uint32_t addr, uint32_t size)
 {
-    for (int i = 0; i < s_alias_n; i++) {
+    const int count = atomic_load_explicit(&s_alias_n, memory_order_acquire);
+    for (int i = 0; i < count; i++) {
         uint32_t a = s_alias[i].addr, b = a + s_alias[i].size;
         uint32_t ia = a + 0x05000000u, ib = b + 0x05000000u; /* its image */
         if (addr < ib && ia < addr + size) return 1; /* candidate on its image */

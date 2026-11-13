@@ -564,7 +564,7 @@ static void spurs_api_unlock(struct SpursInst* si)
 #endif
 static int spurs_kernel_notify(void)
 {
-    static int v = -1;
+    static _Thread_local int v = -1;
     if (v < 0) { const char* e = getenv("SPURS_KERNEL_NOTIFY"); v = e && e[0] == '1' && !e[1]; }
     return v;
 }
