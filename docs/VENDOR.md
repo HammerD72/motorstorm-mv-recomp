@@ -4,18 +4,24 @@
 
 Selective integration from own-fork PR #5, modular commit
 `db15251858f8f63e3ad579a77fcf4af259f112b2`, merged into `combined` as
-`3a512ae05aa21ae6bcbd538694b09ecb94cb71e5`.
-`runtime/syscalls/spu_ea_alias.c` is byte-identical to that revision.
+`3a512ae05aa21ae6bcbd538694b09ecb94cb71e5`. Follow-up writer serialization
+was authored on own-fork `codex/spu-alias-writer-serialization`, commit
+`16fc783e311deb5e50ed8cc4b4275eba99e3fc86`, then fast-forwarded into `combined`.
+`runtime/syscalls/spu_ea_alias.c` is byte-identical to that final revision.
 Cached 4 KiB page answers use acquire/release publication. An atomic range
 count publishes initialized, append-only records for mixed-page fallback.
-The existing allocator lock serializes registration.
+An internal blocking mutex serializes allocator and mapper registration;
+the curated mapper registers after releasing its allocator lock. Guest
+address lookups retain the lock-free atomic page/scan path.
 
-The own-fork authored fixture checks concurrent registration with four readers,
-6,746,751 reference-equivalent fixups and eight compiled mutants. Type
-assertions reject the original unsynchronized page/count declarations. Local
-MinGW and clang-cl checks and Ubuntu/Windows CI pass, including the existing
-memory-capacity and allocation-exhaustion contract. Game performance remains
-unverified by this review. No guest bytes or generated code are included.
+The own-fork authored fixture checks four concurrent readers, four concurrent
+writers, 6,746,751 reference-equivalent fixups and nine compiled mutants.
+Type assertions reject the original unsynchronized page/count declarations.
+Disabling the writer lock fails an actual held-lock registration control.
+Local MinGW, clang-cl and POSIX GCC checks and Ubuntu/Windows CI pass. The
+existing memory-capacity and allocation-exhaustion contract passes locally.
+Game performance remains unverified by this review. No guest bytes or
+generated code are included.
 
 ## Fragment-program snapshot identity reuse (#155)
 
