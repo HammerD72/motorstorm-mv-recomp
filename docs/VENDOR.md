@@ -1,5 +1,22 @@
 # Vendor provenance and upstream
 
+## SPU EA alias page-cache publication (#155)
+
+Selective integration from own-fork PR #5, modular commit
+`db15251858f8f63e3ad579a77fcf4af259f112b2`, merged into `combined` as
+`3a512ae05aa21ae6bcbd538694b09ecb94cb71e5`.
+`runtime/syscalls/spu_ea_alias.c` is byte-identical to that revision.
+Cached 4 KiB page answers use acquire/release publication. An atomic range
+count publishes initialized, append-only records for mixed-page fallback.
+The existing allocator lock serializes registration.
+
+The own-fork authored fixture checks concurrent registration with four readers,
+6,746,751 reference-equivalent fixups and eight compiled mutants. Type
+assertions reject the original unsynchronized page/count declarations. Local
+MinGW and clang-cl checks and Ubuntu/Windows CI pass, including the existing
+memory-capacity and allocation-exhaustion contract. Game performance remains
+unverified by this review. No guest bytes or generated code are included.
+
 ## Fragment-program snapshot identity reuse (#155)
 
 Curated change to `libs/video/rsx_d3d12_backend.c` and `rsx_fp_decompiler.c/.h`.
