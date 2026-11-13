@@ -35,6 +35,7 @@ def main():
     ap.add_argument('--profile-cpu-surfaces',action='store_true',help='Existing per-request CPU surface read queue, match, copy and fence diagnostics; adds timing and logging overhead')
     ap.add_argument('--texture-retention',choices=('0','1'),default='0',help='Explicit reference or bounded persistent DX12 texture cache')
     ap.add_argument('--texture-cache-mib',type=int,default=512,help='Default+upload allocation target, 0..4096 MiB; live batch pins may exceed it')
+    ap.add_argument('--texture-mips',choices=('0','1'),default='0',help='Upload the guest mip chain below level 0 for 2D/cube textures (default 0: level 0 only)')
     ap.add_argument('--profile-renderer',action='store_true',help='CPU renderer phases and GPU timestamps, without broad asset/Havok probes; adds timing overhead')
     ap.add_argument('--replay-observe-seconds',type=int,default=5,help='Observe after the gated replay target (default 5; overall --seconds guard still applies)')
     ap.add_argument('--min-free-commit-gib',type=commit_reserve,default=12,help='Host free-commit reserve, 1..12 GiB (default 12); records budget and preserves other guards')
@@ -115,7 +116,7 @@ def main():
         env.update(PERF='1',RSX_TEXTURE_PROFILE='1')
     if args.profile_cpu_surfaces:
         env['RSX_CPU_SURFACE_PROFILE']='1'
-    env.update(RSX_TEXTURE_RETENTION=args.texture_retention,RSX_TEXTURE_CACHE_MIB=str(args.texture_cache_mib))
+    env.update(RSX_TEXTURE_RETENTION=args.texture_retention,RSX_TEXTURE_CACHE_MIB=str(args.texture_cache_mib),RSX_TEX_MIPS=args.texture_mips)
     (out/'pad.txt').write_text('0\n')
     if args.capture_menu or args.menu_replay:
         (out/'rsx').mkdir()
@@ -147,7 +148,7 @@ def main():
     record['profile_textures']=args.profile_textures
     record['d3d12_debug']=args.d3d12_debug
     record['replay_observe_seconds']=args.replay_observe_seconds
-    record['environment'].update({k:v for k,v in env.items() if k in ('PERF','D3D12_DBG','RSX_TEXTURE_RETENTION','RSX_TEXTURE_CACHE_MIB','RSX_CPU_SURFACE_PROFILE') or k.startswith('MS_NATIVE_')})
+    record['environment'].update({k:v for k,v in env.items() if k in ('PERF','D3D12_DBG','RSX_TEXTURE_RETENTION','RSX_TEXTURE_CACHE_MIB','RSX_TEX_MIPS','RSX_CPU_SURFACE_PROFILE') or k.startswith('MS_NATIVE_')})
     record['environment'].update({k:env[k] for k in ('SPU_TASK_LIFECYCLE_TRACE','SPU_TASK_LIFECYCLE_IMAGE') if k in env})
     (out/'launch.json').write_text(json.dumps(record,indent=2)); print('Owned native PID',p.pid,'output',out,flush=True)
     window_ready=False

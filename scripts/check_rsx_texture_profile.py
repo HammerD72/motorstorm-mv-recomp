@@ -21,7 +21,7 @@ SOURCE = r'''
 #define VP_TEX_SLOTS 4
 typedef uint32_t u32;typedef uint64_t u64;
 typedef uint8_t u8;
-typedef struct {void*res;u32 key,w,h,fmt,off,mips,depth;u64 csum,last_use;int cube,used;} VPTexSlot;
+typedef struct {void*res;u32 key,w,h,fmt,off,mips,depth,levels;u64 csum,last_use;int cube,used;} VPTexSlot;
 static struct {unsigned vp_tex_capacity;VPTexSlot vp_tex[4];u64 vp_tex_use_serial;} s_d3d;
 static u8 source_bytes[256];
 static u8* vm_base=source_bytes;
@@ -30,10 +30,13 @@ static u8* vm_base=source_bytes;
 @RETENTION@
 @SOURCE_CHECKSUM@
 @HINT@
-static int production_lookup_depth(u32 off,u32 w,u32 h,u32 fmt,int cube,u32 depth,rsx_texture_profile_call*profile){
-    u32 key_off=off,bpp=4,blkrow=0,blkrows=0,mips=1;int dxt=0;
+static int production_lookup_levels(u32 off,u32 w,u32 h,u32 fmt,int cube,u32 depth,u32 levels,rsx_texture_profile_call*profile){
+    u32 key_off=off,mips=levels>1u?2u:1u,src_bytes=w*h*4*depth;
 @LOOKUP@
     return slot>=0?slot:-100;
+}
+static int production_lookup_depth(u32 off,u32 w,u32 h,u32 fmt,int cube,u32 depth,rsx_texture_profile_call*profile){
+    return production_lookup_levels(off,w,h,fmt,cube,depth,1u,profile);
 }
 static int production_lookup(u32 off,u32 w,u32 h,u32 fmt,int cube,rsx_texture_profile_call*profile){
     return production_lookup_depth(off,w,h,fmt,cube,1,profile);
@@ -50,7 +53,7 @@ int main(void){
     rsx_texture_profile_finish(&probe,slot);
     assert(slot==1&&measured.outcomes[RSX_TEX_FRAME_HIT]==1&&measured.examined==2&&!measured.checksum_calls);
     s_d3d.vp_tex[1].used=0;
-    s_d3d.vp_tex[1].csum=texture_source_csum(NULL,source_bytes+64,16,2,2,0x85,0,1,1);
+    s_d3d.vp_tex[1].csum=texture_source_csum(NULL,source_bytes+64,16,2,2,0x85,0,1,1,1);
     rsx_texture_profile_begin(&probe,&measured,clock_read,&fake);
     slot=production_lookup(64,2,2,0x85,0,&probe);
     rsx_texture_profile_finish(&probe,slot);
@@ -97,6 +100,21 @@ int main(void){
         memset(s_vp_tex_hint,0,sizeof(s_vp_tex_hint));
         puts("hint cases pass");
     }
+    /* Two resources share the declared key but expose different uploaded
+     * levels. A stale single-level hint must fall back to the chained slot.
+     * Keep declared mips equal to isolate the uploaded-level discriminator. */
+    memset(s_d3d.vp_tex,0,sizeof(s_d3d.vp_tex));
+    s_d3d.vp_tex_capacity=2;
+    s_d3d.vp_tex[0]=(VPTexSlot){.res=(void*)1,.key=64,.w=2,.h=2,.fmt=0x85,.mips=2,.used=1};
+    s_d3d.vp_tex[1]=s_d3d.vp_tex[0];s_d3d.vp_tex[1].levels=2;
+    s_vp_tex_hint[vp_tex_hint_hash(64,2,2,0x85,0)]=1;
+    slot=production_lookup_levels(64,2,2,0x85,0,1,2,NULL);assert(slot==1);
+    /* A correct chained hint must agree with a verification scan that skips
+     * the earlier single-level slot. Zero stored levels normalize to one. */
+    s_vp_tex_hint[vp_tex_hint_hash(64,2,2,0x85,0)]=2;
+    slot=production_lookup_levels(64,2,2,0x85,0,1,2,NULL);assert(slot==1);
+    s_d3d.vp_tex[0].mips=1;
+    slot=production_lookup_levels(64,2,2,0x85,0,1,1,NULL);assert(slot==0);
     rsx_texture_profile s={0};rsx_texture_profile_call c;test_clock t={0};
     rsx_texture_profile_begin(&c,&s,NULL,&t);
     rsx_texture_profile_lookup_begin(&c);
@@ -173,26 +191,37 @@ if __name__ == '__main__':
         environment.pop('RSX_TEX_HINT', None)
         environment.pop('RSX_TEX_HINT_VERIFY', None)
         for mode in ('0','1'):
-            hinted = subprocess.run([str(binary)], cwd=directory, env=dict(environment, RSX_TEXTURE_RETENTION=mode), capture_output=True, text=True)
-            assert hinted.returncode == 0 and 'hint cases pass' in hinted.stdout, hinted.stdout + hinted.stderr
+            hinted = subprocess.run([str(binary)], cwd=directory, env=dict(environment, RSX_TEX_HINT_VERIFY='1', RSX_TEXTURE_RETENTION=mode), capture_output=True, text=True)
+            assert hinted.returncode == 0 and 'hint cases pass' in hinted.stdout and 'MISMATCH' not in hinted.stderr, hinted.stdout + hinted.stderr
             subprocess.run([str(binary)], cwd=directory, env=dict(environment, RSX_TEX_HINT='0', RSX_TEXTURE_RETENTION=mode), check=True)
-        # Mutant: trusting the hint without checking the slot's key must fail.
+        # Each key comparison must reject a different uploaded level count.
         verified = ('            if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt\n'
                     '                && c->cube == cube && (c->depth ? c->depth : 1u) == depth\n'
-                    '                && (!retention || c->mips == mips)) hinted = (int)(hs - 1u);')
-        assert fixture.count(verified) == 1
-        no_depth = verified.replace('                && c->cube == cube && (c->depth ? c->depth : 1u) == depth\n',
-                                    '                && c->cube == cube\n')
-        mutants = {'unverified-hint': '            (void)c; hinted = (int)(hs - 1u);',
-                   'hint-ignores-depth': no_depth}
-        for name, replacement in mutants.items():
+                    '                && (!retention || c->mips == mips)\n'
+                    '                && (c->levels ? c->levels : 1u) == levels) hinted = (int)(hs - 1u);')
+        no_depth = verified.replace(' && (c->depth ? c->depth : 1u) == depth', '')
+        no_levels = verified.replace('\n                && (c->levels ? c->levels : 1u) == levels', '')
+        scan_levels = '\n            && (c->levels ? c->levels : 1u) == levels'
+        verify_levels = '\n                  && (c->levels ? c->levels : 1u) == levels'
+        mutants = {
+            'unverified-hint': (verified, '            (void)c; hinted = (int)(hs - 1u);', '1'),
+            'hint-ignores-depth': (verified, no_depth, '1'),
+            'hint-ignores-levels': (verified, no_levels, '1'),
+            'scan-ignores-levels': (scan_levels, '', '0'),
+            'verification-ignores-levels': (verify_levels, '', '1'),
+        }
+        for name, (before, after, hint_mode) in mutants.items():
+            assert fixture.count(before) == 1, name
             mutant = directory / f'mutant-{name}.c'
-            mutant.write_text(fixture.replace(verified, replacement))
+            mutant.write_text(fixture.replace(before, after))
             mbinary = directory / (f'mutant-{name}.exe' if os.name == 'nt' else f'mutant-{name}')
             mcommand = [str(mutant) if x == str(source) else x for x in command]
             mcommand = [('/Fe:' + str(mbinary)) if x.startswith('/Fe:') else (str(mbinary) if x == str(binary) else x) for x in mcommand]
             subprocess.run(mcommand, cwd=directory, check=True)
-            bad = subprocess.run([str(mbinary)], cwd=directory, env=dict(environment, RSX_TEXTURE_RETENTION='1'), capture_output=True, text=True)
-            assert bad.returncode != 0, f'{name} mutant passed'
+            bad = subprocess.run([str(mbinary)], cwd=directory,
+                                 env=dict(environment, RSX_TEX_HINT=hint_mode,
+                                          RSX_TEX_HINT_VERIFY='1', RSX_TEXTURE_RETENTION='1'),
+                                 capture_output=True, text=True)
+            assert bad.returncode != 0 or 'MISMATCH' in bad.stderr, f'{name} mutant passed'
             print(f'mutant {name} rejected')
     print('PASS: actual cache lookup/checksum with verified hints (and RSX_TEX_HINT=0) under reference and retention, disjoint phase accounting, disabled clock and visible failure')

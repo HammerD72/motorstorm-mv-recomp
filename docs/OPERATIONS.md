@@ -371,6 +371,16 @@ all driver memory or physical VRAM residency. Indispensable live batch pins may
 exceed it; `[TEXRESIDENCY]` reports this overage with `--profile-textures`.
 A zero target retains required batch resources until genuine GPU retirement.
 
+`--texture-mips 0|1` (`RSX_TEX_MIPS`, default `0`) uploads the mip levels
+SET_TEXTURE_FORMAT declares below level 0 for 2D and cube textures, clamped to
+the halvings the dimensions allow; volumes keep one level. Each (face, level)
+is decoded at its own size and layout and copied to its own subresource, and
+the identity covers every uploaded level. `[RSXTEXMIP]` names the first chained
+uploads and their class. Linear (LN) chains assume lower levels packed at their
+own width; that rule has no hardware cross-check yet. Game-free coverage:
+[check_rsx_texture_mips.py](../scripts/check_rsx_texture_mips.py); D3D12
+readback and per-level sampling: `check_rsx_texture_gpu.py` phase `mips-only`.
+
 Use identical cache targets, validation and profiling settings for comparisons.
 Retention validates every uploaded face with full XXH3; the reference retains
 its sparse source checksum. Complete hashing has a measurable cost. Verify the

@@ -1,5 +1,35 @@
 # Vendor provenance and upstream
 
+## Texture mip chains (#97)
+
+Curated change to `libs/video/rsx_d3d12_backend.c` and
+`rsx_texture_fingerprint.h`. With `RSX_TEX_MIPS=1` (default 0) the VP texture
+upload creates 2D and cube resources with the guest's mip levels, clamped by
+`rsx_texture_mip_chain` to the halvings the dimensions allow. Each (face,
+level) is decoded at its own layout into the placed footprint
+`GetCopyableFootprints` assigns and copied to its own subresource; level 0
+keeps the historical row pitch. The level count joins the cache key and slot
+reuse check, and the retained identity widens to every uploaded level of each
+face (`rsx_texture_source_view_extend`). `srv_write_ex` views every level of a
+non-null resource, which is unchanged for single-level resources. Volumes stay
+single-level. Lower levels of a linear chain are read packed at their own width,
+as `rsx_texture_mip_chain` already describes; no hardware capture confirms that
+rule. `check_rsx_texture_mips.py` covers offsets, per-level decode, identity and
+selection with five mutants; the Windows GPU fixture adds a `mips-only` phase
+(per-subresource readback, per-level Load, lower-level mutation) and passes the
+volume `depth` argument `vp_upload_tex_slot_impl` gained in #307. No game input
+or generated code is included.
+
+
+Current-main integration preserves the verified texture lookup hint. Hint
+acceptance, its diagnostic verification scan and the ordinary scan all compare
+the normalized uploaded level count. `check_rsx_texture_profile.py` now checks
+a stale single-level hint beside a chained slot and rejects independently
+removing the level check from each path, under both retention modes and with
+hints disabled. Authored integrated DX12 allocation/upload/readback checks also
+pass on the RTX 3080 with zero validation messages. Guest linear-chain packing
+and matched native visuals remain unverified.
+
 ## Padded job-module header identity (#300)
 
 The reusable header decoder, selector and diagnostic limit in

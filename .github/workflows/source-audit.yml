@@ -42,6 +42,9 @@ jobs:
           python scripts/check_rsx_texture_fingerprint.py
       - name: Actual 3D volume texture decode and FP declarations
         run: python scripts/check_rsx_texture_volume.py
+      - name: Texture mip chain layout, identity and level selection
+        run: python scripts/check_rsx_texture_mips.py
+
       - name: Read-once renderer switches and hot-path getenv audit
         run: python scripts/check_rsx_env_once.py
       - name: Fragment-program snapshot identity reuse
@@ -355,6 +358,9 @@ jobs:
           python scripts/check_rsx_texture_fingerprint.py
       - name: Actual 3D volume texture decode and FP declarations
         run: python scripts/check_rsx_texture_volume.py
+      - name: Texture mip chain layout, identity and level selection
+        run: python scripts/check_rsx_texture_mips.py
+
       - name: Read-once renderer switches and hot-path getenv audit
         run: python scripts/check_rsx_env_once.py
       - name: Fragment-program snapshot identity reuse
