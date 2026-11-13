@@ -71,11 +71,21 @@ static u32 rsx_record_color_masks(const rsx_state* state)
 #define FRAME_COUNT         2   /* double buffering */
 #define MAX_VERTICES    393216  /* per-frame vertex buffer (dbgfont submits
                                  * ~7.5k verts/frame; leave generous headroom) */
-#define MAX_DRAWS         2048  /* per-frame draw records. Sized from the
-                                 * measured worst case (~1841, FRAME_BUDGET);
-                                 * the per-draw constant buffer is
-                                 * VP_CB_STRIDE * MAX_DRAWS * 2 bytes, so 16384
-                                 * asked for a 264 MB upload allocation. */
+/* Per-batch draw records. Sized from the measured worst case (~1841,
+ * FRAME_BUDGET); the per-draw constant buffer is VP_CB_STRIDE * MAX_DRAWS * 2
+ * bytes, so 16384 asked for a 264 MB upload allocation. A MotorStorm race
+ * frame records several thousand draws, so the default fills the batch two
+ * or three times per frame and each capacity drain waits for the GPU.
+ * Build with RSX_MAX_DRAWS=<n> (a power of two, 1024..8192) to measure a
+ * larger batch; 4096 doubles the upload allocations (~69 MB for the VP
+ * constants). Default stays 2048. */
+#ifndef RSX_MAX_DRAWS
+#define RSX_MAX_DRAWS     2048
+#endif
+#if RSX_MAX_DRAWS < 1024 || RSX_MAX_DRAWS > 8192 || (RSX_MAX_DRAWS & (RSX_MAX_DRAWS - 1))
+#error "RSX_MAX_DRAWS must be a power of two in 1024..8192"
+#endif
+#define MAX_DRAWS         RSX_MAX_DRAWS
 /* Per-draw VP constant-buffer slot: vp_c[512] + posscale + posoffset
  * (514 vec4 = 8224 B) rounded up to D3D12's 256-byte CBV alignment.
  * Constants are snapshotted at RECORD time -- wave's passes each set their
@@ -253,6 +263,31 @@ typedef struct {
  * slots") and drew UNTEXTURED. That reads as a correctly-lit but solid black
  * object, which is indistinguishable from a missing texture upload. */
 #define INITIAL_VP_TEX_SLOTS 96
+
+/* Lookup hint for vp_upload_tex_slot: hash of the full cache key -> slot+1,
+ * written when a slot takes a key or is found by a scan. A race frame makes
+ * ~16k lookups over a pool of hundreds to thousands of slots, and each one
+ * scanned the pool linearly. A hint is only a starting guess: it is used
+ * only after the slot it names is checked against the whole key, so a stale,
+ * overwritten or colliding hint just falls back to the full scan. Keys are
+ * unique in the pool (a stale match reuses its own slot; a miss takes a free
+ * one), so the hinted slot is the slot the scan would have found.
+ * RSX_TEX_HINT=0 always scans. */
+#define VP_TEX_HINTS 8192u
+static u32 s_vp_tex_hint[VP_TEX_HINTS];
+static u32 vp_tex_hint_hash(u32 key, u32 w, u32 h, u32 fmt, int cube)
+{
+    u32 x = key * 0x9E3779B1u;
+    x ^= (w * 0x85EBCA77u) ^ (h * 0xC2B2AE3Du) ^ (fmt * 0x27D4EB2Fu) ^ ((u32)cube * 0x165667B1u);
+    x ^= x >> 15; x *= 0x2C1B3C6Du; x ^= x >> 12;
+    return x & (VP_TEX_HINTS - 1u);
+}
+static int vp_tex_hint_on(void)
+{
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("RSX_TEX_HINT"); v = !(e && e[0] == '0'); }
+    return v;
+}
 
 /* Decompiled-VS cache: one entry per distinct vertex-program ucode seen at
  * draw time (hashed). Apps switch VPs between draws (gcm/cube: its MVP cube VP
@@ -1654,6 +1689,7 @@ static void gpu_working_sets_release(void)
         texture_slot_release(t);
     }
     free(s_d3d.vp_tex);s_d3d.vp_tex=NULL;s_d3d.vp_tex_capacity=0;
+    memset(s_vp_tex_hint,0,sizeof(s_vp_tex_hint));
 }
 
 static void move_to_next_frame(void)
@@ -3504,20 +3540,56 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     int empty = -1, oldest = -1;
     u64 oldest_age = 0;
     rsx_texture_profile_lookup_begin(profile);
-    for (unsigned i = 0; i < s_d3d.vp_tex_capacity; i++) {
+    /* A verified hint examines just that slot; otherwise scan the pool. */
+    const u32 hint_at = vp_tex_hint_hash(key_off, w, h, fmt, cube);
+    int hinted = -1;
+    if (vp_tex_hint_on()) {
+        u32 hs = s_vp_tex_hint[hint_at];
+        if (hs && hs - 1u < s_d3d.vp_tex_capacity) {
+            VPTexSlot* c = &s_d3d.vp_tex[hs - 1u];
+            if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt
+                && c->cube == cube && (c->depth ? c->depth : 1u) == depth
+                && (!retention || c->mips == mips)) hinted = (int)(hs - 1u);
+        }
+    }
+    /* RSX_TEX_HINT_VERIFY=1 (diagnostic): also scan and report any lookup
+     * where the scan's first match is not the hinted slot. */
+    { static int verify = -1;
+      if (verify < 0) { const char* e = getenv("RSX_TEX_HINT_VERIFY"); verify = e && e[0] == '1'; }
+      if (verify && hinted >= 0) {
+          static unsigned long long checked, mismatched;
+          unsigned first = s_d3d.vp_tex_capacity;
+          for (unsigned i = 0; i < s_d3d.vp_tex_capacity; i++) {
+              VPTexSlot* c = &s_d3d.vp_tex[i];
+              if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt
+                  && c->cube == cube && (c->depth ? c->depth : 1u) == depth
+                  && (!retention || c->mips == mips)) { first = i; break; }
+          }
+          ++checked;
+          if (first != (unsigned)hinted && mismatched++ < 16)
+              fprintf(stderr, "[RSXTEXHINT] MISMATCH off=%08X %ux%u fmt=%02X hint=%d scan=%u\n",
+                      key_off, w, h, fmt, hinted, first);
+          if ((checked & 0xFFFFu) == 0)
+              fprintf(stderr, "[RSXTEXHINT] verified=%llu mismatched=%llu capacity=%u\n",
+                      checked, mismatched, s_d3d.vp_tex_capacity);
+      } }
+    const unsigned scan_n = hinted >= 0 ? 1u : s_d3d.vp_tex_capacity;
+    for (unsigned j = 0; j < scan_n; j++) {
+        const unsigned i = hinted >= 0 ? (unsigned)hinted : j;
         VPTexSlot* c = &s_d3d.vp_tex[i];
         if (c->res && c->key == key_off && c->w == w && c->h == h && c->fmt == fmt
             && c->cube == cube && (c->depth ? c->depth : 1u) == depth && (!retention || c->mips == mips)) {
-            if (c->used) { if (retention) c->last_use = serial; rsx_texture_profile_lookup_end(profile, i + 1, RSX_TEX_FRAME_HIT); return i; }                /* already bound this frame */
+            s_vp_tex_hint[hint_at] = i + 1u;
+            if (c->used) { if (retention) c->last_use = serial; rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_FRAME_HIT); return i; }                /* already bound this frame */
             { static int nocache = -1;            /* TEX_NOCACHE=1: always re-upload */
               if (nocache < 0) { const char* e = getenv("TEX_NOCACHE");
                                  nocache = e ? atoi(e) : 0; }
-              if (nocache) { rsx_texture_profile_lookup_end(profile, i + 1, RSX_TEX_FORCED); slot = i; break; } }
+              if (nocache) { rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_FORCED); slot = i; break; } }
             /* Held from an earlier frame: re-upload only if the guest bytes
              * changed. Most of this scene's textures are static, and converting
              * every one of them every frame was ~70% of the frame's CPU time. */
             u32 nb = dxt ? (blkrow * blkrows) : (w * h * bpp * depth);
-            rsx_texture_profile_lookup_end(profile, i + 1, RSX_TEX_VALIDATED_HIT);
+            rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_VALIDATED_HIT);
             u64 cs = TEX_CSUM(vm_base + c->off, nb);
             if (cs == c->csum) { c->used = 1; if (retention) c->last_use = serial; return i; }
             if (profile) profile->outcome = RSX_TEX_STALE;
@@ -4065,6 +4137,7 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     t->off = off; t->key = key_off; t->w = w; t->h = h; t->fmt = fmt;
     t->dxgi = (u32)dxfmt;   /* the decoded image's format, from the layout */
     t->cube = cube; t->depth = depth; t->used = 1; t->mips = mips; t->last_use = serial;
+    s_vp_tex_hint[vp_tex_hint_hash(key_off, w, h, fmt, cube)] = (u32)slot + 1u;
     if (retention) texture_retention_trim();
     { u32 nb = dxt ? (blkrow * blkrows) : (w * h * bpp * depth);
       t->csum = TEX_CSUM(vm_base + off, nb); }
