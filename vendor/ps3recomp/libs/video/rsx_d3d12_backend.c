@@ -98,10 +98,11 @@ static u32 rsx_record_color_masks(const rsx_state* state)
  * then reach the shader without a recompile, while NaN/Inf bit payloads
  * survive verbatim. */
 #define VP_FPCB_STRIDE    2304   /* 256-aligned: fp_constants[<=128] + fp_alpha.
-                                  * A 4096-byte ucode bound holds at most 128
-                                  * CONST slots (32 B each); 2304 B fits 143
-                                  * consts + alpha so the slot never rejects a
-                                  * program the decoder accepts. */
+                                  * 2304 B fits 143 consts + alpha. Programs
+                                  * may reach VP_FP_UCODE_MAX (16 KiB), which
+                                  * can hold more; those are refused loudly at
+                                  * PSO build ("[FP] PSO refused"). MotorStorm's
+                                  * largest (mud terrain) carry 61..64. */
 #define VP_FPCB_MAX_CONSTS ((VP_FPCB_STRIDE / 16) - 1)   /* 143; fp_alpha takes the last slot */
 #define VP_VERT_STRIDE (16 * 4 * sizeof(float)) /* 16 float4 attributes */
 #define VERTEX_STRIDE       36  /* bytes per host vertex: pos3 + col4 + uv2 */
@@ -2703,8 +2704,15 @@ static void guest_sampler_note_mask(u64 ucode_hash, u32 mask);
  * decompile source, inline-CONST collection -- reads the snapshot.
  * Ring buffer: 512 concurrent live programs; verified direct-mapped index by
  * resolved offset. Render path is single-threaded like the other caches. */
+/* Upper bound on one fragment program (instructions plus inline-CONST
+ * slots, 16 bytes each). MotorStorm's deformable-mud terrain programs are
+ * 4112..4384 bytes; at the old 4096 bound their END was never found, the
+ * structural hash came back 0 and every such draw silently fell back to
+ * the startup pipeline (pass-through VS, w=0), so near mud patches never
+ * rasterized and the depth pre-pass left stale colour ("mud slabs"). */
+#define VP_FP_UCODE_MAX 16384u
 #define VP_FPSNAP_MAX 512
-typedef struct { u32 off; u32 size; u64 hash; u8 bytes[4096]; } VPFP_snap;
+typedef struct { u32 off; u32 size; u64 hash; u8 bytes[VP_FP_UCODE_MAX]; } VPFP_snap;
 static VPFP_snap s_fp_snap[VP_FPSNAP_MAX];   /* 2 MB */
 static u32 s_fp_snap_head;                   /* ring cursor */
 static u32 s_fp_snap_cur[4096];              /* (off>>12)&4095 -> idx+1 */
@@ -2714,12 +2722,12 @@ static u32 vp_fp_snap_take(u32 off)
     extern uint8_t* vm_base;
     if (!vm_base || off == 0xFFFFFFFFu) return 0;
     const u8* src = vm_base + off;
-    u32 size = rsx_fp_program_size(src, 4096);
+    u32 size = rsx_fp_program_size(src, VP_FP_UCODE_MAX);
     if (!size) return 0;                     /* malformed: fall back live */
     /* Identity and extent come from one stable copy of the bytes, in one
      * walk, so every later use can trust them without rehashing. A guest
      * rewrite racing the copy that changes the extent takes no slot. */
-    static u8 copy[4096];                    /* render path is single-threaded */
+    static u8 copy[VP_FP_UCODE_MAX];         /* render path is single-threaded */
     memcpy(copy, src, size);
     u32 copied = 0;
     u64 h = rsx_fp_structural_hash_sized(copy, size, 0, &copied);
@@ -2753,7 +2761,7 @@ static u32 vp_fp_snap_for(u32 prog)
         VPFP_snap* s = &s_fp_snap[cur - 1];
         if (s->off == off && s->hash) {
             const u8* win = vm_base + off;
-            int action = rsx_fp_snapshot_check(win, s->bytes, s->size, 4096, s->hash);
+            int action = rsx_fp_snapshot_check(win, s->bytes, s->size, VP_FP_UCODE_MAX, s->hash);
             if (action == RSX_FP_SNAPSHOT_INVALID) {
                 fprintf(stderr, "[FP_SNAPSHOT_ERROR] invalid admitted snapshot metadata\n");
                 abort();
@@ -2835,7 +2843,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     /* A verified snapshot already carries the hash and extent of its own
      * bytes (taken in one walk); only a live read is hashed here. */
     u32 usize = snap ? snap->size : 0;
-    u64 uhash = snap ? snap->hash : rsx_fp_structural_hash_sized(uc, 4096, 0, &usize);
+    u64 uhash = snap ? snap->hash : rsx_fp_structural_hash_sized(uc, VP_FP_UCODE_MAX, 0, &usize);
     if (uhash == 0) return NULL;                    /* malformed ucode */
     s_perf_pso_hashbytes += (int)usize;
     int exp32 = (fp_ctrl & 0x40u) ? 1 : 0;
@@ -2880,7 +2888,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
         recipe.nrt=nrt;recipe.format=(u32)rtfmt;recipe.depth=ds_key;recipe.alias=alias_key;recipe.alias_mask=alias_mask;
         for(unsigned u=0;u<16;u++)if((unnorm_mask&(1u<<u)) && unnorm_dim){recipe.dims[u][0]=unnorm_dim[u][0];recipe.dims[u][1]=unnorm_dim[u][1];}
         memcpy(recipe.remap,alias_remap,sizeof(alias_remap));
-        unsigned char program[4096];u32 bytes=rsx_fp_canonical_program(uc,4096,program,sizeof(program));
+        unsigned char program[VP_FP_UCODE_MAX];u32 bytes=rsx_fp_canonical_program(uc,VP_FP_UCODE_MAX,program,sizeof(program));
         if(bytes && shader_prefetch_duplicate(&recipe,sizeof(recipe),program,bytes))return NULL;
     }
     s_perf_pso_miss++;      /* falls through to a full decompile + D3DCompile */
@@ -2941,9 +2949,9 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
     u32 fpc_n = 0;
     static rsx_fp_constant_block fblk; /* 32 KB scratch; single-threaded build */
     int n = native_depth_key
-        ? rsx_fp_decompile_buffered_native_depth(uc, 4096, fp_ctrl, cube_mask, dr->depth_view,
+        ? rsx_fp_decompile_buffered_native_depth(uc, VP_FP_UCODE_MAX, fp_ctrl, cube_mask, dr->depth_view,
                                                  hlsl, sizeof(hlsl), &fpc_n, &fblk)
-        : rsx_fp_decompile_buffered_ex(uc, 4096, fp_ctrl, cube_mask,
+        : rsx_fp_decompile_buffered_ex(uc, VP_FP_UCODE_MAX, fp_ctrl, cube_mask,
                                        hlsl, sizeof(hlsl), &fpc_n, &fblk);
     if (n <= 0) { static int _e=0; if(_e++<16) printf("[FP] decompile fail (fp=0x%08X)\n", fp_addr);
         if(!shader_prefetch_active)vp_fp_cache_put(&key); return NULL; }
@@ -2997,7 +3005,7 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
           if (f) { fprintf(f, "/* fp_addr=0x%08X ctrl=0x%X vs=%d cube=0x%X unnorm=0x%X alpha=%u, %d instrs */%s",
                            fp_addr, fp_ctrl, vs_idx, cube_mask, unnorm_mask, alpha_key, n, hlsl);
                    fclose(f); }
-          u32 size = rsx_fp_program_size(vm_base + off, 4096);
+          u32 size = rsx_fp_program_size(vm_base + off, VP_FP_UCODE_MAX);
           f = fopen("duck_fp.bin", "wb");
           if (f) { if (size) fwrite(vm_base + off, 1, size, f); fclose(f); }
           fprintf(stderr, "[DUCKFP] wrote duck_fp.hlsl (fp=0x%08X, %d instrs)%c",
@@ -4268,7 +4276,7 @@ static void vp_record_fp_b1(u32 slot, D3D12DrawRecord* dr)
          * multiplied every tap by zero. */
         const u8* uc = vp_fp_snap_bytes(dr->fp_snap, foff);
         if (!uc) uc = vm_base + foff;
-        int got = rsx_fp_collect_constants(uc, 4096, &blk);
+        int got = rsx_fp_collect_constants(uc, VP_FP_UCODE_MAX, &blk);
         if (got > 0) n = (u32)got;      /* <=0: malformed; the PSO build refuses it too */
     }
     if (n > VP_FPCB_MAX_CONSTS) {
