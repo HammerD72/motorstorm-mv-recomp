@@ -7098,6 +7098,7 @@ skip_dump_consider: ;
         }
         s_phase_last_end = now;
     }
+    cpu_surface_batch_submitted();
     cpu_surface_frame_complete();
     if (perf_on()) perf_batch_finish(_rf0);
 }
