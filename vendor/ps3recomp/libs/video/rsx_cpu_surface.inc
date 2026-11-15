@@ -197,6 +197,257 @@ static void cpu_surface_request(u32 address,u32 bytes,void *opaque) {
     cpu_surface_profile_emit(&request);
     CloseHandle(request.done);
 }
+/* Asynchronous reads of opted-in surfaces. RSX_CPU_SURFACE_ASYNC lists up to
+ * four RSX surface offsets (hex, comma separated); none by default, which
+ * leaves every read coherent. A CPU read lying wholly inside a listed surface
+ * returns the renderer's last completed copy instead of waiting for a
+ * coherent one: after a submitted batch the renderer queues a copy of the
+ * surface behind it, and at a later batch, once that copy's fence has passed,
+ * packs it into a shadow. The reader copies its bytes from the shadow, so it
+ * sees the surface as of one or two batches earlier and never waits on the
+ * GPU. On the PS3 a PPU read of VRAM without a label wait likewise sees
+ * whatever the RSX has finished. Meant for slowly varying feedback values
+ * (MotorStorm's 64x64 HDR exposure target at offset 02A30480), never for data
+ * the game synchronises on. Reads before the first copy is published, or
+ * reaching outside the surface, take the coherent path.
+ * RSX_CPU_SURFACE_ASYNC_LOG=1 prints served/fallback/copy counts. */
+#define CPU_SURFACE_ASYNC_MAX 4
+typedef struct CpuSurfaceAsync {
+    SRWLOCK lock;                 /* guards begin, end, valid, wanted, front, counters */
+    u64 begin, end;               /* guest range of the tracked surface */
+    int valid, wanted;
+    unsigned char *front, *back;  /* packed guest-format copies; reader uses front */
+    unsigned long long served, fallback;
+    /* Renderer thread only. */
+    u32 off;
+    int slot;                     /* tracked OffRT index, -1 none */
+    u32 address, pitch, width, height, format;
+    u64 issued;                   /* gpu_generation in the newest issued copy */
+    int in_flight;
+    ID3D12Resource *readback;
+    u64 readback_bytes;
+    u32 readback_pitch;
+    unsigned long long copies, published;
+} CpuSurfaceAsync;
+static CpuSurfaceAsync s_cpu_surface_async[CPU_SURFACE_ASYNC_MAX];
+static unsigned s_cpu_surface_async_count;
+static int s_cpu_surface_async_log;
+static void cpu_surface_async_configure(const char *list) {
+    s_cpu_surface_async_count=0;
+    while(list && *list) {
+        char *end=NULL;unsigned long off=strtoul(list,&end,16);
+        if(end==list || (*end && *end!=',') || s_cpu_surface_async_count==CPU_SURFACE_ASYNC_MAX)
+            cpu_surface_fail("RSX_CPU_SURFACE_ASYNC (up to 4 hex offsets)",E_INVALIDARG);
+        CpuSurfaceAsync *e=&s_cpu_surface_async[s_cpu_surface_async_count++];
+        memset(e,0,sizeof *e);InitializeSRWLock(&e->lock);e->off=(u32)off;e->slot=-1;
+        list=*end?end+1:end;
+    }
+}
+static int cpu_surface_async_serve(u32 address,u32 bytes) {
+    extern uint8_t *vm_base;
+    for(unsigned i=0;i<s_cpu_surface_async_count;i++) {
+        CpuSurfaceAsync *e=&s_cpu_surface_async[i];int hit=0;
+        AcquireSRWLockExclusive(&e->lock);
+        if((u64)address<e->end && (u64)address+bytes>e->begin) {
+            e->wanted=1;
+            if(e->valid && (u64)address>=e->begin && (u64)address+bytes<=e->end) {
+                memcpy(vm_base+address,e->front+(size_t)((u64)address-e->begin),bytes);hit=1;e->served++;
+            } else e->fallback++;
+        }
+        ReleaseSRWLockExclusive(&e->lock);
+        if(hit)return 1;
+    }
+    return 0;
+}
+static void cpu_surface_request_async(u32 address,u32 bytes,void *opaque) {
+    if(cpu_surface_async_serve(address,bytes))return;
+    cpu_surface_request(address,bytes,opaque);
+}
+static void cpu_surface_async_untrack(CpuSurfaceAsync *e) {
+    AcquireSRWLockExclusive(&e->lock);
+    e->valid=0;e->begin=e->end=0;
+    ReleaseSRWLockExclusive(&e->lock);
+    e->slot=-1;e->in_flight=0;e->issued=0;e->address=e->pitch=e->width=e->height=e->format=0;
+}
+/* Follow the surface at e->off. Returns the OffRT to copy now, or NULL. */
+static OffRT *cpu_surface_async_track(CpuSurfaceAsync *e) {
+    OffRT *r=NULL;
+    for(int i=0;i<CPU_SURFACE_CAPACITY;i++) {
+        OffRT *c=&s_d3d.off_rt[i];
+        if(c->res && c->off==e->off && c->cpu_address && c->cpu_pitch){r=c;
+            if(e->slot!=i)cpu_surface_async_untrack(e);
+            e->slot=i;break;}
+    }
+    if(!r){if(e->slot>=0)cpu_surface_async_untrack(e);return NULL;}
+    unsigned bpp=rsx_surface_readback_bpp(r->cpu_format);
+    if(!bpp || r->cpu_pitch%bpp || !r->h)return NULL;
+    u32 width=r->w;if(width>r->cpu_pitch/bpp)width=r->cpu_pitch/bpp;
+    if(r->cpu_address!=e->address || r->cpu_pitch!=e->pitch || width!=e->width || r->h!=e->height || r->cpu_format!=e->format) {
+        extern uint8_t *vm_base;
+        u64 bytes=(u64)r->cpu_pitch*r->h;
+        if(!width || bytes>16u*1024u*1024u || (u64)r->cpu_address+bytes>0x100000000ull)return NULL;
+        unsigned char *front=(unsigned char *)malloc((size_t)bytes),*back=(unsigned char *)malloc((size_t)bytes);
+        if(!front || !back)cpu_surface_fail("async surface shadow",E_FAIL);
+        memcpy(front,vm_base+r->cpu_address,(size_t)bytes);memcpy(back,front,(size_t)bytes);   /* pitch padding keeps guest bytes */
+        AcquireSRWLockExclusive(&e->lock);
+        unsigned char *old_front=e->front,*old_back=e->back;
+        e->front=front;e->back=back;e->valid=0;e->wanted=1;
+        e->begin=r->cpu_address;e->end=(u64)r->cpu_address+bytes;
+        ReleaseSRWLockExclusive(&e->lock);
+        free(old_front);free(old_back);
+        e->address=r->cpu_address;e->pitch=r->cpu_pitch;e->width=width;e->height=r->h;e->format=r->cpu_format;
+        e->issued=0;e->in_flight=0;
+    }
+    if(e->in_flight || !r->gpu_generation || r->gpu_generation==e->issued)return NULL;
+    AcquireSRWLockExclusive(&e->lock);
+    int wanted=e->wanted;e->wanted=0;
+    ReleaseSRWLockExclusive(&e->lock);
+    return wanted?r:NULL;
+}
+/* The copy into e->back is complete: make it what readers see. */
+static void cpu_surface_async_swap(CpuSurfaceAsync *e) {
+    AcquireSRWLockExclusive(&e->lock);
+    unsigned char *front=e->front;e->front=e->back;e->back=front;e->valid=1;
+    ReleaseSRWLockExclusive(&e->lock);
+    e->published++;
+}
+/* Async copies on the GPU queue. */
+static ID3D12CommandAllocator *s_cpu_surface_async_alloc;
+static ID3D12GraphicsCommandList *s_cpu_surface_async_list;
+static ID3D12Fence *s_cpu_surface_async_fence;
+static HANDLE s_cpu_surface_async_event;
+static u64 s_cpu_surface_async_fence_value;
+static int s_cpu_surface_async_pending;   /* a submitted copy batch is unpublished */
+static void cpu_surface_async_init(void) {
+    cpu_surface_async_configure(getenv("RSX_CPU_SURFACE_ASYNC"));
+    const char *log=getenv("RSX_CPU_SURFACE_ASYNC_LOG");
+    s_cpu_surface_async_log=log&&log[0]=='1'&&!log[1];
+    s_cpu_surface_async_pending=0;
+    if(!s_cpu_surface_async_count)return;
+    CPU_SURFACE_HR(s_d3d.device->lpVtbl->CreateCommandAllocator(s_d3d.device,D3D12_COMMAND_LIST_TYPE_DIRECT,
+        &IID_ID3D12CommandAllocator,(void **)&s_cpu_surface_async_alloc));
+    CPU_SURFACE_HR(s_d3d.device->lpVtbl->CreateCommandList(s_d3d.device,0,D3D12_COMMAND_LIST_TYPE_DIRECT,
+        s_cpu_surface_async_alloc,NULL,&IID_ID3D12GraphicsCommandList,(void **)&s_cpu_surface_async_list));
+    CPU_SURFACE_HR(s_cpu_surface_async_list->lpVtbl->Close(s_cpu_surface_async_list));
+    CPU_SURFACE_HR(s_d3d.device->lpVtbl->CreateFence(s_d3d.device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&s_cpu_surface_async_fence));
+    s_cpu_surface_async_event=CreateEventA(NULL,FALSE,FALSE,NULL);if(!s_cpu_surface_async_event)cpu_surface_fail("async GPU event creation",E_FAIL);
+    for(unsigned i=0;i<s_cpu_surface_async_count;i++)
+        fprintf(stderr,"[CPUSURFACE_ASYNC] enabled offset=%08X\n",s_cpu_surface_async[i].off);
+}
+static int cpu_surface_async_copy_done(void) {
+    return s_cpu_surface_async_fence->lpVtbl->GetCompletedValue(s_cpu_surface_async_fence)>=s_cpu_surface_async_fence_value;
+}
+static void cpu_surface_async_copy_wait(void) {
+    if(!s_cpu_surface_async_pending || cpu_surface_async_copy_done())return;
+    CPU_SURFACE_HR(s_cpu_surface_async_fence->lpVtbl->SetEventOnCompletion(s_cpu_surface_async_fence,s_cpu_surface_async_fence_value,s_cpu_surface_async_event));
+    if(WaitForSingleObject(s_cpu_surface_async_event,30000)!=WAIT_OBJECT_0)cpu_surface_fail("async GPU fence wait",E_FAIL);
+}
+/* Queue copies of the given surfaces behind every batch submitted so far. */
+static void cpu_surface_async_issue(CpuSurfaceAsync **entries,OffRT **surfaces,unsigned count) {
+    CPU_SURFACE_HR(s_cpu_surface_async_alloc->lpVtbl->Reset(s_cpu_surface_async_alloc));
+    CPU_SURFACE_HR(s_cpu_surface_async_list->lpVtbl->Reset(s_cpu_surface_async_list,s_cpu_surface_async_alloc,NULL));
+    for(unsigned i=0;i<count;i++) {
+        CpuSurfaceAsync *e=entries[i];OffRT *r=surfaces[i];
+        u32 pitch=rsx_surface_readback_host_pitch(r->w,r->cpu_format,D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+        u64 bytes=(u64)pitch*r->h;
+        if(!pitch || bytes>256u*1024u*1024u)cpu_surface_fail("async surface copy bounds",E_INVALIDARG);
+        if(e->readback && e->readback_bytes!=bytes){e->readback->lpVtbl->Release(e->readback);e->readback=NULL;}
+        if(!e->readback) {
+            D3D12_HEAP_PROPERTIES hp={0};hp.Type=D3D12_HEAP_TYPE_READBACK;
+            D3D12_RESOURCE_DESC desc={0};desc.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;
+            desc.Width=bytes;desc.Height=1;desc.DepthOrArraySize=1;desc.MipLevels=1;desc.SampleDesc.Count=1;
+            desc.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            CPU_SURFACE_HR(s_d3d.device->lpVtbl->CreateCommittedResource(s_d3d.device,&hp,D3D12_HEAP_FLAG_NONE,&desc,
+                D3D12_RESOURCE_STATE_COPY_DEST,NULL,&IID_ID3D12Resource,(void **)&e->readback));
+            e->readback_bytes=bytes;
+        }
+        e->readback_pitch=pitch;
+        D3D12_RESOURCE_BARRIER barrier={0};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource=r->res;barrier.Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore=r->st;barrier.Transition.StateAfter=D3D12_RESOURCE_STATE_COPY_SOURCE;
+        if(r->st!=D3D12_RESOURCE_STATE_COPY_SOURCE)s_cpu_surface_async_list->lpVtbl->ResourceBarrier(s_cpu_surface_async_list,1,&barrier);
+        D3D12_TEXTURE_COPY_LOCATION src={0},dst={0};src.pResource=r->res;src.Type=D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.pResource=e->readback;dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint.Footprint.Format=(DXGI_FORMAT)r->dxgi;
+        dst.PlacedFootprint.Footprint.Width=r->w;dst.PlacedFootprint.Footprint.Height=r->h;
+        dst.PlacedFootprint.Footprint.Depth=1;dst.PlacedFootprint.Footprint.RowPitch=pitch;
+        s_cpu_surface_async_list->lpVtbl->CopyTextureRegion(s_cpu_surface_async_list,&dst,0,0,0,&src,NULL);
+        if(r->st!=D3D12_RESOURCE_STATE_COPY_SOURCE) {
+            barrier.Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_SOURCE;barrier.Transition.StateAfter=r->st;
+            s_cpu_surface_async_list->lpVtbl->ResourceBarrier(s_cpu_surface_async_list,1,&barrier);
+        }
+    }
+    CPU_SURFACE_HR(s_cpu_surface_async_list->lpVtbl->Close(s_cpu_surface_async_list));
+    ID3D12CommandList *lists[]={(ID3D12CommandList *)s_cpu_surface_async_list};
+    s_d3d.cmd_queue->lpVtbl->ExecuteCommandLists(s_d3d.cmd_queue,1,lists);
+    CPU_SURFACE_HR(s_d3d.cmd_queue->lpVtbl->Signal(s_d3d.cmd_queue,s_cpu_surface_async_fence,++s_cpu_surface_async_fence_value));
+}
+/* Pack a completed copy into e->back (guest layout). */
+static void cpu_surface_async_pack(CpuSurfaceAsync *e) {
+    D3D12_RANGE range={0,(SIZE_T)e->readback_bytes};void *mapped=NULL;
+    CPU_SURFACE_HR(e->readback->lpVtbl->Map(e->readback,0,&range,&mapped));
+    if(!mapped || rsx_surface_readback_rows(e->back,(size_t)((u64)e->pitch*e->height),e->pitch,
+        mapped,(size_t)e->readback_bytes,e->readback_pitch,e->width,e->height,e->format))cpu_surface_fail("async surface packing",E_INVALIDARG);
+    D3D12_RANGE empty={0,0};e->readback->lpVtbl->Unmap(e->readback,0,&empty);
+}
+static void cpu_surface_async_shutdown(void) {
+    if(!s_cpu_surface_async_count)return;
+    cpu_surface_async_copy_wait();s_cpu_surface_async_pending=0;
+    for(unsigned i=0;i<s_cpu_surface_async_count;i++) {
+        CpuSurfaceAsync *e=&s_cpu_surface_async[i];
+        if(s_cpu_surface_async_log)fprintf(stderr,"[CPUSURFACE_ASYNC] offset=%08X served=%llu fallback=%llu copies=%llu published=%llu\n",
+            e->off,e->served,e->fallback,e->copies,e->published);
+        cpu_surface_async_untrack(e);
+        if(e->readback){e->readback->lpVtbl->Release(e->readback);e->readback=NULL;}
+    }
+    s_cpu_surface_async_count=0;   /* the shadows stay allocated: a late reader may still hold the handler */
+    if(s_cpu_surface_async_list)s_cpu_surface_async_list->lpVtbl->Release(s_cpu_surface_async_list);
+    if(s_cpu_surface_async_alloc)s_cpu_surface_async_alloc->lpVtbl->Release(s_cpu_surface_async_alloc);
+    if(s_cpu_surface_async_fence)s_cpu_surface_async_fence->lpVtbl->Release(s_cpu_surface_async_fence);
+    if(s_cpu_surface_async_event)CloseHandle(s_cpu_surface_async_event);
+}
+/* Async refresh, once per submitted batch. */
+static void cpu_surface_async_refresh(void) {
+    if(!s_cpu_surface_async_count)return;
+    if(s_cpu_surface_recording)cpu_surface_fail("async surface refresh before command submission",E_FAIL);
+    if(s_cpu_surface_async_pending) {
+        if(!cpu_surface_async_copy_done())return;   /* the GPU has not reached the copies yet */
+        s_cpu_surface_async_pending=0;
+        for(unsigned i=0;i<s_cpu_surface_async_count;i++) {
+            CpuSurfaceAsync *e=&s_cpu_surface_async[i];
+            if(!e->in_flight)continue;
+            e->in_flight=0;cpu_surface_async_pack(e);cpu_surface_async_swap(e);
+        }
+    }
+    CpuSurfaceAsync *entries[CPU_SURFACE_ASYNC_MAX];OffRT *surfaces[CPU_SURFACE_ASYNC_MAX];unsigned count=0;
+    for(unsigned i=0;i<s_cpu_surface_async_count;i++) {
+        OffRT *r=cpu_surface_async_track(&s_cpu_surface_async[i]);
+        if(r){entries[count]=&s_cpu_surface_async[i];surfaces[count++]=r;}
+    }
+    if(count) {
+        cpu_surface_async_issue(entries,surfaces,count);
+        for(unsigned i=0;i<count;i++){entries[i]->issued=surfaces[i]->gpu_generation;entries[i]->in_flight=1;entries[i]->copies++;}
+        s_cpu_surface_async_pending=1;
+    }
+    if(s_cpu_surface_async_log && count) {
+        static unsigned long long batches;
+        if(!(++batches%1000))for(unsigned i=0;i<s_cpu_surface_async_count;i++) {
+            CpuSurfaceAsync *e=&s_cpu_surface_async[i];
+            AcquireSRWLockExclusive(&e->lock);unsigned long long served=e->served,fallback=e->fallback;ReleaseSRWLockExclusive(&e->lock);
+            fprintf(stderr,"[CPUSURFACE_ASYNC] offset=%08X served=%llu fallback=%llu copies=%llu published=%llu\n",
+                e->off,served,fallback,e->copies,e->published);
+        }
+    }
+}
+/* A tracked surface is being retired (the GPU is idle): forget its copies. */
+static void cpu_surface_async_retire(OffRT *r) {
+    for(unsigned i=0;i<s_cpu_surface_async_count;i++) {
+        CpuSurfaceAsync *e=&s_cpu_surface_async[i];
+        if(e->slot<0 || &s_d3d.off_rt[e->slot]!=r)continue;
+        cpu_surface_async_copy_wait();
+        cpu_surface_async_untrack(e);
+    }
+}
 /* Prompt service between batches. A queued read is otherwise served at the
  * end of the renderer's next batch or by its idle pump, so it also waits out
  * whatever the renderer records and replays meanwhile (in MotorStorm races
@@ -279,15 +530,18 @@ static void cpu_surface_init(void) {
     CPU_SURFACE_HR(s_cpu_surface_list->lpVtbl->Close(s_cpu_surface_list));
     CPU_SURFACE_HR(s_d3d.device->lpVtbl->CreateFence(s_d3d.device,0,D3D12_FENCE_FLAG_NONE,&IID_ID3D12Fence,(void **)&s_cpu_surface_fence));
     s_cpu_surface_event=CreateEventA(NULL,FALSE,FALSE,NULL);if(!s_cpu_surface_event)cpu_surface_fail("GPU event creation",E_FAIL);
-    s_cpu_surface_live=1;vm_read_sync_set_handler(cpu_surface_request,NULL);
+    cpu_surface_async_init();
+    s_cpu_surface_live=1;vm_read_sync_set_handler(s_cpu_surface_async_count?cpu_surface_request_async:cpu_surface_request,NULL);
 }
 static void cpu_surface_retire(OffRT *r) {
+    cpu_surface_async_retire(r);
     cpu_surface_copy(r);
     if(r->cpu_readback){r->cpu_readback->lpVtbl->Release(r->cpu_readback);r->cpu_readback=NULL;}
     r->cpu_address=r->cpu_pitch=0;r->gpu_generation=r->cpu_generation=0;
 }
 static void cpu_surface_shutdown(void) {
     vm_read_sync_set_handler(NULL,NULL);
+    cpu_surface_async_shutdown();
     AcquireSRWLockExclusive(&s_cpu_surface_lock);
     for(int i=0;i<CPU_SURFACE_CAPACITY;i++)cpu_surface_retire(&s_d3d.off_rt[i]);
     s_cpu_surface_live=0;
