@@ -1,5 +1,40 @@
 # Vendor provenance and upstream
 
+## D3D12 fragment-program bound (#317)
+
+The fragment-program parser bound is 16 KiB throughout the D3D12 backend.
+The equivalent five-consumer toolkit correction was validated first on
+`robbe1912/ps3recomp` branch `codex/d3d12-fp-ucode-bound`, production commit
+`ab885a8ac4eb689ac1b3f62a59b502c579ef33ff`, with the self-contained fixture
+follow-up `8d66db96de044deb7502b1970e58d8388f8b46b6`. The final commit is
+integrated into `combined`. Its Windows and Ubuntu program-bound jobs pass.
+The existing combined texture-profile fixture remains failing on its older,
+incompatible extracted lookup model, as it did before these commits.
+
+PR #317 applies the same bound to this curated backend's snapshot storage,
+copy and refresh, live hash, canonical prefetch, ordinary/native-depth HLSL
+translation, `FP_PICK`, b1 constant collection and native-depth texture mask.
+The 512-slot snapshot ring holds 8 MiB of program bytes. Its ownership and
+constant-refresh rules are preserved, as is the 143-constant draw-record cap
+and its explicit refusal. Metal's parser bound is outside this D3D12 change.
+
+`scripts/check_rsx_fp_snap_cache.py` extracts the actual capacity definition
+with the snapshot implementation. It exercises long snapshot/live identities,
+a constant edit beyond 4 KiB, exact-bound and over-bound END, zero-tail reuse,
+eight compiled mutants and nine consumer-bound omission controls.
+`scripts/fixtures/rsx_fp_program_bound.c.in` selectively imports the authored
+own-fork fixture for 4,112-byte/64-constant, 4,384-byte/64-constant and
+16-KiB programs. It adapts the curated constant-payload output argument and
+uses NOP padding at the maximum byte boundary to isolate that bound from the
+separate HLSL-output capacity. Windows compiles all three generated shaders
+with actual FXC `ps_5_0` at O3. The old 4-KiB bound fails the authored full-size
+control. Fixtures contain no captured guest programs.
+
+These checks establish parser, snapshot and host-shader compilation behavior.
+The author's original-head mud-rendering and race observations remain their
+reported evidence. Corrected-head native visual parity, matched performance,
+gameplay and stable 30 FPS remain unverified.
+
 ## Prompt flip completion and latency state (#155)
 
 The opt-in GCM completion, FIFO hold and latency diagnostics are reconciled
