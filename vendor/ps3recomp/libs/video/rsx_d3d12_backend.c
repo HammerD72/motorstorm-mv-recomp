@@ -2704,6 +2704,7 @@ static void guest_sampler_note_mask(u64 ucode_hash, u32 mask);
  * decompile source, inline-CONST collection -- reads the snapshot.
  * Ring buffer: 512 concurrent live programs; verified direct-mapped index by
  * resolved offset. Render path is single-threaded like the other caches. */
+#define VP_FPSNAP_MAX 512
 /* Upper bound on one fragment program (instructions plus inline-CONST
  * slots, 16 bytes each). MotorStorm's deformable-mud terrain programs are
  * 4112..4384 bytes; at the old 4096 bound their END was never found, the
@@ -2711,9 +2712,8 @@ static void guest_sampler_note_mask(u64 ucode_hash, u32 mask);
  * the startup pipeline (pass-through VS, w=0), so near mud patches never
  * rasterized and the depth pre-pass left stale colour ("mud slabs"). */
 #define VP_FP_UCODE_MAX 16384u
-#define VP_FPSNAP_MAX 512
 typedef struct { u32 off; u32 size; u64 hash; u8 bytes[VP_FP_UCODE_MAX]; } VPFP_snap;
-static VPFP_snap s_fp_snap[VP_FPSNAP_MAX];   /* 2 MB */
+static VPFP_snap s_fp_snap[VP_FPSNAP_MAX];   /* 8 MB */
 static u32 s_fp_snap_head;                   /* ring cursor */
 static u32 s_fp_snap_cur[4096];              /* (off>>12)&4095 -> idx+1 */
 

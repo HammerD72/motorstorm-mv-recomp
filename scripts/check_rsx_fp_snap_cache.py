@@ -66,12 +66,12 @@ static void tail_zero_everywhere(void){
 }
 static void identity_holds(u32 idx,u32 off){
     const VPFP_snap*s=vp_fp_snap_entry(idx,off);CHECK(s);
-    CHECK(s->hash==rsx_fp_structural_hash(s->bytes,4096,0));
-    CHECK(s->size==rsx_fp_program_size(s->bytes,4096));
+    CHECK(s->hash==rsx_fp_structural_hash(s->bytes,VP_FP_UCODE_MAX,0));
+    CHECK(s->size==rsx_fp_program_size(s->bytes,VP_FP_UCODE_MAX));
     CHECK(!memcmp(s->bytes,vm_base+off,s->size));
 }
 int main(void){
-    vm_base=calloc(1,1u<<20);CHECK(vm_base);
+    vm_base=calloc(1,2u<<20);CHECK(vm_base);
     /* One-walk hash and extent agree with the separate walks. */
     for(unsigned n=1;n<=96;n+=5)for(unsigned k=0;k<4;k++){
         u8 buf[4096]={0};u32 len=program(buf,n,k,n);
@@ -98,17 +98,17 @@ int main(void){
     u32 b=vp_fp_snap_for(off|1u);CHECK(b&&b!=a);identity_holds(b,off);
     CHECK(s_fp_snap[b-1].hash==s_fp_snap[a-1].hash);
     /* Structural rewrite at the same address keeps the bound program. */
-    u8 keep[4096];memcpy(keep,s_fp_snap[b-1].bytes,sizeof keep);
+    u8 keep[VP_FP_UCODE_MAX];memcpy(keep,s_fp_snap[b-1].bytes,sizeof keep);
     vm_base[off+2]^=0x10;
     CHECK(vp_fp_snap_for(off|1u)==b&&!memcmp(keep,s_fp_snap[b-1].bytes,sizeof keep));
     vm_base[off+2]^=0x10;
     /* Malformed programs (no END; a CONST slot past the window) take no slot. */
     u32 head=s_fp_snap_head;
-    u32 bad=0x80000u;for(u32 i=0;i<4096;i+=16)word(vm_base+bad+i,0x01001E00u);
+    u32 bad=0x100000u;for(u32 i=0;i<VP_FP_UCODE_MAX;i+=16)word(vm_base+bad+i,0x01001E00u);
     CHECK(vp_fp_snap_take(bad)==0&&s_fp_snap_head==head);
-    u32 edge=0x90000u;memset(vm_base+edge,0,4096);
-    for(u32 i=0;i<4096-16;i+=16){word(vm_base+edge+i,0x01001E00u);word(vm_base+edge+i+4,0x1C9DC001u);}
-    word(vm_base+edge+4096-16,0x01001E01u);word(vm_base+edge+4096-12,0x1C9DC002u);
+    u32 edge=0x110000u;memset(vm_base+edge,0,VP_FP_UCODE_MAX);
+    for(u32 i=0;i<VP_FP_UCODE_MAX-16;i+=16){word(vm_base+edge+i,0x01001E00u);word(vm_base+edge+i+4,0x1C9DC001u);}
+    word(vm_base+edge+VP_FP_UCODE_MAX-16,0x01001E01u);word(vm_base+edge+VP_FP_UCODE_MAX-12,0x1C9DC002u);
     CHECK(vp_fp_snap_take(edge)==0&&s_fp_snap_head==head);
     /* Ring reuse: long, then short programs in the same slots; tails stay zero. */
     for(unsigned round=0;round<3;round++)for(unsigned p=0;p<VP_FPSNAP_MAX;p++){
@@ -122,11 +122,11 @@ int main(void){
     u32 sz=0;u64 h=pso_identity(idx,off,&sz);
     CHECK(h==s_fp_snap[idx-1].hash&&sz==s_fp_snap[idx-1].size);
     u32 other=0xA0000u+0x1000u*3;
-    CHECK(rsx_fp_structural_hash(vm_base+other,4096,0)!=s_fp_snap[idx-1].hash);  /* distinct programs */
+    CHECK(rsx_fp_structural_hash(vm_base+other,VP_FP_UCODE_MAX,0)!=s_fp_snap[idx-1].hash);  /* distinct programs */
     h=pso_identity(idx,other,&sz);                          /* recycled: off mismatch */
-    CHECK(h==rsx_fp_structural_hash(vm_base+other,4096,0)&&sz==rsx_fp_program_size(vm_base+other,4096));
+    CHECK(h==rsx_fp_structural_hash(vm_base+other,VP_FP_UCODE_MAX,0)&&sz==rsx_fp_program_size(vm_base+other,VP_FP_UCODE_MAX));
     h=pso_identity(0,other,&sz);
-    CHECK(h==rsx_fp_structural_hash(vm_base+other,4096,0));
+    CHECK(h==rsx_fp_structural_hash(vm_base+other,VP_FP_UCODE_MAX,0));
     (void)first;
     puts("PASS one-walk hash/extent, stored snapshot identity, constant refresh, structural keep, malformed no-slot, tail-zero ring reuse, PSO identity selection");
     return 0;
