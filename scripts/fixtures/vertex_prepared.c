@@ -45,7 +45,12 @@ static void parity(rsx_vertex_fetch_batch* b,u32 vi,const char* why) {
     resolves=0;resolve_trace=0; test_fetch_calls=0; rsx_fetch_vertex_prepared(b,vi,c);rc=resolves;tc=resolve_trace;
     CHECK(memcmp(a,c,sizeof a)==0,why); CHECK(ra==rc && ta==tc,"per-element address resolution changed");
 #ifdef VERTEX_VERIFY_COUNTS
-    CHECK(test_fetch_calls==(b->count<=8?b->count:16),"constant-only slots fetched individually");
+    /* Prepared draws decode types 1..7 inline and call the scalar fetch only
+     * for other types; dense draws (>8 arrays) stay fully scalar. */
+    u64 scalar=0;
+    if(b->count>8)scalar=16;
+    else if(vm_base)for(u32 i=0;i<b->count;i++){u32 t=state.vertex_attribs[b->active[i]].type;scalar+=!(t>=1&&t<=7);}
+    CHECK(test_fetch_calls==scalar,"constant-only slots fetched individually");
 #endif
 }
 static double now(void) {

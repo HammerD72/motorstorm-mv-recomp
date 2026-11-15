@@ -56,16 +56,24 @@ for mode in [False,True]:run(exe,folder,nofreq=mode,diagnostic=True)
 print('PASS actual prepared/scalar live vertex/default/mapping parity and real call counts; both frequency modes')
 if a.mutants:
     text=source.read_text(encoding='utf-8')
-    loop='    for (u32 i = 0; i < batch->count; ++i) {\n        u32 slot = batch->active[i];\n        rsx_fetch_attrib(batch->state, (int)slot, vi, out[slot].v);\n    }'
+    loop='    if (!vm_base) return;          /* every slot keeps its constant register */\n    for (u32 i = 0; i < batch->count; ++i) {\n        const rsx_vertex_fetch_slot* s = &batch->slots[i];'
+    resolve='        const u8* p = vm_base + cellGcmResolveLocated(s->location, s->offset + ei * s->stride);'
     signature='void rsx_fetch_vertex_prepared(const rsx_vertex_fetch_batch* batch, u32 vi,\n                               rsx_vertex_value out[16])\n{'
-    mutants=[('historical-all-slots',loop,'    for (u32 i = 0; i < 16; ++i)\n        rsx_fetch_attrib(batch->state, (int)i, vi, out[i].v);','constant-only slots fetched individually'),
+    # Reuses a translation within the same 4 KiB page: exact bytes under the
+    # fixture's mapping, so only the per-element resolve control can reject it.
+    page_cache=('        static u32 page_off[16], page_ea[16], page_ok[16]; u32 off_ = s->offset + ei * s->stride; const u8* p;\n'
+                '        if (page_ok[s->slot] && (page_off[s->slot] >> 12) == (off_ >> 12) && page_off[s->slot] <= off_)\n'
+                '            p = vm_base + page_ea[s->slot] + (off_ - page_off[s->slot]);\n'
+                '        else { page_off[s->slot] = off_; page_ea[s->slot] = cellGcmResolveLocated(s->location, off_); page_ok[s->slot] = 1; p = vm_base + page_ea[s->slot]; }')
+    mutants=[('historical-all-slots',loop,'    for (u32 i = 0; i < 16; ++i)\n        rsx_fetch_attrib(batch->state, (int)i, vi, out[i].v);\n    return;\n'+loop,'constant-only slots fetched individually'),
+        ('cached-translation',resolve,page_cache,'per-element address resolution changed'),
         ('lost-defaults','memcpy(out, batch->constants, sizeof(batch->constants));','memset(out, 0, sizeof(batch->constants));','initial defaults and arrays'),
         ('cached-live-data',signature,signature+'\n    static rsx_vertex_value saved[16]; static int valid;\n    if(valid) { memcpy(out,saved,sizeof saved);return; }', 'live vertex edits lost')]
     for name,before,after,why in mutants:
         assert text.count(before)==1,(name,before)
         changed=text.replace(before,after)
         if name=='cached-live-data':
-            anchor='        rsx_fetch_attrib(batch->state, (int)slot, vi, out[slot].v);\n    }'
+            anchor='        default: /* 7: UB256 */ for (u32 k = 0; k < n; k++) o[k] = (float)p[k]; break;\n        }\n    }'
             assert changed.count(anchor)==1;changed=changed.replace(anchor,anchor+'\n    memcpy(saved,out,sizeof saved);valid=1;')
         exe,folder=build(name,changed)
         for mode in [False,True]:run(exe,folder,expected=why,nofreq=mode)
