@@ -142,6 +142,19 @@ class ExecutionProfileTests(unittest.TestCase):
     def test_surface_prompt_enabled_selection_is_recorded(self):
         self.check_surface_prompt_selection('1')
 
+    def check_async_surface_reads(self, mode):
+        with patch.dict(os.environ, {'RSX_CPU_SURFACE_ASYNC': 'inherited'}):
+            record, env = self.launch('--async-surface-reads', mode)
+        expected = '01A80500,00A80500,02A30480' if mode == '1' else None
+        self.assertEqual(env.get('RSX_CPU_SURFACE_ASYNC'), expected)
+        self.assertEqual(record['environment'].get('RSX_CPU_SURFACE_ASYNC'), expected)
+
+    def test_async_surface_reads_default_clears_inherited_list(self):
+        self.check_async_surface_reads('0')
+
+    def test_async_surface_reads_enabled_lists_race_surfaces(self):
+        self.check_async_surface_reads('1')
+
     def test_unsupported_baseline_rejects_before_pruning_or_launch(self):
         self.record['runtime_capabilities']['policy_interpreter'] = False
         self.save_record()

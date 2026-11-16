@@ -206,9 +206,13 @@ static void cpu_surface_request(u32 address,u32 bytes,void *opaque) {
  * packs it into a shadow. The reader copies its bytes from the shadow, so it
  * sees the surface as of one or two batches earlier and never waits on the
  * GPU. On the PS3 a PPU read of VRAM without a label wait likewise sees
- * whatever the RSX has finished. Meant for slowly varying feedback values
- * (MotorStorm's 64x64 HDR exposure target at offset 02A30480), never for data
- * the game synchronises on. Reads before the first copy is published, or
+ * whatever the RSX has finished. Meant for feedback surfaces the game samples
+ * rather than synchronises on. In MotorStorm races these are the 2048x2048
+ * deformation surface (offset 01A80500, whose first pixel the main thread
+ * reads hundreds of times a second), a 1280x720 surface it probes at varying
+ * points (00A80500) and the 64x64 HDR exposure target (02A30480); the
+ * launcher's --async-surface-reads 1 lists those three. Never list data the
+ * game synchronises on. Reads before the first copy is published, or
  * reaching outside the surface, take the coherent path.
  * RSX_CPU_SURFACE_ASYNC_LOG=1 prints served/fallback/copy counts. */
 #define CPU_SURFACE_ASYNC_MAX 4

@@ -10,6 +10,9 @@ from native_resource_guard import commit_reserve, physical_reserve, limits, firs
 class Memory(ctypes.Structure):
     _fields_=[('length',ctypes.c_ulong),('load',ctypes.c_ulong)]+[(x,ctypes.c_ulonglong) for x in ('total_phys','available_phys','total_commit','available_commit','total_virtual','available_virtual','available_extended')]
 
+# RSX surface offsets served from the last completed copy by --async-surface-reads 1.
+ASYNC_SURFACE_READS='01A80500,00A80500,02A30480'
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--seconds',type=int,default=600)
     ap.add_argument('--executable',type=Path,help='Executable with its adjacent build_identity.json')
@@ -33,6 +36,7 @@ def main():
     ap.add_argument('--d3d12-debug',choices=('default','0','1'),default='default',help='Explicit API validation selection; default preserves build policy and assertions stay enabled')
     ap.add_argument('--profile-textures',action='store_true',help='Existing aggregate DX12 texture phases and cache outcomes; adds timing overhead')
     ap.add_argument('--profile-cpu-surfaces',action='store_true',help='Existing per-request CPU surface read queue, match, copy and fence diagnostics; adds timing and logging overhead')
+    ap.add_argument('--async-surface-reads',choices=('0','1'),default='0',help='Serve CPU reads of the race feedback surfaces (deformation 01A80500, 1280x720 00A80500, exposure 02A30480) from the last completed copy (default 0: coherent reads)')
     ap.add_argument('--cpu-surface-prompt',choices=('default','0','1'),default='default',help='Prompt disjoint CPU surface reads; default preserves backend policy, 0 uses batch-end service')
     ap.add_argument('--texture-retention',choices=('0','1'),default='0',help='Explicit reference or bounded persistent DX12 texture cache')
     ap.add_argument('--texture-cache-mib',type=int,default=512,help='Default+upload allocation target, 0..4096 MiB; live batch pins may exceed it')
@@ -118,6 +122,7 @@ def main():
     if args.profile_cpu_surfaces:
         env['RSX_CPU_SURFACE_PROFILE']='1'
     if args.cpu_surface_prompt != 'default':env['RSX_CPU_SURFACE_PROMPT']=args.cpu_surface_prompt
+    if args.async_surface_reads=='1':env['RSX_CPU_SURFACE_ASYNC']=ASYNC_SURFACE_READS
     env.update(RSX_TEXTURE_RETENTION=args.texture_retention,RSX_TEXTURE_CACHE_MIB=str(args.texture_cache_mib),RSX_TEX_MIPS=args.texture_mips)
     (out/'pad.txt').write_text('0\n')
     if args.capture_menu or args.menu_replay:
