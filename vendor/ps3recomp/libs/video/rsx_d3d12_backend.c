@@ -7157,6 +7157,18 @@ static void record_batch_retire(void)
         abort();
     }
 }
+/* RSX_DRAIN_OVERLAP=1 skips the post-drain GPU wait, so the next batch is
+ * recorded while this one runs -- as the batch after a present already is.
+ * At most one batch stays in flight: the per-draw upload streams alternate
+ * parity halves at every render_frame, and the next drain (and render_frame's
+ * own leading retirement) retires this batch before the allocator, SRV windows
+ * or tables are reused. Off by default: the drain stays fully serialized. */
+static int drain_overlap(void)
+{
+    static int on = -1;
+    if (on < 0) { const char* e = rsx_env_once("RSX_DRAIN_OVERLAP"); on = e && e[0] == '1' && !e[1]; }
+    return on;
+}
 static void submit_record_capacity(void* context, int present)
 {
     (void)context;
@@ -7165,7 +7177,7 @@ static void submit_record_capacity(void* context, int present)
     int saved = s_present_this_frame;
     s_present_this_frame = 0;
     render_frame();
-    record_batch_retire();
+    if (!drain_overlap()) record_batch_retire();
     s_present_this_frame = saved;
 }
 /* A queued CPU read needs a recorded, unsubmitted write: submit the batch now
