@@ -1,4 +1,4 @@
-"""Check FACING HLSL on every host and actual WARP shader draws on Windows."""
+"""Check FACING HLSL and Windows WARP/hardware draws, with explicit WARP-only selection."""
 
 import argparse
 import hashlib
@@ -17,9 +17,15 @@ CASE = '    case 0xE: return "(input.rsx_front ? float4(1,1,1,1) : float4(-1,-1,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler")
+    parser.add_argument(
+        "--warp-only",
+        action="store_true",
+        help="Run WARP GPU checks without the hardware adapter",
+    )
     args = parser.parse_args()
     if os.name == "nt" and not args.compiler:
         from project import build_environment
+
         os.environ.update(build_environment())
     compiler = args.compiler or os.environ.get("MV_CLANG") or os.environ.get("CC")
     compiler = compiler or ("clang-cl" if os.name == "nt" else "cc")
@@ -150,28 +156,36 @@ def main():
             ]
             result = execute(command, label + "-gpu-build")
             assert not result.returncode, result.stdout + result.stderr
-            result = execute([str(exe)], label + "-gpu-run")
-            if label == "production":
-                assert (
-                    result.returncode == 0 and "checks=4 failures=0" in result.stdout
-                ), result.stdout + result.stderr
-            else:
-                assert result.returncode == 1 and "FAIL" in result.stdout, (
-                    result.stdout + result.stderr
+            for hardware in [False] if args.warp_only else [False, True]:
+                adapter = "hardware" if hardware else "warp"
+                options = ["--hardware"] if hardware else []
+                result = execute(
+                    [str(exe), *options], label + "-gpu-" + adapter + "-run"
                 )
+                if label == "production":
+                    assert (
+                        result.returncode == 0
+                        and "checks=4 failures=0" in result.stdout
+                    ), result.stdout + result.stderr
+                else:
+                    assert result.returncode == 1 and "FAIL" in result.stdout, (
+                        result.stdout + result.stderr
+                    )
     report = {
         "commands": commands,
         "decompiler_sha256": hashlib.sha256(source.encode()).hexdigest(),
         "non_facing_byte_equal": True,
         "gpu_warp": os.name == "nt",
+        "gpu_hardware": os.name == "nt" and not args.warp_only,
+        "warp_only": args.warp_only,
     }
     (OUT / "result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(
         "PASS FACING source and zero-input control, unchanged plain HLSL"
         + (
-            "; WARP four checks"
+            ", WARP four checks"
             if os.name == "nt"
-            else "; GPU coverage runs on Windows"
+            else ", GPU coverage runs on Windows"
         )
     )
 
