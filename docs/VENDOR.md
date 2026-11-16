@@ -1,3 +1,32 @@
+## FACING and full polygon-offset identity (#320)
+
+The reusable port is own-fork modular commit
+`e6554ae0c44f7cf941989f0d8d357551fa1cb36e` in
+`robbe1912/ps3recomp`. It preserves the toolkit's distinct colour-input saturation
+and the curated decompiler's existing colour behavior. FACING input `0xE` uses
+`SV_IsFrontFace` with signed unit vectors; programs using other inputs retain
+byte-identical HLSL in the authored control. Winding remains part of the raster
+key with face culling disabled.
+
+Regression-first checks found that the proposal's packed polygon key erased a
+factor of `0.015625` and reduced units `65536` to `2047`. The correction carries
+both guest float bit patterns in a separate 64-bit key through draw capture,
+PSO lookup/storage, prefetch and merge equality. Rasterizer slope keeps its float
+bits. D24 integer bias uses nearest-integer conversion with halves away from
+zero and the signed 32-bit API limits; NaN units map to zero. Disabled fill
+has zero effective key. The recorded raw key keeps distinct guest values even
+when integer API conversion yields the same bias.
+
+Authored tests exercise twelve range/precision cases, exact key bits and cache
+separation, five compiled mutants and six wiring omission controls. Windows
+WARP executes four front/back checks under both windings and rejects zero
+FACING. Portable production-decompiler, plain-HLSL and UBSan descriptor/key
+controls pass on Linux. The checked Windows SDK suite passes 45 native tests;
+its capacity and shader-owner models include the new state member. Full SDK
+CI also exercises the two new test entry points. Original author native bridge
+observations remain original-revision evidence. Corrected native-title visual
+parity, performance, minimum 30 FPS and interpreter removal remain unverified.
+
 # Vendor provenance and upstream
 
 ## Prompt CPU surface reads (#319)

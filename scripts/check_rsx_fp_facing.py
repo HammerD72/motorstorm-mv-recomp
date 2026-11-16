@@ -1,56 +1,180 @@
-"""Render the FACING input (0xE) through the production decompiler, plus a
-control where FACING decodes as zero (the old behaviour) and must fail."""
+"""Check FACING HLSL on every host and actual WARP shader draws on Windows."""
+
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VIDEO = ROOT / 'vendor/ps3recomp/libs/video'
+VIDEO = ROOT / "vendor/ps3recomp/libs/video"
+OUT = ROOT / "build/self-tests/fp-facing"
 CASE = '    case 0xE: return "(input.rsx_front ? float4(1,1,1,1) : float4(-1,-1,-1,-1))";\n'
-
-
-def build(env, out, source, name):
-    common = [env['MV_CLANG'], '/nologo', '/D_CRT_SECURE_NO_WARNINGS',
-              '/I' + str(VIDEO), '/I' + str(ROOT / 'vendor/ps3recomp/include')]
-    obj, exe = out / (name + '.obj'), out / (name + '.exe')
-    subprocess.run(common + ['/c', str(source), '/Fo' + str(obj)],
-                   cwd=out, env=env, check=True, timeout=120)
-    subprocess.run(common + ['/std:c++17', '/EHsc',
-                   str(ROOT / 'scripts/fixtures/rsx_fp_facing_gpu.cpp'),
-                   str(obj), '/Fe' + str(exe), '/link',
-                   'd3d11.lib', 'dxgi.lib', 'd3dcompiler.lib'],
-                   cwd=out, env=env, check=True, timeout=120)
-    return exe
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--warp-only', action='store_true')
+    parser.add_argument("--compiler")
     args = parser.parse_args()
-    if os.name != 'nt':
-        raise SystemExit('FACING GPU test requires Windows')
-    from project import build_environment
-    env = build_environment()
-    source = (VIDEO / 'rsx_fp_decompiler.c').read_text(encoding='utf-8')
-    assert source.count(CASE) == 1, 'FACING case not found'
-    with tempfile.TemporaryDirectory(prefix='fp-facing-') as directory:
-        out = Path(directory)
-        control = out / 'rsx_fp_decompiler_zero_facing.c'
-        control.write_text(source.replace(CASE, ''), encoding='utf-8')
-        actual = build(env, out, VIDEO / 'rsx_fp_decompiler.c', 'facing')
-        zero = build(env, out, control, 'zero')
-        for hardware in ([False] if args.warp_only else [False, True]):
-            label = 'hardware' if hardware else 'WARP'
-            flag = ['--hardware'] if hardware else []
-            result = subprocess.run([str(actual), *flag], capture_output=True, text=True, timeout=40)
-            assert result.returncode == 0 and 'checks=4 failures=0' in result.stdout, result
-            print(label + ': checks=4 failures=0 (FACING +1 front, -1 back, CW and CCW)')
-            result = subprocess.run([str(zero), *flag], capture_output=True, text=True, timeout=40)
-            assert result.returncode == 1 and 'FAIL' in result.stdout, result
-            print(label + ' control (FACING decoded as zero): rejected')
+    if os.name == "nt" and not args.compiler:
+        from project import build_environment
+        os.environ.update(build_environment())
+    compiler = args.compiler or os.environ.get("MV_CLANG") or os.environ.get("CC")
+    compiler = compiler or ("clang-cl" if os.name == "nt" else "cc")
+    compiler = shutil.which(compiler) or compiler
+    msvc = Path(compiler).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe")
+    OUT.mkdir(parents=True, exist_ok=True)
+    source = (VIDEO / "rsx_fp_decompiler.c").read_text(encoding="utf-8")
+    assert source.count(CASE) == 1
+    baseline = OUT / "rsx_fp_decompiler.c"
+    baseline.write_text(source.replace(CASE, ""), encoding="utf-8")
+    commands = []
+
+    def execute(command, label):
+        result = subprocess.run(
+            command, cwd=OUT, capture_output=True, text=True, timeout=120
+        )
+        (OUT / (label + ".log")).write_text(
+            result.stdout + result.stderr, encoding="utf-8"
+        )
+        commands.append(
+            {"label": label, "command": command, "returncode": result.returncode}
+        )
+        return result
+
+    objects = {}
+    for label, path in (
+        ("production", VIDEO / "rsx_fp_decompiler.c"),
+        ("zero", baseline),
+    ):
+        obj = OUT / (label + (".obj" if msvc else ".o"))
+        if msvc:
+            command = [
+                compiler,
+                "/nologo",
+                "/std:c17",
+                "/O2",
+                "/UNDEBUG",
+                "/D_CRT_SECURE_NO_WARNINGS",
+                "/I" + str(VIDEO),
+                "/I" + str(ROOT / "vendor/ps3recomp/include"),
+                "/c",
+                str(path),
+                "/Fo" + str(obj),
+            ]
+        else:
+            command = [
+                compiler,
+                "-std=c17",
+                "-O2",
+                "-UNDEBUG",
+                "-I" + str(VIDEO),
+                "-I" + str(ROOT / "vendor/ps3recomp/include"),
+                "-c",
+                str(path),
+                "-o",
+                str(obj),
+            ]
+        result = execute(command, label + "-compile")
+        assert not result.returncode, result.stdout + result.stderr
+        objects[label] = obj
+
+    plain = []
+    fixture = ROOT / "scripts/fixtures/rsx_fp_facing.c"
+    for label, obj in objects.items():
+        exe = OUT / (label + (".exe" if os.name == "nt" else ""))
+        if msvc:
+            command = [
+                compiler,
+                "/nologo",
+                "/O2",
+                "/UNDEBUG",
+                "/D_CRT_SECURE_NO_WARNINGS",
+                "/I" + str(VIDEO),
+                "/I" + str(ROOT / "vendor/ps3recomp/include"),
+                str(fixture),
+                str(obj),
+                "/Fe" + str(exe),
+            ]
+        else:
+            command = [
+                compiler,
+                "-std=c17",
+                "-O2",
+                "-UNDEBUG",
+                "-I" + str(VIDEO),
+                "-I" + str(ROOT / "vendor/ps3recomp/include"),
+                str(fixture),
+                str(obj),
+                "-lm",
+                "-o",
+                str(exe),
+            ]
+        result = execute(command, label + "-link")
+        assert not result.returncode, result.stderr
+        result = execute([str(exe), "--plain"], label + "-plain")
+        assert not result.returncode
+        plain.append(result.stdout)
+        result = execute([str(exe)], label + "-run")
+        assert (result.returncode == 0) == (label == "production"), (
+            result.stdout + result.stderr
+        )
+    assert plain[0] == plain[1], "non-FACING program changed"
+
+    if os.name == "nt":
+        running = subprocess.check_output(
+            ["tasklist", "/FI", "IMAGENAME eq ms1_recomp.exe", "/FO", "CSV"], text=True
+        )
+        assert '"ms1_recomp.exe"' not in running.lower(), "native title owns GPU host"
+        for label, obj in objects.items():
+            exe = OUT / (label + "-gpu.exe")
+            command = [
+                compiler,
+                "/nologo",
+                "/std:c++17",
+                "/EHsc",
+                "/O2",
+                "/UNDEBUG",
+                "/D_CRT_SECURE_NO_WARNINGS",
+                "/I" + str(VIDEO),
+                "/I" + str(ROOT / "vendor/ps3recomp/include"),
+                str(ROOT / "scripts/fixtures/rsx_fp_facing_gpu.cpp"),
+                str(obj),
+                "/Fe" + str(exe),
+                "/link",
+                "d3d11.lib",
+                "dxgi.lib",
+                "d3dcompiler.lib",
+            ]
+            result = execute(command, label + "-gpu-build")
+            assert not result.returncode, result.stdout + result.stderr
+            result = execute([str(exe)], label + "-gpu-run")
+            if label == "production":
+                assert (
+                    result.returncode == 0 and "checks=4 failures=0" in result.stdout
+                ), result.stdout + result.stderr
+            else:
+                assert result.returncode == 1 and "FAIL" in result.stdout, (
+                    result.stdout + result.stderr
+                )
+    report = {
+        "commands": commands,
+        "decompiler_sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "non_facing_byte_equal": True,
+        "gpu_warp": os.name == "nt",
+    }
+    (OUT / "result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(
+        "PASS FACING source and zero-input control, unchanged plain HLSL"
+        + (
+            "; WARP four checks"
+            if os.name == "nt"
+            else "; GPU coverage runs on Windows"
+        )
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
