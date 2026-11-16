@@ -2439,10 +2439,13 @@ static u8 gl_blend_op_d3d(u32 e)
  * plain 1/0 before any register arrives, so treat those defaults as BACK/CW. */
 static u32 rsx_cull_key(const rsx_state* st)
 {
-    if (!st || !st->cull_face_enable) return 0;
-    u32 k = 1u;
+    if (!st) return 0;
+    /* The winding bit is kept with culling off too: SV_IsFrontFace (the FP
+     * FACING input) depends on it on double-sided draws. */
+    u32 k = (st->front_face == 0x0901u) ? 4u : 0u;                      /* CCW */
+    if (!st->cull_face_enable) return k;
+    k |= 1u;
     if (st->cull_face == 0x0404u || st->cull_face == 0x0408u) k |= 2u;  /* FRONT */
-    if (st->front_face == 0x0901u) k |= 4u;                             /* CCW */
     return k;
 }
 
