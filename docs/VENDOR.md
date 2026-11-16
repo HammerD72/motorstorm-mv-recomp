@@ -15,7 +15,7 @@ This curated queue retains its existing byte-read interface.
 
 The authored serial fixture checks adjacency, overlap, splice order/tail,
 submission, replay, owner, disabled, overflow and unknown-height behaviour.
-Six compiled omission controls must fail. The atomic declaration is checked
+Six compiled mutants must fail. The atomic declaration is checked
 at compile time. Four real clients enqueue 256 requests while the renderer
 services them, checking pending-write admission and exact completion.
 Windows and Linux source fixtures pass. The toolkit snapshot GPU fixture
@@ -32,6 +32,34 @@ which enables prompt service. Value 0 selects batch-end/idle service.
 The author's three-pair timings and driving observations describe the
 original revision stacked on original #318. Corrected-head native visual
 parity, matched performance and minimum 30 FPS remain unverified.
+
+## Prepared vertex declarations and indexed reuse (#318)
+
+The shared vertex reader and two-way indexed strip/fan cache were validated
+first in the existing `robbe1912/ps3recomp` fork on
+`codex/vertex-prepared-declarations`, production commit
+`7bd90b7aebd35bc92f95663b33680bf97d45cc7f` and compiler-selection follow-up
+`aabf3afcb98707e088b37280a45d238a842b2a75`. Windows and Ubuntu modular jobs
+pass before integration into `combined`. The curated vertex reader/header
+are byte-identical to that implementation. The fork retains its older
+scalar D3D12 caller while this backend uses its existing prepared caller.
+
+Preparation decodes supported declarations once for up to eight active
+arrays. Element address resolution and guest-byte reads remain live.
+Full-width unknown attribute types retain the scalar decoder, and the
+immutable `VP_NOFREQ` launch setting has worker-local cache state. The
+callback-local 64-entry, two-way cache retains expanded vertex bytes only
+within one indexed strip/fan upload.
+
+Authored checks cover full-width unknown types, formats, frequency modes,
+defaults, declaration changes, live memory/mapping changes and eight
+simultaneous scalar/prepared callers. Six compiled mutants include the
+historical type truncation and shared selector state. Actual extracted
+indexed uploads preserve strip/fan bytes, restart, split/state changes and
+bounded fetch counts. The old three-entry cache fails that count control.
+Windows and Linux local tests pass. Author-provided three-pair performance
+measurements describe the original revision. No new matched native timing,
+minimum 30 FPS, graphics parity or interpreter-removal acceptance is claimed.
 
 ## D3D12 fragment-program bound (#317)
 
