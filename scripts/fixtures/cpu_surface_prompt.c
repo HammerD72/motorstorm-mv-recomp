@@ -41,7 +41,7 @@ static void queue(unsigned i,u32 address,u32 bytes){
 static unsigned queued(void){unsigned n=0;for(CpuSurfaceRequest *r=s_cpu_surface_head;r;r=r->next)n++;return n;}
 static void reset(void){
     s_cpu_surface_head=s_cpu_surface_tail=NULL;served_count=reads=0;s_cpu_surface_recording=0;
-    current_thread=2;s_cpu_surface_thread=2;s_cpu_surface_prompt=1;cpu_surface_batch_submitted();
+    current_thread=2;s_cpu_surface_thread=2;s_cpu_surface_prompt=1;s_cpu_surface_flush=1;cpu_surface_batch_submitted();
 }
 int main(void){
     /* 1. Only the read overlapping a recorded draw's target stays queued, in order. */
@@ -80,6 +80,20 @@ int main(void){
     REQUIRE(s_cpu_surface_pending_count==1,"contained ranges are not duplicated");
     cpu_surface_pending_add(0x70000,0x100,9);REQUIRE(s_cpu_surface_pending_count==2,"a larger range is recorded");
     reset();lock_calls=0;cpu_surface_service_ready();REQUIRE(!reads && !lock_calls,"empty queue takes no lock");
+    /* 4. Early submission: wanted exactly when a queued read needs a pending write. */
+    reset();lock_calls=0;cpu_surface_pending_add(0x10000,0x100,4);
+    REQUIRE(!cpu_surface_flush_wanted(0) && !lock_calls,"empty queue: no early submission, no lock");
+    queue(0,0x20000,2);queue(1,0x0FFFE,2);
+    REQUIRE(!cpu_surface_flush_wanted(0),"reads clear of (and adjacent to) pending writes need no submission");
+    queue(2,0x103FE,2);
+    REQUIRE(cpu_surface_flush_wanted(0) && cpu_surface_flush_wanted(1),"a read behind others that needs a pending write asks for submission");
+    REQUIRE(!reads && queued()==3 && s_cpu_surface_tail==&requests[2] && !locks_held,"asking serves and dequeues nothing");
+    s_cpu_surface_recording=1;REQUIRE(!cpu_surface_flush_wanted(0),"never while render_frame replays");
+    s_cpu_surface_recording=0;current_thread=7;REQUIRE(!cpu_surface_flush_wanted(1),"only the renderer service thread submits");
+    current_thread=2;s_cpu_surface_flush=0;REQUIRE(!cpu_surface_flush_wanted(0),"RSX_CPU_SURFACE_FLUSH=0 keeps the frame-end wait");
+    s_cpu_surface_flush=1;cpu_surface_batch_submitted();REQUIRE(!cpu_surface_flush_wanted(0),"nothing pending after submission");
+    for(u32 i=0;i<=CPU_SURFACE_PENDING_MAX;i++)cpu_surface_pending_add(0x40000000u+i*0x1000u,0x100,4);
+    REQUIRE(cpu_surface_flush_wanted(0),"overflowed pending set submits");
     puts("PASS: prompt CPU surface service: disjoint reads early, overlapping reads queued in order, submit reset, guards");
     return 0;
 }

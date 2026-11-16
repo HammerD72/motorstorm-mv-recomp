@@ -22,6 +22,15 @@ def main():
     body=backend[backend.index('static void render_frame(void)'):]
     body=body[:body.index('\nstatic ')]
     assert body.index('submit_recorded_commands();')<body.index('cpu_surface_batch_submitted();')<body.index('cpu_surface_frame_complete();'),'pending writes reset only after the batch is submitted'
+    assert 'RSX_CPU_SURFACE_FLUSH' in init
+    flush=backend[backend.index('static void cpu_surface_flush_recorded'):backend.index('static void ensure_draw_record_capacity')]
+    assert 's_d3d.draw_count && cpu_surface_flush_wanted(at_pump)' in flush and 'submit_record_capacity(NULL, 0);' in flush,'early submission takes the capacity-drain path'
+    capacity=backend[backend.index('static void ensure_draw_record_capacity'):]
+    capacity=capacity[:capacity.index('\nstatic ')]
+    assert capacity.index('cpu_surface_flush_recorded(0);')<capacity.index('rsx_record_batch_room('),'submit at a draw boundary, before the next record'
+    pump=backend[backend.index('int rsx_d3d12_backend_pump_messages(void)'):]
+    pump=pump[:pump.index('\n}')]
+    assert pump.index('cpu_surface_flush_recorded(1);')<pump.index('cpu_surface_service();'),'idle pump submits before it serves'
     def compose(block, template):
         text=template
         for marker,value in [('DECLARATIONS',declarations),('HELPERS',helper),('PROMPT',block)]:
@@ -50,7 +59,11 @@ def main():
              ('no-submit-reset','    s_cpu_surface_pending_count=0;s_cpu_surface_pending_overflow=0;\n','    (void)0;\n'),
              ('stale-tail','    s_cpu_surface_tail=kept;\n','    (void)kept;\n'),
              ('serves-during-replay','    if(s_cpu_surface_recording)return;',''),
-             ('ignores-overflow','    if(s_cpu_surface_pending_overflow)return 1;\n','')]
+             ('ignores-overflow','    if(s_cpu_surface_pending_overflow)return 1;\n',''),
+             ('flush-ignores-overlap','wanted=cpu_surface_pending_overlaps(request->address,request->bytes);','wanted=1;'),
+             ('flush-head-only','request && !wanted;request=request->next)','request && !wanted;request=NULL)'),
+             ('flush-during-replay','if(!s_cpu_surface_flush || s_cpu_surface_recording)return 0;','if(!s_cpu_surface_flush)return 0;'),
+             ('flush-any-thread','if(InterlockedCompareExchange(&s_cpu_surface_thread,0,0)!=(LONG)GetCurrentThreadId())return 0;','')]
     for name,before,after in mutants:
         assert prompt.count(before)==1,(name,before)
         bad=build(name,prompt.replace(before,after))
@@ -58,5 +71,5 @@ def main():
         print('PASS mutant '+name+' rejected: '+bad.stderr.strip().splitlines()[-1])
     assert 'atomic_load_explicit(&s_cpu_surface_head,memory_order_acquire)' in prompt
     (out/'result.json').write_text(json.dumps({'commands':results,'mutants':[m[0] for m in mutants],'concurrent_requests':256},indent=2))
-    print('PASS: prompt CPU surface service and wiring ('+str(len(mutants))+' mutants rejected)');return 0
+    print('PASS: prompt CPU surface service, early submission and wiring ('+str(len(mutants))+' mutants rejected)');return 0
 if __name__=='__main__':sys.exit(main())
