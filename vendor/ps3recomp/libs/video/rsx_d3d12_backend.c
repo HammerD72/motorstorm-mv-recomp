@@ -7178,6 +7178,17 @@ static void record_batch_retire(void)
         abort();
     }
 }
+/* RSX_DRAIN_OVERLAP=1 skips the post-drain GPU wait, so the next batch is
+ * recorded while this one runs -- as the batch after a present already is.
+ * At most one batch stays in flight: the per-draw upload streams alternate
+ * parity halves at every render_frame, and the next drain (and render_frame's
+ * own leading retirement) retires this batch before the allocator, SRV windows
+ * or tables are reused. Off by default: the drain stays fully serialized. */
+static int drain_overlap(void)
+{
+    const char* value = rsx_env_once("RSX_DRAIN_OVERLAP");
+    return value && value[0] == '1' && !value[1];
+}
 static void submit_record_capacity(void* context, int present)
 {
     (void)context;
@@ -7186,11 +7197,19 @@ static void submit_record_capacity(void* context, int present)
     int saved = s_present_this_frame;
     s_present_this_frame = 0;
     render_frame();
-    record_batch_retire();
+    if (!drain_overlap()) record_batch_retire();
     s_present_this_frame = saved;
+}
+/* A queued CPU read needs a recorded, unsubmitted write: submit the batch now
+ * (same path as a capacity drain) so the read is served at its completion. */
+static void cpu_surface_flush_recorded(int at_pump)
+{
+    if (cpu_surface_flush_wanted(at_pump) && s_d3d.initialized && s_d3d.draw_count)
+        submit_record_capacity(NULL, 0);
 }
 static void ensure_draw_record_capacity(void)
 {
+    cpu_surface_flush_recorded(0);
     if (!rsx_record_batch_room(&s_d3d.draw_count, MAX_DRAWS, NULL, submit_record_capacity)) {
         fprintf(stderr, "[D3D12] Record capacity drain failed (count=%u)\n", s_d3d.draw_count);
         abort();
@@ -8888,6 +8907,7 @@ void rsx_d3d12_backend_shutdown(void)
 
 int rsx_d3d12_backend_pump_messages(void)
 {
+    cpu_surface_flush_recorded(1);
     cpu_surface_service();
     MSG msg;
     while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {

@@ -1,3 +1,5 @@
+# Vendor provenance and upstream
+
 ## FACING and full polygon-offset identity (#320)
 
 The reusable port is own-fork modular commit
@@ -27,7 +29,46 @@ CI also exercises the two new test entry points. Original author native bridge
 observations remain original-revision evidence. Corrected native-title visual
 parity, performance, minimum 30 FPS and interpreter removal remain unverified.
 
-# Vendor provenance and upstream
+## Early submission for pending CPU reads (#321)
+
+The reusable correction is own-fork modular commit
+`1e31a4b299b56a56adbd92aabdae914275ac3414` on
+`codex/cpu-surface-early-submit`. It submits a recorded batch through the
+existing nonpresenting capacity path when a queued regular read overlaps a
+pending colour write. The draw-boundary and idle-pump hooks retain the existing
+readback, fence and completion path.
+
+Regression-first probes rejected recording-state access before renderer-owner
+validation and GPU-state access before that validation. The correction checks
+the atomic queue hint and renderer owner before recording state, then evaluates
+the flush decision before initialized/draw-count fields. The overlap selector
+uses the existing immutable environment cache.
+
+The curated capacity path remains serialized by default. `RSX_DRAIN_OVERLAP=1`
+retains pre-drain retirement and permits recording into the other upload parity
+while the submitted batch executes. Subsequent retirement still checks actual
+fence completion and device state. The toolkit already used overlapped capacity
+drains, so its port preserves that policy. Its snapshot-enabled transport keeps
+the snapshot and queued suffix behind their owned FIFO boundary in both early
+service and flush selection. The shared checker conditionally exercises that
+transport with fourteen mutants, while this byte-read interface has twelve.
+
+Actual extracted producer/consumer controls cover overlap, adjacency, queue
+tail/order, replay, foreign callers and empty batches. Four clients complete
+256 real threaded requests. Retirement controls cover both frame indices,
+serialized/overlapped modes and error paths. Full checked backend compilation,
+Windows checked SDK tests, authored WARP snapshot tests and portable Linux
+controls passed. Hosted SDK validation passed on Windows, Linux and macOS.
+All seven modular workflows and all nine subsequent combined workflows passed
+on the exact source, which is published on the existing own-fork `combined`
+branch at `1e31a4b299b56a56adbd92aabdae914275ac3414`.
+
+`run.py --cpu-surface-flush default|0|1` and
+`--drain-overlap default|0|1` admit and record the switches after inherited
+RSX diagnostics are cleared. Five actual-launcher tests cover defaults,
+both explicit values and independent mixed settings. Author measurements remain
+original-revision evidence. Corrected native visuals, matched performance,
+minimum 30 FPS and interpreter removal remain unverified.
 
 ## Prompt CPU surface reads (#319)
 
