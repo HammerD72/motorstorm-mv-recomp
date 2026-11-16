@@ -271,13 +271,15 @@ static void cpu_surface_service_ready(void) {
 static int s_cpu_surface_flush;
 static unsigned long long s_cpu_surface_flushes[2];
 static int cpu_surface_flush_wanted(int at_pump) {
-    if(!s_cpu_surface_flush || s_cpu_surface_recording)return 0;
+    if(!s_cpu_surface_flush)return 0;
     if(!atomic_load_explicit(&s_cpu_surface_head,memory_order_acquire))return 0;   /* unlocked hint, as in service_ready */
     if(InterlockedCompareExchange(&s_cpu_surface_thread,0,0)!=(LONG)GetCurrentThreadId())return 0;
+    if(s_cpu_surface_recording)return 0;
     int wanted=0;
     AcquireSRWLockExclusive(&s_cpu_surface_lock);
-    for(CpuSurfaceRequest *request=s_cpu_surface_head;request && !wanted;request=request->next)
+    for(CpuSurfaceRequest *request=s_cpu_surface_head;request && !wanted;request=request->next) {
         wanted=cpu_surface_pending_overlaps(request->address,request->bytes);
+    }
     ReleaseSRWLockExclusive(&s_cpu_surface_lock);
     if(wanted && s_cpu_surface_profile && !(++s_cpu_surface_flushes[at_pump?1:0]&63))
         fprintf(stderr,"[CPUSURFACE_FLUSH] draw=%llu pump=%llu\n",s_cpu_surface_flushes[0],s_cpu_surface_flushes[1]);

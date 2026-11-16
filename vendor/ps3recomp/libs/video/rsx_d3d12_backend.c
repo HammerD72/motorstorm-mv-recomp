@@ -7165,9 +7165,8 @@ static void record_batch_retire(void)
  * or tables are reused. Off by default: the drain stays fully serialized. */
 static int drain_overlap(void)
 {
-    static int on = -1;
-    if (on < 0) { const char* e = rsx_env_once("RSX_DRAIN_OVERLAP"); on = e && e[0] == '1' && !e[1]; }
-    return on;
+    const char* value = rsx_env_once("RSX_DRAIN_OVERLAP");
+    return value && value[0] == '1' && !value[1];
 }
 static void submit_record_capacity(void* context, int present)
 {
@@ -7184,7 +7183,7 @@ static void submit_record_capacity(void* context, int present)
  * (same path as a capacity drain) so the read is served at its completion. */
 static void cpu_surface_flush_recorded(int at_pump)
 {
-    if (s_d3d.initialized && s_d3d.draw_count && cpu_surface_flush_wanted(at_pump))
+    if (cpu_surface_flush_wanted(at_pump) && s_d3d.initialized && s_d3d.draw_count)
         submit_record_capacity(NULL, 0);
 }
 static void ensure_draw_record_capacity(void)
