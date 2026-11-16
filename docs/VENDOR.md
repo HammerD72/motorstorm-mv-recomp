@@ -29,7 +29,9 @@ tail/order, replay, foreign callers and empty batches. Four clients complete
 256 real threaded requests. Retirement controls cover both frame indices,
 serialized/overlapped modes and error paths. Full checked backend compilation,
 Windows checked SDK tests, authored WARP snapshot tests and portable Linux
-controls passed. Hosted SDK validation of the modular source remains pending.
+controls passed. Hosted SDK validation passed on Windows, Linux and macOS. All seven modular
+workflows passed on the exact source, which was fast-forwarded into the existing
+own-fork `combined` branch at `1e31a4b299b56a56adbd92aabdae914275ac3414`.
 
 `run.py --cpu-surface-flush default|0|1` and
 `--drain-overlap default|0|1` admit and record the switches after inherited
