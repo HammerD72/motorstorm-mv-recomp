@@ -2436,17 +2436,43 @@ static u8 gl_blend_op_d3d(u32 e)
  * bit0 = cull enabled, bit1 = cull FRONT (else BACK), bit2 = front face is CCW.
  * RSX/GL enums: CULL_FACE FRONT=0x0404 BACK=0x0405 FRONT_AND_BACK=0x0408;
  * FRONT_FACE CW=0x0900 CCW=0x0901. rsx_commands seeds cull_face/front_face with
- * plain 1/0 before any register arrives, so treat those defaults as BACK/CW. */
+ * plain 1/0 before any register arrives, so treat those defaults as BACK/CW.
+ * The rasterizer's polygon offset rides the same key (it is PSO state too):
+ * bit3 = fill offset on, bits 4-15 = units as a signed integer (D3D DepthBias
+ * is an integer count of the depth format's resolvable steps, the same unit
+ * as GL/RSX units), bits 16-31 = slope factor in signed 1/16 steps. Draws
+ * without offset keep bits 3-31 zero, so their keys are unchanged. */
+static int rsx_cull_clamp(float v, float scale, int lo, int hi)
+{
+    if (!(v == v)) return 0;
+    v *= scale; v += v < 0 ? -0.5f : 0.5f;
+    return v < (float)lo ? lo : v > (float)hi ? hi : (int)v;
+}
 static u32 rsx_cull_key(const rsx_state* st)
 {
     if (!st) return 0;
     /* The winding bit is kept with culling off too: SV_IsFrontFace (the FP
      * FACING input) depends on it on double-sided draws. */
     u32 k = (st->front_face == 0x0901u) ? 4u : 0u;                      /* CCW */
-    if (!st->cull_face_enable) return k;
-    k |= 1u;
-    if (st->cull_face == 0x0404u || st->cull_face == 0x0408u) k |= 2u;  /* FRONT */
+    if (st->cull_face_enable) {
+        k |= 1u;
+        if (st->cull_face == 0x0404u || st->cull_face == 0x0408u) k |= 2u;  /* FRONT */
+    }
+    if (st->poly_offset_fill) {
+        const int units  = rsx_cull_clamp(st->poly_offset_units, 1.0f, -2048, 2047);
+        const int factor = rsx_cull_clamp(st->poly_offset_factor, 16.0f, -32768, 32767);
+        if (units || factor)
+            k |= 8u | ((u32)(units & 0xFFF) << 4) | ((u32)(factor & 0xFFFF) << 16);
+    }
     return k;
+}
+/* Unpack rsx_cull_key's polygon offset into the PSO rasterizer state. */
+static void rsx_cull_depth_bias(u32 cull, D3D12_RASTERIZER_DESC* rd)
+{
+    if (!(cull & 8u)) return;
+    rd->DepthBias = (INT)((int)(cull << 16) >> 20);                 /* bits 4-15 */
+    rd->SlopeScaledDepthBias = (float)(int)(short)(cull >> 16) / 16.0f;
+    rd->DepthBiasClamp = 0.0f;
 }
 
 static u32 rsx_blend_key(const rsx_state* st, int enable)
@@ -3154,6 +3180,8 @@ static ID3D12PipelineState* vp_get_fp_pso(int vs_idx, u32 fp_addr, u32 blend, in
       static int _cfl = -1; if (_cfl < 0) _cfl = getenv("CULL_FLIP") ? 1 : 0;
       pd.RasterizerState.FrontCounterClockwise =
           (((cull & 4u) ? 1 : 0) ^ _cfl) ? TRUE : FALSE; }
+    /* Guest polygon offset (coplanar decals and layered surfaces). */
+    rsx_cull_depth_bias(cull, &pd.RasterizerState);
     /* Blend per the guest's packed key (see rsx_blend_key): dbgfont text needs
      * straight alpha; demosaic's effect passes blend OFF; DeferredShading's
      * light accumulation is additive ONE,ONE. */
