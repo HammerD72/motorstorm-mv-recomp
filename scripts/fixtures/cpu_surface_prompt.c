@@ -1,5 +1,7 @@
 /* Authored renderer/queue model; the production prompt-service block is injected. */
 #include <stdint.h>
+#include <stdatomic.h>
+#include "ps3emu/guest_read_sync.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +22,7 @@ static int QueryPerformanceCounter(LARGE_INTEGER *p){static int64_t t;p->QuadPar
 static int SetEvent(HANDLE h){h->signaled=1;return 1;}
 static void cpu_surface_fail(const char *operation,int result){fprintf(stderr,"FAIL: %s %d\n",operation,result);exit(2);}
 /* PRODUCTION_DECLARATIONS */
+_Static_assert(_Generic(&s_cpu_surface_head, _Atomic(CpuSurfaceRequest*)*:1, default:0), "Publish queue head with C11 atomics");
 /* PRODUCTION_HELPERS */
 static void cpu_surface_read(u32 address,u32 bytes){
     (void)bytes;if(locks_held)cpu_surface_fail("surface copy under the request lock",0);

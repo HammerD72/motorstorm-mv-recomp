@@ -2,6 +2,7 @@
 #include "ps3emu/guest_read_sync.h"
 #include "rsx_surface_readback.h"
 #include "rsx_cpu_surface_profile.h"
+#include <stdatomic.h>
 typedef struct CpuSurfaceRequest {
     struct CpuSurfaceRequest *next;
     u32 address, bytes;
@@ -12,7 +13,8 @@ typedef struct CpuSurfaceRequest {
     RsxCpuSurfaceProfile profile;
 } CpuSurfaceRequest;
 static SRWLOCK s_cpu_surface_lock = SRWLOCK_INIT;
-static CpuSurfaceRequest *s_cpu_surface_head, *s_cpu_surface_tail;
+static _Atomic(CpuSurfaceRequest*) s_cpu_surface_head;
+static CpuSurfaceRequest *s_cpu_surface_tail;
 static volatile LONG s_cpu_surface_thread;
 static ID3D12CommandAllocator *s_cpu_surface_alloc;
 static ID3D12GraphicsCommandList *s_cpu_surface_list;
@@ -233,16 +235,19 @@ static void cpu_surface_batch_submitted(void) {
     s_cpu_surface_pending_count=0;s_cpu_surface_pending_overflow=0;
 }
 static void cpu_surface_service_ready(void) {
-    if(!s_cpu_surface_prompt || s_cpu_surface_recording)return;
-    if(!*(CpuSurfaceRequest *volatile *)&s_cpu_surface_head)return;   /* unlocked hint; a miss waits for the batch end */
+    if(!s_cpu_surface_prompt)return;
+    if(!atomic_load_explicit(&s_cpu_surface_head,memory_order_acquire))return;
     if(InterlockedCompareExchange(&s_cpu_surface_thread,0,0)!=(LONG)GetCurrentThreadId())return;
+    if(s_cpu_surface_recording)return;
     CpuSurfaceRequest *ready=NULL,**ready_tail=&ready,*kept=NULL;
     AcquireSRWLockExclusive(&s_cpu_surface_lock);
-    for(CpuSurfaceRequest **link=&s_cpu_surface_head;*link;) {
+    CpuSurfaceRequest *pending=s_cpu_surface_head;
+    for(CpuSurfaceRequest **link=&pending;*link;) {
         CpuSurfaceRequest *request=*link;
         if(cpu_surface_pending_overlaps(request->address,request->bytes)){kept=request;link=&request->next;continue;}
         *link=request->next;request->next=NULL;*ready_tail=request;ready_tail=&request->next;
     }
+    atomic_store_explicit(&s_cpu_surface_head,pending,memory_order_release);
     s_cpu_surface_tail=kept;
     ReleaseSRWLockExclusive(&s_cpu_surface_lock);
     while(ready) {
