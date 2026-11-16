@@ -1,5 +1,38 @@
 # Vendor provenance and upstream
 
+## Prompt CPU surface reads (#319)
+
+The reusable service was validated first on the existing
+`robbe1912/ps3recomp` branch `codex/cpu-surface-prompt`, commit
+`d5ce79edc73faf108bb21c168e4215df1b551358`, then integrated into `combined`.
+It tracks recorded colour-target guest ranges and admits early CPU reads only
+when every pending range is disjoint. Unknown extents and capacity overflow
+retain the queued request. Submission clears the pending set. Copies and
+completion signals execute outside the request lock, on the renderer owner.
+The queue-head hint uses C11 atomic publication. The toolkit additionally
+preserves its snapshot request and suffix until the owned FIFO boundary.
+This curated queue retains its existing byte-read interface.
+
+The authored serial fixture checks adjacency, overlap, splice order/tail,
+submission, replay, owner, disabled, overflow and unknown-height behaviour.
+Six compiled mutants must fail. The atomic declaration is checked
+at compile time. Four real clients enqueue 256 requests while the renderer
+services them, checking pending-write admission and exact completion.
+Windows and Linux source fixtures pass. The toolkit snapshot GPU fixture
+also passes on actual D3D12 WARP with thirteen source mutants rejected.
+The toolkit CI fixture follow-ups through
+`933e8e627ce802e29bd21c88c77e18575388c55c` repair retention metadata,
+GPU draw-height and CPU harness dependencies while preserving their checks.
+
+The launcher admits `--cpu-surface-prompt default|0|1` after clearing inherited
+`RSX_` options and records the explicit selection. Three actual-launcher
+fixture cases check default/off/on handling. Default uses backend policy,
+which enables prompt service. Value 0 selects batch-end/idle service.
+
+The author's three-pair timings and driving observations describe the
+original revision stacked on original #318. Corrected-head native visual
+parity, matched performance and minimum 30 FPS remain unverified.
+
 ## Prepared vertex declarations and indexed reuse (#318)
 
 The shared vertex reader and two-way indexed strip/fan cache were validated
@@ -36,8 +69,9 @@ The equivalent five-consumer toolkit correction was validated first on
 `ab885a8ac4eb689ac1b3f62a59b502c579ef33ff`, with the self-contained fixture
 follow-up `8d66db96de044deb7502b1970e58d8388f8b46b6`. The final commit is
 integrated into `combined`. Its Windows and Ubuntu program-bound jobs pass.
-The existing combined texture-profile fixture remains failing on its older,
-incompatible extracted lookup model, as it did before these commits.
+The combined texture-profile fixture at that checkpoint used an older lookup
+model. Follow-up `933e8e627ce802e29bd21c88c77e18575388c55c` aligns its
+retention metadata and fingerprint helpers and checks both retention modes.
 
 PR #317 applies the same bound to this curated backend's snapshot storage,
 copy and refresh, live hash, canonical prefetch, ordinary/native-depth HLSL
