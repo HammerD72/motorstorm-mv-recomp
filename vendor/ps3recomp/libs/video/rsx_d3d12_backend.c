@@ -8042,11 +8042,8 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
      * only within this callback: all attribute/base/frequency state is fixed,
      * and nothing survives a later draw or guest-memory update. 64 entries,
      * two-way set-associative on the index with LRU per set: both shared strip
-     * vertices and the fan center (used by every triangle, so never the LRU
-     * way) stay resident, and the reuse between neighbouring strip rows is
-     * caught too. In MotorStorm races a 64-entry cache fetches ~19.5% fewer
-     * vertices than the earlier 3-entry LRU (181.9M vs 226.0M; 180.4M are
-     * distinct within their callback). */
+     * vertices and the fan center are retained across common strip/fan patterns.
+     * Two ways also retain reuse between neighbouring strip rows. */
     const int use_cache = count > 3 || count + cursor.held > 3;
     enum { VP_STRIP_SETS = 32 };
     VPSlot cached_vertices[VP_STRIP_SETS][2][16];

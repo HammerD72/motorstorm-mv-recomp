@@ -28,10 +28,10 @@ static inline float rd_half_be(const u8* p)
 float rsx_rd_bef(const u8* p) { return rd_bef(p); }
 float rsx_rd_half_be(const u8* p) { return rd_half_be(p); }
 
-/* VP_NOFREQ: instancing kill-switch, read once. */
+/* VP_NOFREQ: immutable launch switch, cached once per calling thread. */
 static int vertex_nofreq(void)
 {
-    static int nofreq = -1;
+    static _Thread_local int nofreq = -1;
     if (nofreq < 0) nofreq = getenv("VP_NOFREQ") ? 1 : 0;
     return nofreq;
 }
@@ -60,7 +60,7 @@ void rsx_vertex_fetch_prepare(rsx_vertex_fetch_batch* batch, const rsx_state* st
         s->frequency = a->frequency;
         s->modulo = (st->frequency_divider_op & (1u << batch->active[i])) ? 1 : 0;
         s->slot = batch->active[i];
-        s->type = (u8)a->type;
+        s->type = a->type;
         s->n = (u8)n;
     }
 }

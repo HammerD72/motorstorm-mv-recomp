@@ -101,7 +101,9 @@ int main(int argc,char**argv) {
     parity(&b,0,"live vertex edits lost");
     const u32 indices[]={0,1,17,257,0xfffffffeu,0xffffffffu};
     unsigned cases=0;
-    for(unsigned type=0;type<9;type++)for(unsigned active=0;active<=16;active++) {
+    const u32 types[] = {0,1,2,3,4,5,6,7,8,0x101,0x102,0x103,0x104,0x105,0x106,0x107,0xffffff04u};
+    for(unsigned ti=0;ti<sizeof types/sizeof types[0];ti++)for(unsigned active=0;active<=16;active++) {
+        const u32 type = types[ti];
         setup(active,type);
         for(unsigned i=0;i<16;i++)if(i%7==0)state.vertex_attribs[i].stride=0;
         rsx_vertex_fetch_prepare(&b,&state);

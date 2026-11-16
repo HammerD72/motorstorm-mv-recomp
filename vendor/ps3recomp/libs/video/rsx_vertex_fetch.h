@@ -87,9 +87,9 @@ typedef struct rsx_vertex_fetch_slot {
     u32 offset;      /* array offset without the context-DMA bit */
     u32 stride;
     u32 frequency;   /* > 1: instanced (divide or modulo) */
+    u32 type;        /* preserve unknown types for scalar fallback */
     u8 slot;         /* attribute index 0..15 */
     u8 location;     /* cellGcmResolveLocated location: 1 LOCAL, 0 MAIN */
-    u8 type;
     u8 n;            /* components read, 1..4 */
     u8 modulo;       /* frequency divider operation bit for this slot */
 } rsx_vertex_fetch_slot;
