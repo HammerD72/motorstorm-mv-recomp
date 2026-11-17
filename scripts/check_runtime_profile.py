@@ -154,6 +154,29 @@ class ExecutionProfileTests(unittest.TestCase):
 
     def test_async_surface_reads_enabled_lists_race_surfaces(self):
         self.check_async_surface_reads('1')
+    def check_surface_batch_selection(self, flush, overlap):
+        keys = {'RSX_CPU_SURFACE_FLUSH': flush, 'RSX_DRAIN_OVERLAP': overlap}
+        with patch.dict(os.environ, {key: 'inherited' for key in keys}):
+            record, env = self.launch('--cpu-surface-flush', flush, '--drain-overlap', overlap)
+        for key, mode in keys.items():
+            expected = None if mode == 'default' else mode
+            self.assertEqual(env.get(key), expected)
+            self.assertEqual(record['environment'].get(key), expected)
+
+    def test_surface_batch_defaults_clear_inherited_selections(self):
+        self.check_surface_batch_selection('default', 'default')
+
+    def test_surface_batch_disabled_selections_are_recorded(self):
+        self.check_surface_batch_selection('0', '0')
+
+    def test_surface_batch_enabled_selections_are_recorded(self):
+        self.check_surface_batch_selection('1', '1')
+
+    def test_surface_flush_and_serialized_drain_are_independent(self):
+        self.check_surface_batch_selection('1', '0')
+
+    def test_surface_flush_disabled_and_overlap_are_independent(self):
+        self.check_surface_batch_selection('0', '1')
 
     def test_unsupported_baseline_rejects_before_pruning_or_launch(self):
         self.record['runtime_capabilities']['policy_interpreter'] = False
@@ -333,6 +356,44 @@ class ExecutionProfileTests(unittest.TestCase):
         record, env = self.launch('--execution-profile', 'toolkit-default')
         self.assertEqual(record['build_identity'], self.record)
         self.assertFalse(any(k.startswith('SPU_') for k in env))
+
+
+    def test_menu_build_rejects_original_replay_before_launch(self):
+        self.record['menu_boot'] = True
+        self.save_record()
+        with patch('menu_replay.load_profile', return_value={'elf_sha256': self.record['elf_sha256']}):
+            self.rejected('Replay startup differs', '--menu-replay', str(self.root / 'profile.json'))
+
+    def test_menu_build_accepts_menu_replay(self):
+        self.record['menu_boot'] = True
+        self.save_record()
+        profile = {'elf_sha256': self.record['elf_sha256'], 'startup': 'menu'}
+        with patch('menu_replay.load_profile', return_value=profile):
+            record, env = self.launch('--menu-replay', str(self.root / 'profile.json'))
+        self.assertEqual(env['MS_BOOT_MENU'], '1')
+
+    def test_menu_boot_uses_selected_capability(self):
+        self.record['menu_boot'] = True
+        self.save_record()
+        with patch.dict(os.environ, {'MS_BOOT_MENU': '0'}):
+            record, env = self.launch()
+        self.assertEqual(env['MS_BOOT_MENU'], '1')
+        self.assertEqual(record['environment']['MS_BOOT_MENU'], '1')
+
+    def test_original_intro_selection(self):
+        self.record['menu_boot'] = True
+        self.save_record()
+        with patch.dict(os.environ, {'MS_BOOT_MENU': '1'}):
+            record, env = self.launch('--original-intro')
+        self.assertEqual(env['MS_BOOT_MENU'], '0')
+        self.assertEqual(record['environment']['MS_BOOT_MENU'], '0')
+
+    def test_legacy_build_sanitizes_boot_selection(self):
+        with patch.dict(os.environ, {'MS_BOOT_MENU': '1'}):
+            record, env = self.launch()
+        self.assertEqual(env['MS_BOOT_MENU'], '0')
+        self.assertEqual(record['environment']['MS_BOOT_MENU'], '0')
+
 
 
 HISTORICAL_URL = 'https://github.com/robbe1912/ps3recomp.git'
