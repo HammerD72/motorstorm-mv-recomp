@@ -1,5 +1,35 @@
 # Vendor provenance and upstream
 
+## Coherent surface prefetch (#322)
+
+The reusable implementation and authored validation are own-fork modular and
+combined commit `9a5efceeeec9dcb13047af799dda176fa2147edf` in
+`robbe1912/ps3recomp`. All eight modular workflows, including SDK validation on
+Windows, Linux and macOS, passed. Existing toolkit snapshot requests and their
+owned FIFO boundaries remain intact. The shared fence/prefetch block is carried
+selectively into this byte-read consumer.
+
+CPU reads continue through the coherent renderer handler. Reuse requires the
+exact current GPU generation and resource/guest layout. Missing or superseded
+copies follow the coherent copy path. Prefetch copies have their own command
+allocator/list and real completion fence. Resource retirement waits before
+untracking, and device-removal sentinels or incomplete waits stop visibly.
+The bounded hex parser rejects malformed, overflowing and duplicate offsets.
+
+The production-body model passes thirteen compiled mutants on Windows/Linux.
+The full-backend authored GPU fixture passes on actual WARP and hardware,
+covering feature-off/on byte equality, current generation reuse, completed newer
+writes, in-flight reads, pitch changes, retirement and resource replacement.
+Four compiled GPU mutants must fail. The varying-clear fixture admits only its
+expected optimized-clear-value performance warnings and rejects other validation
+messages/errors. Existing snapshot WARP controls and all 45 assertion-enabled
+Windows native CTests passed. Two snapshot mutant needles were scoped to their
+actual coherent-copy/retirement functions after the added prefetch helpers.
+
+The feature remains opt-in. Original author measurements retain their stated
+revision and local-change qualifications. Current native-title visuals, matched
+performance, minimum 30 FPS and interpreter removal remain open.
+
 ## FACING and full polygon-offset identity (#320)
 
 The reusable port is own-fork modular commit
