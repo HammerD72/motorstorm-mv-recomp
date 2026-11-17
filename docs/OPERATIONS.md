@@ -411,15 +411,19 @@ own width; that rule has no hardware cross-check yet. Game-free coverage:
 [check_rsx_texture_mips.py](../scripts/check_rsx_texture_mips.py); D3D12
 readback and per-level sampling: `check_rsx_texture_gpu.py` phase `mips-only`.
 
-`--async-surface-reads 0|1` (default `0`) sets `RSX_CPU_SURFACE_ASYNC` to
+`--surface-prefetch 0|1` (default `0`) sets `RSX_CPU_SURFACE_PREFETCH` to
 MotorStorm's three race feedback surfaces: the 2048x2048 deformation surface
 (`01A80500`), a 1280x720 surface the game probes at varying points
-(`00A80500`) and the 64x64 HDR exposure target (`02A30480`). A CPU read inside
-one of them returns the renderer's last completed copy (one or two batches
-old) instead of waiting for the GPU to finish the current frame's write. The
-launcher clears an inherited list and records the selection.
-`RSX_CPU_SURFACE_ASYNC_LOG=1` prints served, fallback and copy counts.
-Game-free coverage: [check_cpu_surface_async.py](../scripts/check_cpu_surface_async.py).
+(`00A80500`) and the 64x64 HDR exposure target (`02A30480`). Reads stay
+coherent: each still returns the surface as of every write submitted before
+it. After a submitted batch that wrote a listed surface the CPU has read since
+its last copy, the renderer queues a copy behind that batch; a read that needs
+exactly that generation packs it, waiting only for that copy's fence, instead
+of fencing all submitted work and copying anew. Any other read takes the
+ordinary copy. The launcher clears an inherited list and records the
+selection. `RSX_CPU_SURFACE_PREFETCH_LOG=1` prints used, waited, missed and
+copy counts. Game-free coverage:
+[check_cpu_surface_prefetch.py](../scripts/check_cpu_surface_prefetch.py).
 
 Use identical cache targets, validation and profiling settings for comparisons.
 Retention validates every uploaded face with full XXH3; the reference retains
