@@ -91,7 +91,12 @@ int main(void)
     /* 3. The next draw's targets, chosen as capture chooses them. */
     REQUIRE(!cpu_surface_eager_state_writes(NULL), "no state writes nothing");
     clear_targets(); target(0, 0x02A30480, FB); REQUIRE(cpu_surface_eager_state_writes(&next), "slot 0 frame-buffer target");
-    clear_targets(); target(3, 0x02A30480, HB); REQUIRE(cpu_surface_eager_state_writes(&next), "slot 3 host-buffer target");
+    clear_targets(); target(3, 0x02A30480, HB);
+    REQUIRE(!cpu_surface_eager_state_writes(&next), "inactive D offset does not delay a single-target batch");
+    next.color_target = 0x17;
+    REQUIRE(!cpu_surface_eager_state_writes(&next), "three active targets leave D inactive");
+    next.color_target = 0x1F;
+    REQUIRE(cpu_surface_eager_state_writes(&next), "D is active in the four-target draw");
     clear_targets(); target(0, 0x02A30480, 0); REQUIRE(!cpu_surface_eager_state_writes(&next), "a slot without colour DMA is not a target");
     clear_targets(); target(0, 0x02A30480, FB); next.color_target = 2;
     REQUIRE(!cpu_surface_eager_state_writes(&next), "colour target B: slot 0 is not written");

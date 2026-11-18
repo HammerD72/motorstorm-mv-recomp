@@ -478,10 +478,13 @@ static void cpu_surface_eager_note(u32 offset,u32 address) {
     if(address && address!=0xffffffffu && cpu_surface_eager_listed(offset))s_cpu_surface_eager_dirty=1;
 }
 /* Colour targets of the draw about to be recorded, chosen as
- * cpu_surface_capture chooses them: does it still write a listed surface? */
+ * the backend chooses active targets: does it still write a listed surface? */
 static int cpu_surface_eager_state_writes(const rsx_state *st) {
     if(!st)return 0;
-    for(unsigned i=0;i<4;i++) {
+    unsigned targets = st->color_target >= 0x1F ? 4 :
+                       st->color_target >= 0x17 ? 3 :
+                       st->color_target >= 0x13 ? 2 : 1;
+    for(unsigned i=0;i<targets;i++) {
         unsigned source=(!i&&st->color_target==2)?1:i;
         u32 dma=st->surface_color_dma[source];
         if(dma!=CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER && dma!=CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER)continue;
@@ -648,7 +651,9 @@ static void cpu_surface_capture(D3D12DrawRecord *draw) {
         extern u32 cellGcmResolveLocated(int local,u32 offset);
         draw->cpu_address[i]=cellGcmResolveLocated(dma==CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER,st->surface_color_offset[source]);
         draw->cpu_pitch[i]=st->surface_color_pitch[source];
-        cpu_surface_eager_note(st->surface_color_offset[source],draw->cpu_address[i]);
+        u32 recorded_offset = i ? draw->rt_mrt[i - 1] : draw->rt_off;
+        if (recorded_offset && recorded_offset == st->surface_color_offset[source] && draw->cpu_pitch[i])
+            cpu_surface_eager_note(recorded_offset,draw->cpu_address[i]);
     }
     /* Every recorded draw/clear passes here; its targets are pending until
      * the batch is submitted. Then serve the reads none of them touch. */

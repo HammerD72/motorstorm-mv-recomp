@@ -29,8 +29,10 @@ def main():
     # environment, the mark clears only after submission, and the decision
     # rides the existing early-submission hook.
     capture = section(source, "static void cpu_surface_capture", "static void cpu_surface_bind")
-    note = "cpu_surface_eager_note(st->surface_color_offset[source],draw->cpu_address[i]);"
+    note = "cpu_surface_eager_note(recorded_offset,draw->cpu_address[i]);"
     assert capture.count(note) == 1, "capture notes each resolved colour target"
+    assert "u32 recorded_offset = i ? draw->rt_mrt[i - 1] : draw->rt_off;" in capture
+    assert "recorded_offset && recorded_offset == st->surface_color_offset[source] && draw->cpu_pitch[i]" in capture
     assert capture.index("draw->cpu_address[i]=cellGcmResolveLocated") < capture.index(note), "note after the address resolves"
     chooser = "unsigned source=(!i&&st->color_target==2)?1:i;"
     dma = "if(dma!=CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER && dma!=CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER)continue;"
@@ -103,6 +105,8 @@ def main():
         # Each mutant keeps every parameter referenced, so -Werror builds fail on behaviour, not warnings.
         ("unbound-marks", "if(address && address!=0xffffffffu && cpu_surface_eager_listed(offset))", "if(((void)address,cpu_surface_eager_listed(offset)))"),
         ("any-surface-marks", "&& cpu_surface_eager_listed(offset))", "&& ((void)offset,1))"),
+        ("includes-inactive-targets", "for(unsigned i=0;i<targets;i++)",
+         "for(unsigned i=0;i<(targets ? 4u : 0u);i++)"),
         ("target-b-slot0", "unsigned source=(!i&&st->color_target==2)?1:i;", "unsigned source=i;"),
         ("no-dma-check", "        if(dma!=CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER && dma!=CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER)continue;\n", "        (void)dma;\n"),
         ("duplicates", "            if(s_cpu_surface_eager[i]==(u32)off)cpu_surface_fail", "            if(0)cpu_surface_fail"),

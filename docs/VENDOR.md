@@ -32,12 +32,15 @@ performance, minimum 30 FPS and interpreter removal remain open.
 
 ## Eager submission after writes to listed surfaces (#326)
 
+The reusable fork implementation and authored fixtures are at `abeb4200a1c6575eec89654fe49b6904b48cb727`
+on `codex/cpu-surface-eager`.
+
 `rsx_cpu_surface.inc` gains `RSX_CPU_SURFACE_EAGER`, a list of up to four RSX
 surface offsets (same strict 1-8 hex digit parser as the prefetch list; none by
 default). `cpu_surface_capture` marks the batch when a recorded draw or clear
-writes a bound listed surface. `cpu_surface_flush_recorded` then also submits
+records a bound listed render target with a nonzero pitch. `cpu_surface_flush_recorded` then also submits
 through the existing nonpresenting capacity path at the first draw boundary
-whose draw no longer targets a listed surface, or at the idle pump. The
+whose active targets exclude the listed surfaces, or at the idle pump. The
 decision checks the renderer service-thread owner and `render_frame` replay
 before it reads any renderer state, as the early submission for pending reads
 does; `render_frame` clears the mark after `cpu_surface_batch_submitted()`
@@ -48,7 +51,7 @@ In MotorStorm races the HDR exposure target (`02A30480`) is read once per frame
 10-20 ms after its write is recorded, so the batch with that write reaches the
 GPU before the read instead of when it arrives. `run.py
 --eager-surface-submit 1` lists it. `check_cpu_surface_eager.py` compiles the
-production block against a renderer model (15 mutants) and checks the capture,
+production block against a renderer model (16 mutants) and checks the capture,
 init, render_frame and flush wiring; `check_cpu_surface_prompt.py` covers the
 eager request on the shared flush hook. Visual parity in a driven race was
 checked on a local build; broader title coverage is open.
