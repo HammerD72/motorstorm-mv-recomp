@@ -166,6 +166,19 @@ class ExecutionProfileTests(unittest.TestCase):
     def test_surface_prefetch_enabled_lists_race_surfaces(self):
         self.check_surface_prefetch('1')
 
+    def check_eager_surface_submit(self, mode):
+        with patch.dict(os.environ, {'RSX_CPU_SURFACE_EAGER': 'inherited'}):
+            record, env = self.launch('--eager-surface-submit', mode)
+        expected = '02A30480' if mode == '1' else None
+        self.assertEqual(env.get('RSX_CPU_SURFACE_EAGER'), expected)
+        self.assertEqual(record['environment'].get('RSX_CPU_SURFACE_EAGER'), expected)
+
+    def test_eager_surface_submit_default_clears_inherited_list(self):
+        self.check_eager_surface_submit('0')
+
+    def test_eager_surface_submit_enabled_lists_exposure_target(self):
+        self.check_eager_surface_submit('1')
+
     def test_pm_native_services_default_clears_inherited_selection(self):
         with patch.dict(os.environ, {'SPU_PM_NATIVE_SVC': '1', 'SPU_PM_SVC_VERIFY': '1'}):
             record, env = self.launch('--native-owned-jobs')

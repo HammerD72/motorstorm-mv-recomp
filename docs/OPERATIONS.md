@@ -429,6 +429,22 @@ selection. `RSX_CPU_SURFACE_PREFETCH_LOG=1` prints used, waited, missed and
 copy counts. Game-free coverage:
 [check_cpu_surface_prefetch.py](../scripts/check_cpu_surface_prefetch.py).
 
+`--eager-surface-submit 0|1` (default `0`) sets `RSX_CPU_SURFACE_EAGER` to
+MotorStorm's 64x64 HDR exposure target (`02A30480`). The main thread reads it
+once per race frame, 10-20 ms after the renderer records the draws that write
+it. Without the switch the batch holding those draws is submitted only when the
+read arrives (or at the frame end), so the read waits for the renderer to
+replay it and the GPU to run it. With it, the renderer submits the batch at the
+first draw boundary after those draws whose draw no longer targets a listed
+surface, or at its idle pump, through the same nonpresenting capacity path as
+the early submission for pending reads. Reads stay coherent: each still needs
+the surface's current generation; only the submission point moves. With
+`--surface-prefetch 1` the copy queued behind that batch usually holds the
+generation the read needs. The launcher clears an inherited list and records
+the selection. `RSX_CPU_SURFACE_PROFILE=1` also prints `[CPUSURFACE_EAGER]`
+submit counts. Game-free coverage:
+[check_cpu_surface_eager.py](../scripts/check_cpu_surface_eager.py).
+
 Use identical cache targets, validation and profiling settings for comparisons.
 Retention validates every uploaded face with full XXH3; the reference retains
 its sparse source checksum. Complete hashing has a measurable cost. Verify the
