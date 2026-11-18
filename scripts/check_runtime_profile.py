@@ -142,6 +142,17 @@ class ExecutionProfileTests(unittest.TestCase):
     def test_surface_prompt_enabled_selection_is_recorded(self):
         self.check_surface_prompt_selection('1')
 
+    def test_jobmod_dispatch_log_default_clears_inherited_selection(self):
+        with patch.dict(os.environ, {'SPU_JOBMOD_DISPATCH_LOG': '1'}):
+            record, env = self.launch()
+        self.assertNotIn('SPU_JOBMOD_DISPATCH_LOG', env)
+        self.assertNotIn('SPU_JOBMOD_DISPATCH_LOG', record['environment'])
+
+    def test_jobmod_dispatch_log_selection_is_recorded(self):
+        record, env = self.launch('--jobmod-dispatch-log')
+        self.assertEqual(env.get('SPU_JOBMOD_DISPATCH_LOG'), '1')
+        self.assertEqual(record['environment'].get('SPU_JOBMOD_DISPATCH_LOG'), '1')
+
     def check_surface_prefetch(self, mode):
         with patch.dict(os.environ, {'RSX_CPU_SURFACE_PREFETCH': 'inherited'}):
             record, env = self.launch('--surface-prefetch', mode)
