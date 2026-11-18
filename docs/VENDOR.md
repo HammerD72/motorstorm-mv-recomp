@@ -1,5 +1,21 @@
 # Vendor provenance and upstream
 
+## Native policy-module services (#327)
+
+Own-fork branch `codex/pm-native-services` carries the reusable runtime and
+authored differential fixtures through `20245d30`. Game-specific registration
+stays in this repository. The default-off `SPU_PM_NATIVE_SVC=1` switch admits a
+registered service only for a `bisl r0` from a resident job with both the call
+and its continuation in that job's span. The registered LS code ranges must
+match the pristine text published through an interlocked cache state. The
+drain closes the service scope when the call bracket ends.
+
+The opt-in `SPU_PM_SVC_VERIFY=1` path compares the interpreted service with a
+private compiled replay. The authored fixture builds the actual interpreter,
+drain and owned gate with lifter-emitted calls and service bodies. It checks
+full GPR/LS/status parity in eleven modes and rejects nine compiled mutants,
+including a jump at the purported call site. The fixture uses authored bytes.
+
 ## Coherent surface prefetch (#322)
 
 The reusable implementation and authored validation are own-fork modular and

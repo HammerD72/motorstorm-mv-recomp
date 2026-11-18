@@ -49,6 +49,7 @@ def main():
     ap.add_argument('--original-intro',action='store_true',help='Use original language/video startup for reference diagnostics')
     ap.add_argument('--native-owned-jobs',action='store_true',help='Opt in to fingerprint-owned native jobs while retaining policy interpretation')
     ap.add_argument('--jobmod-header-fnv',action='store_true',help='Also identify staged job images by their declared C0DEC0DE span, ignoring load padding')
+    ap.add_argument('--pm-native-services',action='store_true',help='Run the job manager services native jobs call (registered in src/motorstorm/spu_pm_services.cpp) compiled while their LS text is pristine; requires --native-owned-jobs')
     ap.add_argument('--min-free-physical-gib',type=physical_reserve,default=4,help='Host free physical RAM reserve, 1..4 GiB (default 4); lower explicitly for concurrent host work')
     args=ap.parse_args()
     if not 0<=args.texture_cache_mib<=4096: ap.error("Texture cache target must be 0..4096 MiB")
@@ -57,6 +58,7 @@ def main():
     if not 0<=args.capture_on_pad<=0xffff: raise SystemExit('Capture event mask must be 0 (disabled) or 1..0xffff')
     if args.capture_on_pad and not args.capture_burst_frames: raise SystemExit('Capture input event requires --capture-burst-frames')
     if args.capture_burst_frames and not (args.capture_menu or args.menu_replay): raise SystemExit('Capture burst requires --capture-menu or --menu-replay')
+    if args.pm_native_services and not args.native_owned_jobs: raise SystemExit('Native policy services require --native-owned-jobs')
     if args.menu_replay:
         from menu_replay import load_profile
         replay_profile=load_profile(args.menu_replay)  # Reject blind routes before process creation.
@@ -104,6 +106,7 @@ def main():
     env['MS_BOOT_MENU'] = '1' if menu_boot else '0'
     if args.native_owned_jobs:env['SPU_NATIVE_OWNED_JOBS']='1'
     if args.jobmod_header_fnv:env['SPU_JOBMOD_HEADER_FNV']='1'
+    if args.pm_native_services:env['SPU_PM_NATIVE_SVC']='1'
     env['PS3_KEYS_FILE']=str(c.get('keys',ROOT/'game/private_keys')/'keys.json')
     if args.trace_task_lifecycle:
         env['SPU_TASK_LIFECYCLE_TRACE']=str(args.trace_task_lifecycle)

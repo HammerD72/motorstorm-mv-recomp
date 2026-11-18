@@ -154,6 +154,22 @@ class ExecutionProfileTests(unittest.TestCase):
 
     def test_surface_prefetch_enabled_lists_race_surfaces(self):
         self.check_surface_prefetch('1')
+
+    def test_pm_native_services_default_clears_inherited_selection(self):
+        with patch.dict(os.environ, {'SPU_PM_NATIVE_SVC': '1', 'SPU_PM_SVC_VERIFY': '1'}):
+            record, env = self.launch('--native-owned-jobs')
+        for key in ('SPU_PM_NATIVE_SVC', 'SPU_PM_SVC_VERIFY'):
+            self.assertNotIn(key, env)
+            self.assertNotIn(key, record['environment'])
+
+    def test_pm_native_services_selection_is_recorded(self):
+        record, env = self.launch('--native-owned-jobs', '--pm-native-services')
+        self.assertEqual(env.get('SPU_PM_NATIVE_SVC'), '1')
+        self.assertEqual(env.get('SPU_NATIVE_OWNED_JOBS'), '1')
+        self.assertEqual(record['environment'].get('SPU_PM_NATIVE_SVC'), '1')
+
+    def test_pm_native_services_require_owned_jobs(self):
+        self.rejected('Native policy services require --native-owned-jobs', '--pm-native-services')
     def check_surface_batch_selection(self, flush, overlap):
         keys = {'RSX_CPU_SURFACE_FLUSH': flush, 'RSX_DRAIN_OVERLAP': overlap}
         with patch.dict(os.environ, {key: 'inherited' for key in keys}):
