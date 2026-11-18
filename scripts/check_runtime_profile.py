@@ -154,6 +154,19 @@ class ExecutionProfileTests(unittest.TestCase):
 
     def test_surface_prefetch_enabled_lists_race_surfaces(self):
         self.check_surface_prefetch('1')
+
+    def check_eager_surface_submit(self, mode):
+        with patch.dict(os.environ, {'RSX_CPU_SURFACE_EAGER': 'inherited'}):
+            record, env = self.launch('--eager-surface-submit', mode)
+        expected = '02A30480' if mode == '1' else None
+        self.assertEqual(env.get('RSX_CPU_SURFACE_EAGER'), expected)
+        self.assertEqual(record['environment'].get('RSX_CPU_SURFACE_EAGER'), expected)
+
+    def test_eager_surface_submit_default_clears_inherited_list(self):
+        self.check_eager_surface_submit('0')
+
+    def test_eager_surface_submit_enabled_lists_exposure_target(self):
+        self.check_eager_surface_submit('1')
     def check_surface_batch_selection(self, flush, overlap):
         keys = {'RSX_CPU_SURFACE_FLUSH': flush, 'RSX_DRAIN_OVERLAP': overlap}
         with patch.dict(os.environ, {key: 'inherited' for key in keys}):
