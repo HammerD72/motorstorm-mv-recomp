@@ -1,5 +1,22 @@
 # Vendor provenance and upstream
 
+## Native policy-module services (#327)
+
+Local to this repository's vendored runtime; not yet in `combined`.
+`runtime/spu/spu_channels.c` gains a delimited "Native policy-module services"
+section, `spu_native_owned.h` its registration API and the owned-gate hook, and
+`spu_drain.c` closes a service scope when its call bracket's drain ends. The
+channel entry points `spu_wrch`, `spu_rdch` and `spu_rchcnt` become thin wrappers
+over the unchanged bodies, which only the opt-in verifier uses. Default-off
+`SPU_PM_NATIVE_SVC=1` runs a registered policy service compiled when compiled job
+code calls it with `bisl` and the registered code ranges in LS equal the
+fingerprinted pristine text; nothing changes without a registration and the
+switch. `SPU_PM_SVC_VERIFY=1` compares each call's interpreted result with a
+replay of the compiled service. The authored check builds the actual
+interpreter, drain and owned gate with lifter-emitted call and service bodies,
+checks full GPR/LS/status parity against a fully interpreted run in ten modes,
+and rejects eight source mutants. No guest payload or generated code is included.
+
 ## Coherent surface prefetch (#322)
 
 The reusable implementation and authored validation are own-fork modular and
