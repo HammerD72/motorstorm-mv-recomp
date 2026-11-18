@@ -1,5 +1,21 @@
 # Vendor provenance and upstream
 
+## Native policy-module services (#327)
+
+Own-fork branch `codex/pm-native-services` carries the reusable runtime and
+authored differential fixtures through `20245d30`. Game-specific registration
+stays in this repository. The default-off `SPU_PM_NATIVE_SVC=1` switch admits a
+registered service only for a `bisl r0` from a resident job with both the call
+and its continuation in that job's span. The registered LS code ranges must
+match the pristine text published through an interlocked cache state. The
+drain closes the service scope when the call bracket ends.
+
+The opt-in `SPU_PM_SVC_VERIFY=1` path compares the interpreted service with a
+private compiled replay. The authored fixture builds the actual interpreter,
+drain and owned gate with lifter-emitted calls and service bodies. It checks
+full GPR/LS/status parity in eleven modes and rejects nine compiled mutants,
+including a jump at the purported call site. The fixture uses authored bytes.
+
 ## Coherent surface prefetch (#322)
 
 The reusable implementation and authored validation are own-fork modular and
@@ -32,14 +48,15 @@ performance, minimum 30 FPS and interpreter removal remain open.
 
 ## Eager submission after writes to listed surfaces (#326)
 
-The reusable fork implementation and authored fixtures are at `abeb4200a1c6575eec89654fe49b6904b48cb727`
-on `codex/cpu-surface-eager`.
+The reusable fork implementation is at `abeb4200`, with the WARP fixture
+update at `a954e9d0`. Both are integrated in `combined` at `eb954250`.
 
 `rsx_cpu_surface.inc` gains `RSX_CPU_SURFACE_EAGER`, a list of up to four RSX
 surface offsets (same strict 1-8 hex digit parser as the prefetch list; none by
 default). `cpu_surface_capture` marks the batch when a recorded draw or clear
-records a bound listed render target with a nonzero pitch. `cpu_surface_flush_recorded` then also submits
-through the existing nonpresenting capacity path at the first draw boundary
+records a bound listed render target with a nonzero pitch.
+`cpu_surface_flush_recorded` submits through the existing nonpresenting
+capacity path at the first draw boundary
 whose active targets exclude the listed surfaces, or at the idle pump. The
 decision checks the renderer service-thread owner and `render_frame` replay
 before it reads any renderer state, as the early submission for pending reads
@@ -55,6 +72,31 @@ production block against a renderer model (16 mutants) and checks the capture,
 init, render_frame and flush wiring; `check_cpu_surface_prompt.py` covers the
 eager request on the shared flush hook. Visual parity in a driven race was
 checked on a local build; broader title coverage is open.
+
+## Job dispatch log and depth-guard ring (#327)
+
+The reusable depth guard is on own-fork branch `codex/spu-depth-ring` at
+`fefcd49a`. The depth limit and history are worker-local. An atomic flag
+retains the single process-wide report when multiple workers trip.
+
+Two costs every native job transfer paid, found by a line-level sample of
+MotorStorm's vehicle job:
+
+- `spu_channels.c`: `spu_indirect_branch` logged the first 16 and every 64th
+  transfer into a claimed resident job span (`[pm-jobmod] DISPATCH`). A lift hit
+  is every native job transfer, so a race wrote about 875,000 lines (117 MB) and
+  the SPU threads waited on stderr and the C runtime's stream lock. Lift hits
+  now log only with `SPU_JOBMOD_DISPATCH_LOG=1` (`run.py --jobmod-dispatch-log`);
+  unset or `0` is off and any other value aborts. Misses
+  (`resolver=MISS->interp`) remain enabled by default. Each worker owns its setting and separate hit and miss counters.
+- `spu_drain.c`: `spu_depth_guard` wrote its ring of recent drain sites, shared
+  by every SPU thread, on every lifted call, so its cache line moved between
+  threads constantly. The ring is now per thread (`SPU_THREAD_LOCAL`). It is
+  only read when `SPU_HOST_DEPTH_MAX` trips, and then lists the tripping
+  thread's own cycle.
+
+`check_spu_native_owned.py` runs the owned fixture with the switch unset, `0`,
+`1` and `2`. Behaviour is otherwise unchanged.
 
 ## FACING and full polygon-offset identity (#320)
 
