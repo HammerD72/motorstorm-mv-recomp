@@ -378,10 +378,12 @@ void spu_depth_guard(spu_context* ctx)
 
     /* Ring of recent drain sites. When the depth trips, the useful question is
      * not "where are we" but "what cycle got us here" -- one pc names a point,
-     * a ring names the loop. */
+     * a ring names the loop. One ring per thread: a ring shared by every SPU
+     * thread is written on every lifted call and bounces its cache line
+     * between them (#327), and the cycle that trips is this thread's own. */
     enum { RING = 24 };
-    static uint32_t s_ring[RING];
-    static uint32_t s_n;
+    static SPU_THREAD_LOCAL uint32_t s_ring[RING];
+    static SPU_THREAD_LOCAL uint32_t s_n;
     s_ring[s_n % RING] = ((uint32_t)ctx->pc & SPU_LS_MASK);
     s_n++;
 
