@@ -100,8 +100,9 @@ def main():
         ("state-before-owner", "    if(!s_cpu_surface_eager_count)return 0;\n",
          "    if(!s_cpu_surface_eager_count)return 0;\n    if(!s_d3d.current_rsx_state)return 0;\n"),
         ("no-clear", "    s_cpu_surface_eager_dirty=0;\n}", "    (void)0;\n}"),
-        ("unbound-marks", "if(address && address!=0xffffffffu && cpu_surface_eager_listed(offset))", "if(cpu_surface_eager_listed(offset))"),
-        ("any-surface-marks", "&& cpu_surface_eager_listed(offset))", ")"),
+        # Each mutant keeps every parameter referenced, so -Werror builds fail on behaviour, not warnings.
+        ("unbound-marks", "if(address && address!=0xffffffffu && cpu_surface_eager_listed(offset))", "if(((void)address,cpu_surface_eager_listed(offset)))"),
+        ("any-surface-marks", "&& cpu_surface_eager_listed(offset))", "&& ((void)offset,1))"),
         ("target-b-slot0", "unsigned source=(!i&&st->color_target==2)?1:i;", "unsigned source=i;"),
         ("no-dma-check", "        if(dma!=CELL_GCM_CONTEXT_DMA_MEMORY_FRAME_BUFFER && dma!=CELL_GCM_CONTEXT_DMA_MEMORY_HOST_BUFFER)continue;\n", "        (void)dma;\n"),
         ("duplicates", "            if(s_cpu_surface_eager[i]==(u32)off)cpu_surface_fail", "            if(0)cpu_surface_fail"),
