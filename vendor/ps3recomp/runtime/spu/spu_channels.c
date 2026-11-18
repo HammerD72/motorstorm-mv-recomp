@@ -3007,7 +3007,7 @@ static void spu_staged_interp_resume(spu_context* ctx)
  * registers, pc, interrupt enable and the whole LS are compared and a mismatch
  * is logged. The real context keeps the interpreted result. */
 static struct {
-    int registered, ready, image_id, nentries, ncode;
+    int registered, image_id, nentries, ncode;
     uint32_t ls_base, text_len, tmpl_ea, tmpl_len;
     uint64_t text_fnv;
     uint32_t entries[SPU_PM_SERVICES_MAX_ENTRIES];
@@ -3016,6 +3016,7 @@ static struct {
 } s_svc;
 int g_spu_pm_svc_on;
 static int s_svc_verify;
+// 0 = uninitialized, 1 = copying, 2 = verified, -1 = rejected.
 static volatile LONG s_svc_once;
 static volatile LONG s_svc_native, s_svc_vok, s_svc_vbad, s_svc_vincomplete,
                      s_svc_voverflow, s_svc_text_differs, s_svc_not_job_call;
@@ -3076,10 +3077,13 @@ void spu_pm_services_counters(uint64_t out[SPU_PM_SERVICES_COUNTERS])
  * registered fingerprint. 1 = usable. */
 static int pm_svc_ready(void)
 {
-    if (s_svc.ready) return s_svc.ready > 0;
-    if (InterlockedCompareExchange(&s_svc_once, 1, 0) != 0) {
-        while (!s_svc.ready) Sleep(0);
-        return s_svc.ready > 0;
+    LONG state = InterlockedCompareExchange(&s_svc_once, 1, 0);
+    if (state != 0) {
+        while (state == 1) {
+            Sleep(0);
+            state = InterlockedCompareExchange(&s_svc_once, 0, 0);
+        }
+        return state == 2;
     }
     int ok = 0;
     uint64_t h = 1469598103934665603ULL;
@@ -3096,9 +3100,7 @@ static int pm_svc_ready(void)
     fprintf(stderr, "[pm-svc] image %d text ea=0x%08X len=0x%X fnv=%016llX expect=%016llX: native services %s%s\n",
             s_svc.image_id, s_svc.tmpl_ea, s_svc.text_len, (unsigned long long)h,
             (unsigned long long)s_svc.text_fnv, ok ? "on" : "off", ok && s_svc_verify ? " (verify)" : "");
-    MemoryBarrier();
-    s_svc.ready = ok ? 1 : -1;
-    if (!ok) g_spu_pm_svc_on = 0;
+    InterlockedExchange(&s_svc_once, ok ? 2 : -1);
     return ok;
 }
 /* A scope lasts while its bracket does: deeper brackets, or the same bracket
@@ -3133,10 +3135,21 @@ static int pm_svc_call_ok(spu_context* ctx, uint32_t pc)
     if (!entry || !pm_svc_ready()) return 0;
     uint32_t ret = ctx->drain_ret_pc & SPU_LS_MASK;
     int job_call = 0;
-    if ((ctx->gpr[0]._u32[0] & SPU_LS_MASK) == ret)
-        for (unsigned i = 0; i < sizeof(ctx->resident_code) / sizeof(ctx->resident_code[0]); ++i)
-            if (ctx->resident_code[i].image_id > 0 && ret >= ctx->resident_code[i].lsa &&
-                ret - ctx->resident_code[i].lsa < ctx->resident_code[i].size) job_call = 1;
+    if (ret >= 4 && (ctx->gpr[0]._u32[0] & SPU_LS_MASK) == ret) {
+        uint32_t call = ret - 4;
+        for (unsigned i = 0; i < sizeof(ctx->resident_code) / sizeof(ctx->resident_code[0]); ++i) {
+            uint32_t base = ctx->resident_code[i].lsa, size = ctx->resident_code[i].size;
+            int image = ctx->resident_code[i].image_id;
+            if (!image || call < base || call - base >= size) continue;
+            if (image > 0 && size <= SPU_LS_SIZE - base && ret - base < size) {
+                const uint8_t* bytes = ctx->ls + call;
+                uint32_t instruction = (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 |
+                                       (uint32_t)bytes[2] << 8 | (uint32_t)bytes[3];
+                job_call = (instruction & 0xffe0007fu) == 0x35200000u;
+            }
+            break;
+        }
+    }
     if (!job_call) { InterlockedIncrement(&s_svc_not_job_call); return 0; }
     for (int i = 0; i < s_svc.ncode; ++i) {
         uint32_t lo = s_svc.code[i][0], n = s_svc.code[i][1] - lo;

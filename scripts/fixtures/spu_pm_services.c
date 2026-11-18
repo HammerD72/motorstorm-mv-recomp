@@ -97,6 +97,7 @@ int main(int argc,char** argv) {
     if (!strcmp(mode,"text-differs")) word(0x308,0x1C024183); /* ai r3,r3,9 in LS only */
     word(0x4000,0x04000004); /* ori r4,r0,0 */
     word(0x4004,tail_jump?0x35000100:0x35200100); /* bi r2 / bisl r0,r2 */
+    if (!strcmp(mode,"wrong-call-opcode")) word(0x4004,0x35000100);
     word(0x4008,0x1C00C183); /* ai r3,r3,3 */
     word(0x400C,0x04000200); /* ori r0,r4,0 */
     word(0x4010,0x35000000); /* bi r0 */
@@ -112,7 +113,11 @@ int main(int argc,char** argv) {
 
     memcpy(&reference,&ctx,sizeof ctx);reference.ls=reference.ls_store;
     memset(reference.resident_code,0,sizeof reference.resident_code);   /* everything interpreted */
+    if (!strcmp(mode,"wrong-call-opcode")) {
+        reference.ls[0x4005] = 0x20;
+    }
     spu_run_with_halt(forbidden_policy,&reference);
+    if (!strcmp(mode,"wrong-call-opcode")) reference.ls[0x4005] = 0;
     PM_CHECK(!job_calls && !svc_calls);
     uint64_t before[SPU_PM_SERVICES_COUNTERS];spu_pm_services_counters(before);
     spu_run_with_halt(forbidden_policy,&ctx);
@@ -131,6 +136,7 @@ int main(int argc,char** argv) {
     unsigned want_svc=0; uint64_t want[SPU_PM_SERVICES_COUNTERS]={0};
     int on=g_spu_pm_svc_on;
     if (!strcmp(mode,"native") || !strcmp(mode,"scope")) { want_svc=1; want[0]=1; }
+    else if (!strcmp(mode,"wrong-call-opcode")) { want[6]=1; }
     else if (!strcmp(mode,"verify")) { want_svc=1; want[1]=1; }
     else if (!strcmp(mode,"verify-mismatch")) { want_svc=1; want[2]=1; }
     else if (!strcmp(mode,"text-differs")) want[5]=1;

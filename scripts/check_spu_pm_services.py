@@ -32,11 +32,12 @@ EXTRA = ['runtime/platform/win32_compat.c', 'runtime/memory/guest_read_sync.c', 
 MODES = {
     'off': (None, None), 'native': ('1', None), 'verify': ('1', '1'), 'verify-mismatch': ('1', '1'),
     'text-differs': ('1', None), 'fp-mismatch': ('1', None), 'tail-jump': ('1', None), 'short-span': ('1', None),
-    'scope': ('1', None),
+    'scope': ('1', None), 'wrong-call-opcode': ('1', None),
     'gate': ('1', None),
 }
 # Each mutant must make at least one mode fail.
 MUTANTS = {
+    'unchecked-call-opcode': [('job_call = (instruction & 0xffe0007fu) == 0x35200000u;', 'job_call = (instruction != 0);')],
     'no-text-compare': [('if (memcmp(ctx->ls + lo, s_svc.text + (lo - s_svc.ls_base), n) != 0) {', 'if (0) {')],
     'no-fingerprint': [('ok = h == s_svc.text_fnv;', 'ok = 1;')],
     'no-job-call-check': [('if (!job_call) { InterlockedIncrement(&s_svc_not_job_call); return 0; }', '')],
