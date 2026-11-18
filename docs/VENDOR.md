@@ -32,6 +32,10 @@ performance, minimum 30 FPS and interpreter removal remain open.
 
 ## Job dispatch log and depth-guard ring (#327)
 
+The reusable depth guard is on own-fork branch `codex/spu-depth-ring` at
+`fefcd49a`. The depth limit and history are worker-local. An atomic flag
+retains the single process-wide report when multiple workers trip.
+
 Two costs every native job transfer paid, found by a line-level sample of
 MotorStorm's vehicle job:
 
@@ -41,7 +45,7 @@ MotorStorm's vehicle job:
   the SPU threads waited on stderr and the C runtime's stream lock. Lift hits
   now log only with `SPU_JOBMOD_DISPATCH_LOG=1` (`run.py --jobmod-dispatch-log`);
   unset or `0` is off and any other value aborts. Misses
-  (`resolver=MISS->interp`) still always log, with their own counter.
+  (`resolver=MISS->interp`) remain enabled by default. Each worker owns its setting and separate hit and miss counters.
 - `spu_drain.c`: `spu_depth_guard` wrote its ring of recent drain sites, shared
   by every SPU thread, on every lifted call, so its cache line moved between
   threads constantly. The ring is now per thread (`SPU_THREAD_LOCAL`). It is

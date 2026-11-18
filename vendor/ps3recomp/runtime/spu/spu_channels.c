@@ -3251,14 +3251,14 @@ void spu_indirect_branch(spu_context* ctx)
      * eighth of its time in stderr writes and the CRT lock (#327). Misses
      * always log. Each verdict has its own counter. */
     if (code_owner) {
-        static int s_hit_log = -1;
+        static SPU_THREAD_LOCAL int s_hit_log = -1;
         if (s_hit_log < 0) {
             const char* e = getenv("SPU_JOBMOD_DISPATCH_LOG");
             if (!e || !e[0] || (e[0] == '0' && !e[1])) s_hit_log = 0;
             else if (e[0] == '1' && !e[1]) s_hit_log = 1;
             else { fprintf(stderr, "SPU_JOBMOD_DISPATCH_LOG must be 0 or 1, got '%s'\n", e); abort(); }
         }
-        static unsigned s_hits = 0, s_misses = 0;
+        static SPU_THREAD_LOCAL unsigned s_hits, s_misses;
         unsigned _d = fn ? (s_hit_log ? ++s_hits : 0u) : ++s_misses;
         if (_d && (_d <= 16 || (_d % 64u) == 0)) {
             fprintf(stderr, "[pm-jobmod] DISPATCH img=%d target=0x%05X "
