@@ -46,6 +46,31 @@ The feature remains opt-in. Original author measurements retain their stated
 revision and local-change qualifications. Current native-title visuals, matched
 performance, minimum 30 FPS and interpreter removal remain open.
 
+## Job dispatch log and depth-guard ring (#327)
+
+The reusable depth guard is on own-fork branch `codex/spu-depth-ring` at
+`fefcd49a`. The depth limit and history are worker-local. An atomic flag
+retains the single process-wide report when multiple workers trip.
+
+Two costs every native job transfer paid, found by a line-level sample of
+MotorStorm's vehicle job:
+
+- `spu_channels.c`: `spu_indirect_branch` logged the first 16 and every 64th
+  transfer into a claimed resident job span (`[pm-jobmod] DISPATCH`). A lift hit
+  is every native job transfer, so a race wrote about 875,000 lines (117 MB) and
+  the SPU threads waited on stderr and the C runtime's stream lock. Lift hits
+  now log only with `SPU_JOBMOD_DISPATCH_LOG=1` (`run.py --jobmod-dispatch-log`);
+  unset or `0` is off and any other value aborts. Misses
+  (`resolver=MISS->interp`) remain enabled by default. Each worker owns its setting and separate hit and miss counters.
+- `spu_drain.c`: `spu_depth_guard` wrote its ring of recent drain sites, shared
+  by every SPU thread, on every lifted call, so its cache line moved between
+  threads constantly. The ring is now per thread (`SPU_THREAD_LOCAL`). It is
+  only read when `SPU_HOST_DEPTH_MAX` trips, and then lists the tripping
+  thread's own cycle.
+
+`check_spu_native_owned.py` runs the owned fixture with the switch unset, `0`,
+`1` and `2`. Behaviour is otherwise unchanged.
+
 ## FACING and full polygon-offset identity (#320)
 
 The reusable port is own-fork modular commit

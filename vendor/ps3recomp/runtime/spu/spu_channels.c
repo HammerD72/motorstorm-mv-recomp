@@ -3615,10 +3615,22 @@ void spu_indirect_branch(spu_context* ctx)
     /* Round-11: did the staged jobmod ever DISPATCH? Every transfer into a
      * claimed resident_code span logs the resolver verdict: a lift hit runs
      * natively; a miss falls to the interpreter span below (and with no
-     * span it is the "job claimed, never entered" signature). */
+     * span it is the "job claimed, never entered" signature). Lift hits are
+     * every native job transfer, so they log only with
+     * SPU_JOBMOD_DISPATCH_LOG=1: printing them cost the vehicle job about an
+     * eighth of its time in stderr writes and the CRT lock (#327). Misses
+     * always log. Each verdict has its own counter. */
     if (code_owner) {
-        static unsigned _d = 0; _d++;
-        if (_d <= 16 || (_d % 64u) == 0) {
+        static SPU_THREAD_LOCAL int s_hit_log = -1;
+        if (s_hit_log < 0) {
+            const char* e = getenv("SPU_JOBMOD_DISPATCH_LOG");
+            if (!e || !e[0] || (e[0] == '0' && !e[1])) s_hit_log = 0;
+            else if (e[0] == '1' && !e[1]) s_hit_log = 1;
+            else { fprintf(stderr, "SPU_JOBMOD_DISPATCH_LOG must be 0 or 1, got '%s'\n", e); abort(); }
+        }
+        static SPU_THREAD_LOCAL unsigned s_hits, s_misses;
+        unsigned _d = fn ? (s_hit_log ? ++s_hits : 0u) : ++s_misses;
+        if (_d && (_d <= 16 || (_d % 64u) == 0)) {
             fprintf(stderr, "[pm-jobmod] DISPATCH img=%d target=0x%05X "
                     "resolver=%s rel=%d lr=0x%05X r3=0x%08X r4=0x%08X\n",
                     code_owner, ctx->pc & SPU_LS_MASK,
