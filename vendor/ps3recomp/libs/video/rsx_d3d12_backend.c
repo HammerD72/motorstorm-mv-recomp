@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include "rsx_fps_stats.h"   /* FPS_STATS=1 present-rate report */
+#include "rsx_renderer_phase.h"   /* RSX_CPU_SURFACE_PROFILE=1 queue-time phases */
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1556,7 +1557,9 @@ static int wait_for_gpu(void)
         const ULONGLONG elapsed = GetTickCount64()-start;
         if (elapsed >= 6000) return 0;
         const DWORD remaining = (DWORD)(6000-elapsed);
+        rsx_d3d12_renderer_phase_begin(RSX_PHASE_GPU_WAIT);
         DWORD status = WaitForSingleObject(s_d3d.fence_event,remaining < 2000 ? remaining : 2000);
+        rsx_d3d12_renderer_phase_end();
         if (status == WAIT_FAILED) { fprintf(stderr,"[D3D12] Fence wait failed: %lu\n",GetLastError());return 0; }
         if (status == WAIT_TIMEOUT) {
             fprintf(stderr,"[D3D12] Fence wait pending: target=%llu completed=%llu elapsed=%llums\n",
@@ -4481,6 +4484,8 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
  * one offset), which sidesteps guessing the surface's context DMA location. */
 #define CPU_SURFACE_CAPACITY s_d3d.off_rt_cap
 #include "rsx_cpu_surface.inc"
+void rsx_d3d12_renderer_phase_begin(unsigned phase) { cpu_surface_phase_enter(phase); }
+void rsx_d3d12_renderer_phase_end(void) { cpu_surface_phase_exit(); }
 
 #include "rsx_surface_samples.h"
 
@@ -7198,8 +7203,10 @@ static void submit_record_capacity(void* context, int present)
     record_batch_retire();
     int saved = s_present_this_frame;
     s_present_this_frame = 0;
+    rsx_d3d12_renderer_phase_begin(RSX_PHASE_SUBMIT);
     render_frame();
     if (!drain_overlap()) record_batch_retire();
+    rsx_d3d12_renderer_phase_end();
     s_present_this_frame = saved;
 }
 /* A queued CPU read needs a recorded, unsubmitted write, or a listed eager
@@ -7242,8 +7249,9 @@ static void d3d12_present(void* ud, u32 buffer_id)
             break;
         }
 
-    if (s_d3d.initialized && flip_has_display)
-        render_frame();
+    if (s_d3d.initialized && flip_has_display) {
+        rsx_d3d12_renderer_phase_begin(RSX_PHASE_SUBMIT); render_frame(); rsx_d3d12_renderer_phase_end();
+    }
 
     /* FPS tracking */
     ULONGLONG now = GetTickCount64();
@@ -7373,7 +7381,7 @@ static void d3d12_clear(void* ud, u32 flags, u32 color, float depth, u8 stencil)
         if (blink_dbg())
             printf("[CLEAR] presenting %u accumulated draws at frame boundary\n",
                    s_d3d.draw_count);
-        render_frame();
+        rsx_d3d12_renderer_phase_begin(RSX_PHASE_SUBMIT); render_frame(); rsx_d3d12_renderer_phase_end();
         s_clear_presents++;
     }
     s_dbg_clears_since_present++;
@@ -8193,7 +8201,9 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
          * off-screen. Untextured VP draws now render via the colour PSO. */
         if (s_d3d.vp_vb_mapped && s_d3d.vp_root_sig) {
             u32 rec = s_d3d.vp_vb_offset;
+            rsx_d3d12_renderer_phase_begin(RSX_PHASE_VERTEX); 
             u32 emitted = upload_quads_vp(s_d3d.current_rsx_state, first, count);
+            rsx_d3d12_renderer_phase_end();
             if (emitted && s_d3d.draw_count < MAX_DRAWS) {
                 D3D12DrawRecord* dr = &s_d3d.draws[s_d3d.draw_count];
                 dr->vb_byte_offset = rec;
@@ -8261,7 +8271,9 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
             return;
         }
         u32 record_offset = s_d3d.vb_offset;
+        rsx_d3d12_renderer_phase_begin(RSX_PHASE_VERTEX); 
         u32 emitted = upload_quads_from_rsx(first, count);
+        rsx_d3d12_renderer_phase_end();
         if (emitted == 0) return;
         if (s_d3d.draw_count < MAX_DRAWS) {
             s_d3d.draws[s_d3d.draw_count].vb_byte_offset = record_offset;
@@ -8398,7 +8410,9 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
     }
 
     u32 record_offset = s_d3d.vb_offset;
+    rsx_d3d12_renderer_phase_begin(RSX_PHASE_VERTEX); 
     u32 actual_count  = upload_vertices_from_rsx(first, count);
+    rsx_d3d12_renderer_phase_end();
     if (actual_count == 0) return;
 
     if (s_d3d.draw_count < MAX_DRAWS) {
@@ -8440,16 +8454,19 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
      * list. Other primitives are skipped rather than drawn wrong. */
     u32 emitted = 0;
     u32 rec = s_d3d.vp_vb_offset;
+    rsx_d3d12_renderer_phase_begin(RSX_PHASE_VERTEX); 
     if (primitive == RSX_PRIMITIVE_QUADS)             emitted = upload_quads_vp_indexed(s_d3d.current_rsx_state, first, count);
     else if (primitive == RSX_PRIMITIVE_TRIANGLES)    emitted = upload_tris_vp_indexed(s_d3d.current_rsx_state, first, count);
     else if (primitive == RSX_PRIMITIVE_TRIANGLE_STRIP) emitted = upload_strip_vp_indexed(s_d3d.current_rsx_state, first, count, 0);
     else if (primitive == RSX_PRIMITIVE_TRIANGLE_FAN)   emitted = upload_strip_vp_indexed(s_d3d.current_rsx_state, first, count, 1);
     else {
+        rsx_d3d12_renderer_phase_end();
         static int _skip = 0;
         if (_skip++ < 3)
             printf("[D3D12] draw_indexed: skipping prim=%u (not wired)\n", primitive);
         return;
     }
+    rsx_d3d12_renderer_phase_end();
     /* Same BEGIN/END batch concatenation as the non-indexed path: this title's
      * fluid arrives as ~3000 DRAW_INDEX_ARRAY batches of 256, and 256 is not a
      * multiple of 3, so every batch after the first assembled out of phase. */
@@ -8778,6 +8795,12 @@ static rsx_backend s_d3d12_backend = {0};
  * Public API
  * -----------------------------------------------------------------------*/
 
+/* Draw recording as one renderer phase (vertex uploads nest inside). */
+static void d3d12_draw_arrays_phased(void* ud, u32 primitive, u32 first, u32 count)
+{ rsx_d3d12_renderer_phase_begin(RSX_PHASE_DRAW); d3d12_draw_arrays(ud, primitive, first, count); rsx_d3d12_renderer_phase_end(); }
+static void d3d12_draw_indexed_phased(void* ud, u32 primitive, u32 first, u32 count)
+{ rsx_d3d12_renderer_phase_begin(RSX_PHASE_DRAW); d3d12_draw_indexed(ud, primitive, first, count); rsx_d3d12_renderer_phase_end(); }
+
 int rsx_d3d12_backend_init(u32 width, u32 height, const char* title)
 {
     memset(&s_d3d, 0, sizeof(s_d3d));
@@ -8834,8 +8857,8 @@ int rsx_d3d12_backend_init(u32 width, u32 height, const char* title)
     s_d3d12_backend.set_depth_stencil = d3d12_set_depth_stencil;
     s_d3d12_backend.set_shader        = d3d12_set_shader;
     s_d3d12_backend.set_vertex_attribs = d3d12_set_vertex_attribs;
-    s_d3d12_backend.draw_arrays       = d3d12_draw_arrays;
-    s_d3d12_backend.draw_indexed      = d3d12_draw_indexed;
+    s_d3d12_backend.draw_arrays       = d3d12_draw_arrays_phased;
+    s_d3d12_backend.draw_indexed      = d3d12_draw_indexed_phased;
     s_d3d12_backend.bind_texture      = d3d12_bind_texture;
 
     cpu_surface_init();
@@ -9007,7 +9030,7 @@ void rsx_d3d12_backend_present(void)
           if (remap < 0) { const char* e = getenv("TEX_REMAP"); remap = e ? atoi(e) : 0; }
           if (remap) rsx_reset_upload_claims(); }
         s_present_this_frame = has_display;
-        render_frame();
+        rsx_d3d12_renderer_phase_begin(RSX_PHASE_SUBMIT); render_frame(); rsx_d3d12_renderer_phase_end();
         s_present_this_frame = 1;
     }
 }

@@ -71,9 +71,10 @@ int main(int argc,char **argv){
     REQUIRE(read_calls==1 && clock_calls==0,"default-off has no profiling clocks and still services read");
     s_cpu_surface_profile=1;s_cpu_surface_profile_frequency=1000;
     cpu_surface_request(0x20120,2,NULL);
-    REQUIRE(read_calls==2 && clock_calls==4,"queued request completes with exact timing boundaries");
+    /* queue, start, renderer surface phase enter/exit, finish, return */
+    REQUIRE(read_calls==2 && clock_calls==6,"queued request completes with exact timing boundaries");
     current_thread=2;cpu_surface_request(0x20120,2,NULL);
-    REQUIRE(read_calls==3 && clock_calls==6,"direct renderer path completes and restores active record");
+    REQUIRE(read_calls==3 && clock_calls==8,"direct renderer path completes and restores active record");
     REQUIRE(!s_cpu_surface_profile_active && !s_cpu_surface_head && !s_cpu_surface_tail,"request ownership cleared");
     puts("PASS: actual CPU surface request/service, default-off clocks, direct path and accounting");return 0;
 }
