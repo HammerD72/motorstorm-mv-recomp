@@ -23,10 +23,14 @@ typedef struct RsxRendererPhases {
     uint32_t depth;                          /* renderer only */
     uint8_t stack[RSX_PHASE_DEPTH];
 } RsxRendererPhases;
-static void rsx_renderer_phase_charge(RsxRendererPhases *s,uint64_t now,uint32_t next) {
+/* The clock is read inside the odd window: a snapshot that sees the same even
+ * count before and after its own clock read then lies wholly before or after
+ * this transition, never between its tick and its update. */
+static void rsx_renderer_phase_charge(RsxRendererPhases *s,uint64_t (*tick)(void),uint32_t next) {
     uint64_t sequence=atomic_load_explicit(&s->sequence,memory_order_relaxed);
     atomic_store_explicit(&s->sequence,sequence+1,memory_order_relaxed);
-    atomic_thread_fence(memory_order_release);
+    atomic_thread_fence(memory_order_seq_cst);
+    uint64_t now=tick();
     uint32_t current=atomic_load_explicit(&s->current,memory_order_relaxed);
     uint64_t last=atomic_load_explicit(&s->last,memory_order_relaxed);
     if(now>last) {
@@ -37,18 +41,18 @@ static void rsx_renderer_phase_charge(RsxRendererPhases *s,uint64_t now,uint32_t
     atomic_store_explicit(&s->sequence,sequence+2,memory_order_release);
 }
 /* Renderer thread only. 0 on an unknown phase or a full stack. */
-static int rsx_renderer_phase_enter(RsxRendererPhases *s,uint64_t now,unsigned phase) {
+static int rsx_renderer_phase_enter(RsxRendererPhases *s,uint64_t (*tick)(void),unsigned phase) {
     if(phase>=RSX_PHASE_COUNT || s->depth>=RSX_PHASE_DEPTH)return 0;
     s->stack[s->depth++]=(uint8_t)phase;
-    rsx_renderer_phase_charge(s,now,phase);
+    rsx_renderer_phase_charge(s,tick,phase);
     return 1;
 }
 /* Renderer thread only. 0 when no phase is open (an exit whose enter came
  * before the renderer thread was known); nothing is charged then. */
-static int rsx_renderer_phase_exit(RsxRendererPhases *s,uint64_t now) {
+static int rsx_renderer_phase_exit(RsxRendererPhases *s,uint64_t (*tick)(void)) {
     if(!s->depth)return 0;
     s->depth--;
-    rsx_renderer_phase_charge(s,now,s->depth?s->stack[s->depth-1]:RSX_PHASE_OTHER);
+    rsx_renderer_phase_charge(s,tick,s->depth?s->stack[s->depth-1]:RSX_PHASE_OTHER);
     return 1;
 }
 /* Totals as of *now, from any thread. The clock is read inside the sequence
@@ -62,7 +66,7 @@ static void rsx_renderer_phase_snapshot(RsxRendererPhases *s,uint64_t (*tick)(vo
         uint32_t current=atomic_load_explicit(&s->current,memory_order_relaxed);
         uint64_t last=atomic_load_explicit(&s->last,memory_order_relaxed);
         uint64_t t=tick();
-        atomic_thread_fence(memory_order_acquire);
+        atomic_thread_fence(memory_order_seq_cst);   /* tick before the recheck */
         if(atomic_load_explicit(&s->sequence,memory_order_relaxed)!=before)continue;
         if(t>last)out[current]+=t-last;
         *now=t;return;

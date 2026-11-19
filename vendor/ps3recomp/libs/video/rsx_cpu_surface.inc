@@ -42,11 +42,11 @@ static u64 cpu_surface_tick(void) {
 static RsxRendererPhases s_cpu_surface_phases;
 static void cpu_surface_phase_enter(unsigned phase) {
     if(!s_cpu_surface_profile || !s_cpu_surface_thread || (LONG)GetCurrentThreadId()!=s_cpu_surface_thread)return;
-    if(!rsx_renderer_phase_enter(&s_cpu_surface_phases,cpu_surface_tick(),phase))cpu_surface_fail("renderer phase nesting",E_FAIL);
+    if(!rsx_renderer_phase_enter(&s_cpu_surface_phases,cpu_surface_tick,phase))cpu_surface_fail("renderer phase nesting",E_FAIL);
 }
 static void cpu_surface_phase_exit(void) {
     if(!s_cpu_surface_profile || !s_cpu_surface_thread || (LONG)GetCurrentThreadId()!=s_cpu_surface_thread)return;
-    rsx_renderer_phase_exit(&s_cpu_surface_phases,cpu_surface_tick());
+    rsx_renderer_phase_exit(&s_cpu_surface_phases,cpu_surface_tick);
 }
 /* Queue tick plus the renderer phase totals as of that tick. */
 static void cpu_surface_phase_queued(CpuSurfaceRequest *request) {
