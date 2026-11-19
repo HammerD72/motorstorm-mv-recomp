@@ -69,7 +69,7 @@ def main():
         r=subprocess.run([str(exe),'0','cap'],capture_output=True,text=True,timeout=10)
         if r.returncode!=0 or 'PASS: draw cap' not in r.stdout:
             raise RuntimeError(f'draw cap: {r.returncode} {r.stdout} {r.stderr}')
-        for name, before, after in (('cap-ignored', 'if (cap && s_d3d.initialized && s_d3d.draw_count >= cap)', 'if (0)'),
+        for name, before, after in (('cap-ignored', 'if (cap && s_d3d.initialized && s_d3d.draw_count >= cap)', '(void)cap; if (0)'),
                                     ('cap-exact', 's_d3d.draw_count >= cap', 's_d3d.draw_count == cap'),
                                     ('cap-uninitialized', 'cap && s_d3d.initialized && ', 'cap && ')):
             mutated(name, before, after)
