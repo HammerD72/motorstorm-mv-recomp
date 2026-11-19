@@ -57,6 +57,7 @@ static void cpu_surface_read(u32 address,u32 bytes){
 /* PRODUCTION_REQUEST */
 #define REQUIRE(x,message) do{if(!(x)){fprintf(stderr,"FAIL: %s\n",message);return 1;}}while(0)
 int main(int argc,char **argv){
+    (void)cpu_surface_phase_submit_stage; /* extracted with the helpers; called only from the backend export */
     RsxCpuSurfaceProfile p={0};p.queued=10;p.started=20;p.finished=60;p.returned=70;
     p.allocation=2;p.prior_fence=3;p.commands=5;p.copy_fence=7;p.packing=11;p.matched=2;p.hits=1;p.copies=1;
     REQUIRE(rsx_cpu_surface_profile_valid(&p),"disjoint stages admitted");
