@@ -10,7 +10,11 @@
 #include <stdint.h>
 enum {
     RSX_PHASE_OTHER, RSX_PHASE_IDLE, RSX_PHASE_FIFO, RSX_PHASE_DRAW, RSX_PHASE_VERTEX,
-    RSX_PHASE_SUBMIT, RSX_PHASE_GPU_WAIT, RSX_PHASE_PRESENT, RSX_PHASE_SURFACE, RSX_PHASE_COUNT
+    /* Batch submission; render_frame relabels the open submit phase at its
+     * stage boundaries (RSX_PHASE_STATS names), the capacity drain at retire. */
+    RSX_PHASE_SUBMIT, RSX_PHASE_SUBMIT_DRAIN, RSX_PHASE_SUBMIT_PREP, RSX_PHASE_SUBMIT_REPLAY,
+    RSX_PHASE_SUBMIT_POST, RSX_PHASE_SUBMIT_PRESENT, RSX_PHASE_SUBMIT_NEXT, RSX_PHASE_SUBMIT_RETIRE,
+    RSX_PHASE_GPU_WAIT, RSX_PHASE_PRESENT, RSX_PHASE_SURFACE, RSX_PHASE_COUNT
 };
 #ifndef __cplusplus   /* the frame clock (C++) needs only the phases and exports */
 #include <stdatomic.h>
@@ -55,6 +59,17 @@ static int rsx_renderer_phase_exit(RsxRendererPhases *s,uint64_t (*tick)(void)) 
     rsx_renderer_phase_charge(s,tick,s->depth?s->stack[s->depth-1]:RSX_PHASE_OTHER);
     return 1;
 }
+/* Renderer thread only. Relabel the innermost open phase when it lies in
+ * [first,last]; otherwise (or with none open) nothing changes. 0 when not
+ * relabelled. Early returns need no matching exit. */
+static int rsx_renderer_phase_switch(RsxRendererPhases *s,uint64_t (*tick)(void),unsigned phase,unsigned first,unsigned last) {
+    if(phase>=RSX_PHASE_COUNT || !s->depth)return 0;
+    unsigned top=s->stack[s->depth-1];
+    if(top<first || top>last || top==phase)return 0;
+    s->stack[s->depth-1]=(uint8_t)phase;
+    rsx_renderer_phase_charge(s,tick,phase);
+    return 1;
+}
 /* Totals as of *now, from any thread. The clock is read inside the sequence
  * window, so no transition lies between the totals and *now; the open phase
  * is charged up to *now. */
@@ -79,6 +94,7 @@ extern "C" {
 #endif
 void rsx_d3d12_renderer_phase_begin(unsigned phase);
 void rsx_d3d12_renderer_phase_end(void);
+void rsx_d3d12_renderer_phase_submit_stage(unsigned phase);
 #ifdef __cplusplus
 }
 #endif

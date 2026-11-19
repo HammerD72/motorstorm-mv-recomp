@@ -39,7 +39,8 @@ def main():
         assert n['service']==sum(n[k] for k in ['allocation','prior_fence','commands','copy_fence','packing','other'])
         assert [n[k] for k in ['matched','hits','copies','host_bytes','guest_bytes']]==[2,1,1,256,8]
     # Renderer phases between a queued read's queue and service ticks sum to its queue time.
-    phases=['other','idle','fifo','draw','vertex','submit','gpu_wait','present','surface']
+    phases=['other','idle','fifo','draw','vertex','submit','submit_drain','submit_prep','submit_replay','submit_post',
+            'submit_present','submit_next','submit_retire','gpu_wait','present','surface']
     queues=[{k:int(v,16) if k=='address' else int(v) for k,v in re.findall(r'(\w+)=([0-9A-F]+)',line)} for line in run.stderr.splitlines() if line.startswith('[CPUSURFACE_QUEUE]')]
     assert len(queues)==1,run.stderr
     queued=[{k:int(v,16) if k=='address' else int(v) for k,v in p.items()} for p in records if int(p['client'])!=int(p['renderer'])]

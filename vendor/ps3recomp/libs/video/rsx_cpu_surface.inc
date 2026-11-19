@@ -48,6 +48,11 @@ static void cpu_surface_phase_exit(void) {
     if(!s_cpu_surface_profile || !s_cpu_surface_thread || (LONG)GetCurrentThreadId()!=s_cpu_surface_thread)return;
     rsx_renderer_phase_exit(&s_cpu_surface_phases,cpu_surface_tick);
 }
+/* Relabel an open submit phase with the stage render_frame is entering. */
+static void cpu_surface_phase_submit_stage(unsigned phase) {
+    if(!s_cpu_surface_profile || !s_cpu_surface_thread || (LONG)GetCurrentThreadId()!=s_cpu_surface_thread)return;
+    rsx_renderer_phase_switch(&s_cpu_surface_phases,cpu_surface_tick,phase,RSX_PHASE_SUBMIT,RSX_PHASE_SUBMIT_RETIRE);
+}
 /* Queue tick plus the renderer phase totals as of that tick. */
 static void cpu_surface_phase_queued(CpuSurfaceRequest *request) {
     if(!s_cpu_surface_profile){request->profile.queued=0;return;}
@@ -79,11 +84,14 @@ static void cpu_surface_profile_emit(CpuSurfaceRequest *request) {
         (unsigned long long)p->host_bytes,(unsigned long long)p->guest_bytes);
     if(request->done) {
         const u64 *q=request->phases;
-        fprintf(stderr,"[CPUSURFACE_QUEUE] address=%08X client=%lu frequency=%llu queue=%llu other=%llu idle=%llu fifo=%llu draw=%llu vertex=%llu submit=%llu gpu_wait=%llu present=%llu surface=%llu\n",
+        fprintf(stderr,"[CPUSURFACE_QUEUE] address=%08X client=%lu frequency=%llu queue=%llu other=%llu idle=%llu fifo=%llu draw=%llu vertex=%llu submit=%llu submit_drain=%llu submit_prep=%llu submit_replay=%llu submit_post=%llu submit_present=%llu submit_next=%llu submit_retire=%llu gpu_wait=%llu present=%llu surface=%llu\n",
             request->address,(unsigned long)request->client_thread,(unsigned long long)s_cpu_surface_profile_frequency,
             (unsigned long long)(p->started-p->queued),
             (unsigned long long)q[RSX_PHASE_OTHER],(unsigned long long)q[RSX_PHASE_IDLE],(unsigned long long)q[RSX_PHASE_FIFO],
             (unsigned long long)q[RSX_PHASE_DRAW],(unsigned long long)q[RSX_PHASE_VERTEX],(unsigned long long)q[RSX_PHASE_SUBMIT],
+            (unsigned long long)q[RSX_PHASE_SUBMIT_DRAIN],(unsigned long long)q[RSX_PHASE_SUBMIT_PREP],(unsigned long long)q[RSX_PHASE_SUBMIT_REPLAY],
+            (unsigned long long)q[RSX_PHASE_SUBMIT_POST],(unsigned long long)q[RSX_PHASE_SUBMIT_PRESENT],(unsigned long long)q[RSX_PHASE_SUBMIT_NEXT],
+            (unsigned long long)q[RSX_PHASE_SUBMIT_RETIRE],
             (unsigned long long)q[RSX_PHASE_GPU_WAIT],(unsigned long long)q[RSX_PHASE_PRESENT],(unsigned long long)q[RSX_PHASE_SURFACE]);
     }
 }

@@ -4486,6 +4486,7 @@ static void vp_record_cb(u32 slot, int vs_idx, D3D12DrawRecord* dr)
 #include "rsx_cpu_surface.inc"
 void rsx_d3d12_renderer_phase_begin(unsigned phase) { cpu_surface_phase_enter(phase); }
 void rsx_d3d12_renderer_phase_end(void) { cpu_surface_phase_exit(); }
+void rsx_d3d12_renderer_phase_submit_stage(unsigned phase) { cpu_surface_phase_submit_stage(phase); }
 
 #include "rsx_surface_samples.h"
 
@@ -5397,6 +5398,7 @@ static void render_frame(void)
 {
     double _rf0 = perf_on() ? perf_now() : 0.0;
     u32 fi = s_d3d.frame_index;
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_DRAIN);
     double ph0 = phase_on() ? perf_now() : 0.0;
     if (phase_on()) {
         memset(&s_phase, 0, sizeof s_phase);
@@ -5414,6 +5416,7 @@ static void render_frame(void)
     texture_retention_begin_batch();
     guest_sampler_retire();   /* checked: last frame's tables are free only on success */
     if (phase_on()) s_phase.drain = perf_now() - ph0;
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_PREP);
     phase_gpu_collect();
 
     /* Resolve depth resources before recording. No color-target change
@@ -5981,6 +5984,7 @@ static void render_frame(void)
     if (perf_on()) s_perf_pre += perf_now() - _pre0;
     double ph_replay = phase_on() ? perf_now() : 0.0;
     if (phase_on()) s_phase.prep = ph_replay - ph0 - s_phase.drain;
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_REPLAY);
     /* Set render target + depth */
     s_d3d.cmd_list->lpVtbl->OMSetRenderTargets(s_d3d.cmd_list, 1, &rtv_handle, FALSE, &dsv_handle);
 
@@ -6586,6 +6590,7 @@ static void render_frame(void)
     }
     double ph_replay_end = phase_on() ? perf_now() : 0.0;
     if (phase_on()) s_phase.replay = ph_replay_end - ph_replay;
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_POST);
 
     /* MEMPEEK=<hex addr>:<n>: n big-endian floats at a guest address each frame,
      * with a min/max so a buffer of constants is distinguishable from real data. */
@@ -7012,6 +7017,7 @@ skip_dump_consider: ;
         if (reason) rsx_capture_frame(fi, s_dbg_last_draws, index, reason, s_present_this_frame);
       } }
     if (phase_on()) s_phase.post += perf_now() - ph_post;
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_PRESENT);
     double ph_present = phase_on() ? perf_now() : 0.0;
 
     /* Present */
@@ -7028,6 +7034,7 @@ skip_dump_consider: ;
         if (phase_on()) s_phase.presents++;
     }
     if (phase_on()) s_phase.present = perf_now() - ph_present;
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_NEXT);
     double ph_next = phase_on() ? perf_now() : 0.0;
 
     move_to_next_frame();
@@ -7205,6 +7212,7 @@ static void submit_record_capacity(void* context, int present)
     s_present_this_frame = 0;
     rsx_d3d12_renderer_phase_begin(RSX_PHASE_SUBMIT);
     render_frame();
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_RETIRE);
     if (!drain_overlap()) record_batch_retire();
     rsx_d3d12_renderer_phase_end();
     s_present_this_frame = saved;
