@@ -7183,6 +7183,9 @@ static int blink_dbg(void)
 /* A timeout must never make upload slots safe to reuse. */
 static void record_batch_retire(void)
 {
+    /* Profile only: inside an open submit phase (the post-drain call) this is
+     * retirement; before submission no submit phase is open. */
+    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_RETIRE);
     u32 fi = s_d3d.frame_index;
     wait_for_gpu_required();
     HRESULT removed = s_d3d.device->lpVtbl->GetDeviceRemovedReason(s_d3d.device);
@@ -7212,7 +7215,6 @@ static void submit_record_capacity(void* context, int present)
     s_present_this_frame = 0;
     rsx_d3d12_renderer_phase_begin(RSX_PHASE_SUBMIT);
     render_frame();
-    rsx_d3d12_renderer_phase_submit_stage(RSX_PHASE_SUBMIT_RETIRE);
     if (!drain_overlap()) record_batch_retire();
     rsx_d3d12_renderer_phase_end();
     s_present_this_frame = saved;
