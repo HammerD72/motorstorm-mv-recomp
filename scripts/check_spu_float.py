@@ -37,7 +37,7 @@ def main():
  rejected={}
  for name,file,old,new in [('host-arithmetic-in-spu-mode','spu_float_simd.h','if (spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr','if (0) _mm_setcsr((g_spu_sf_host_csr'),
                            ('signed-zero-order','spu_helpers.h','? -(int32_t)(x & 0x7fffffffu) :','? -(int32_t)(x & 0x7fffffffu)-1 :')]:
-  private=out/name;private.mkdir()
+  private=out/(name+'-headers');private.mkdir()   # not out/name: that is the executable on Linux
   for header in ('spu_helpers.h','spu_float_simd.h'):
    text=(spu/header).read_text(encoding='utf8')
    if header==file:assert text.count(old)==1,(name,header);text=text.replace(old,new)
