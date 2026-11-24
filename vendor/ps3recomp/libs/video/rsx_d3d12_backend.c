@@ -7191,7 +7191,8 @@ static int drain_overlap(void)
     const char* value = rsx_env_once("RSX_DRAIN_OVERLAP");
     return value && value[0] == '1' && !value[1];
 }
-/* RSX_SUBMIT_DRAWS=<n> (opt-in, 16..MAX_DRAWS decimal; unset = off): submit
+/* RSX_SUBMIT_DRAWS=<n> (opt-in, 16..MAX_DRAWS decimal; unset = off; anything
+ * else is reported once and leaves the cap off): submit
  * the batch at the first draw boundary at which it holds n or more draws,
  * through the capacity-drain path. A CPU read waits for the batch that
  * writes its surface to be recorded and submitted; with smaller batches more
@@ -7209,8 +7210,8 @@ static u32 submit_draws_cap(void)
     u32 n = 0; const char* p = value;
     while (*p >= '0' && *p <= '9' && n <= MAX_DRAWS) n = n * 10 + (u32)(*p++ - '0');
     if (p == value || *p || n < 16 || n > MAX_DRAWS) {
-        fprintf(stderr, "[D3D12] RSX_SUBMIT_DRAWS must be a decimal 16..%u, got '%s'\n", (unsigned)MAX_DRAWS, value);
-        abort();
+        fprintf(stderr, "[D3D12] RSX_SUBMIT_DRAWS must be a decimal 16..%u, got '%s'; the cap is off\n", (unsigned)MAX_DRAWS, value);
+        return 0;
     }
     fprintf(stderr, "[D3D12] RSX_SUBMIT_DRAWS=%u: submit at the first draw boundary with %u or more draws\n", n, n);
     cap = n;

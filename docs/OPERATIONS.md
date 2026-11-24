@@ -453,7 +453,9 @@ the main thread's read waits while the renderer prepares and replays that whole
 batch. Smaller batches leave a shorter tail to replay when the read arrives.
 Reads stay coherent, and each extra batch costs one `render_frame` and one GPU
 retirement. `N` is 16 up to the build's draw-record capacity (`PORT_RSX_MAX_DRAWS`,
-default 2048); the runtime aborts on anything else. On a local build with
+default 2048); the runtime reports anything else once and leaves the cap off.
+The launcher does not know that capacity, so it still records an `N` above it;
+check stderr for `the cap is off`. On a local build with
 `--eager-surface-submit 1`, 256 measured best (512 and 128 were slightly lower).
 The launcher clears an inherited cap and records the selection. Game-free
 coverage: [check_rsx_submit_draws.py](../scripts/check_rsx_submit_draws.py)

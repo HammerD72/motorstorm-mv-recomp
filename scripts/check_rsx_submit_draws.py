@@ -56,10 +56,23 @@ def main():
                 raise RuntimeError(f'{value!r}: {r.returncode} {r.stdout} {r.stderr}')
             if cap and 'RSX_SUBMIT_DRAWS=' not in r.stderr:
                 raise RuntimeError(f'{value!r}: enabled cap not announced')
-        for value in ('', '0', '15', '2049', '4096', '99999999999', '256x', ' 256', '-16', '0x100'):
+        # A bad value keeps the process running: cap off, reported once.
+        rejected = ('', '0', '15', '2049', '4096', '99999999999', '256x', ' 256', '-16', '0x100')
+        def off(value):
             r = subprocess.run([str(exe), value], capture_output=True, text=True, timeout=10)
-            if r.returncode == 0 or 'RSX_SUBMIT_DRAWS must be' not in r.stderr:
-                raise RuntimeError(f'{value!r} was accepted: {r.returncode} {r.stdout} {r.stderr}')
-    print(f'PASS: RSX_SUBMIT_DRAWS parses {len(accepted)} values (unset = off) and rejects 10 malformed or out-of-range values')
+            return (r.returncode == 0 and r.stdout.strip() == 'cap=0' and r.stderr.count('RSX_SUBMIT_DRAWS') == 1
+                    and 'RSX_SUBMIT_DRAWS must be' in r.stderr and 'the cap is off' in r.stderr), r
+        for value in rejected:
+            ok, r = off(value)
+            if not ok:
+                raise RuntimeError(f'{value!r} did not leave the cap off: {r.returncode} {r.stdout} {r.stderr}')
+        bad_exit = 'the cap is off\\n", (unsigned)MAX_DRAWS, value);\n        return 0;'
+        assert body.count(bad_exit) == 1
+        for name, replacement in (('abort', 'abort();'), ('use-value', '')):
+            unit.write_text(FIXTURE.replace('@FUNCTION@', body.replace(bad_exit, bad_exit.replace('return 0;', replacement))))
+            compile_c(unit, exe, out)
+            if any(off(value)[0] for value in ('15', '2049', '256x')):
+                raise RuntimeError(name + ' mutant was not exposed')
+    print(f'PASS: RSX_SUBMIT_DRAWS parses {len(accepted)} values (unset = off); {len(rejected)} malformed or out-of-range values leave it off without stopping the process; 2 mutants exposed')
 if __name__ == '__main__':
     main()
