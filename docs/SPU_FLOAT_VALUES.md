@@ -18,6 +18,10 @@ by the outermost scope, so their results do not depend on the scope. FCEQ,
 FCGT, FCMEQ and FCMGT are integer comparisons that keep the earlier host IEEE
 results (exponent255 with a nonzero fraction compares unordered, -0 equals +0,
 denormals compare by value).
+`spu_run_with_halt` marks the float state before its `setjmp`. A halt and a
+guest stack reset jump out of scopes without leaving them, so both landings
+restore that mark (MXCSR and scope state) and the reset enters a scope again
+for the resumed code. This does not rely on `longjmp` restoring the MXCSR.
 The curated drain and budgeted interpreter retain their observers, budgets,
 IRQ/rejoin and policy code.
 
@@ -28,6 +32,10 @@ The scope fixture also checks the held mode, exact results when SPU mode is
 not held, host-arithmetic helpers inside and outside a scope, and the integer
 comparisons against host IEEE comparisons, and the runner rejects two compiled
 mutants (host helpers left in SPU mode; -0 ordered below +0).
+A second fixture runs the real halt and reset jumps and reads the MXCSR and
+scope state at each landing. The runner also builds it with SPU mode forced at
+the landings, as a `longjmp` that keeps the MXCSR leaves it, and rejects
+mutants without either restore, the re-entry or its leave.
 Existing native-leaf, execution-observer, productive-IRET and thread-isolation
 checks retain their assertions and link the new implementation.
 

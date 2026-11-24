@@ -43,6 +43,34 @@ def main():
    if header==file:assert text.count(old)==1,(name,header);text=text.replace(old,new)
    (private/header).write_text(text,encoding='utf8')
   m=run([build(name,ROOT/'scripts/fixtures/robbe_float_simd.c',extra_include=private)],expected=1);assert 'failures=0' not in m.stdout;rejected[name]=m.stdout.strip()
- result=dict(passed=True,exact_rational_lanes_per_mode=len(expected),modes=['scalar','scoped SIMD'],historical_ieee_multiply_mismatches=bad,scope_result=r.stdout.strip(),rejected_mutants=rejected,game_launched=False,FPSCR_exception_flags_tested=False,source_sha256={str(x.relative_to(ROOT)):hashlib.sha256(x.read_bytes()).hexdigest() for x in [p for p in [spu/'spu_helpers.h',spu/'spu_float.h',spu/'spu_float_simd.c',spu/'spu_float_simd.h']]})
+ # Halt and stack-reset landings of the real spu_run_with_halt. "kept" forces
+ # SPU mode at both landings, as a longjmp that keeps the MXCSR leaves it (the
+ # Windows x64 one restores it), so each restore is tested on every platform.
+ units=['spu_drain.c','spu_lockstep.c','spu_coherency.c','spu_workload.c','spurs_policy.c','spurs_job.c','spu_tsp_weak.c','spu_vm_pagemap.c','spurs_policy_blob_weak.c','spu_interp.c','spu_float_simd.c','spu_task_lifecycle.c']
+ runtime=[*[spu/n for n in units],sdk/'runtime/platform/win32_compat.c',sdk/'runtime/memory/guest_read_sync.c',sdk/'runtime/diag/loadtime_trace.c',sdk/'runtime/platform/thread_name.c']
+ channels=(spu/'spu_channels.c').read_text(encoding='utf8')
+ force='_mm_setcsr(_mm_getcsr() | SPU_SF_CSR_SPU);\n';restore='        spu_sf_simd_leave(sf_mark);\n'
+ halt='    case 1:\n';reset='    case 2: {\n'
+ halt_at=halt+restore;reset_at=reset+restore;kept_halt=(halt_at,halt+force+restore);kept_reset=(reset_at,reset+force+restore)
+ enter='const uint64_t sf_scope = spu_sf_simd_enter();';leave='spu_sf_simd_leave(sf_scope);'
+ landings={};cases=['halt','reset','reset-halt','reset-reset','nested']
+ for name,edits,wrong in [('landing',[],None),('landing-kept',[kept_halt,kept_reset],None),
+                          ('landing-no-halt-restore',[(halt_at,halt)],'halt'),
+                          ('landing-kept-no-halt-restore',[(halt_at,halt+force),kept_reset],'halt'),
+                          ('landing-kept-no-reset-restore',[kept_halt,(reset_at,reset+force)],'reset'),
+                          ('landing-no-reset-enter',[(enter,'const uint64_t sf_scope = sf_mark;')],'reset'),
+                          ('landing-no-reset-leave',[(leave,'(void)sf_scope;')],'reset')]:
+  target=out/(name+'-build');target.mkdir();text=channels
+  for old,new in edits:assert text.count(old)==1,(name,old);text=text.replace(old,new)
+  private=target/'spu_channels.c';private.write_text(text,encoding='utf8');exe=target/('test.exe' if os.name=='nt' else 'test')
+  sources=[ROOT/'scripts/fixtures/spu_float_landing.c',private,*runtime];inc=[sdk/'include',spu,sdk/'runtime/platform']
+  if msvc:run([cc,'/nologo','/TC','/std:c17','/O1','/UNDEBUG','/MDd','/D_CRT_SECURE_NO_WARNINGS',*['/I'+str(x) for x in inc],*sources,'/Fo'+str(target)+os.sep,'/Fe'+str(exe),'/link','Synchronization.lib'])
+  else:run([cc,'-std=gnu17','-D_GNU_SOURCE','-O1','-UNDEBUG',*['-I'+str(x) for x in inc],*sources,'-pthread','-lm','-o',exe])
+  landings[name]={}
+  for case in ([wrong] if wrong else cases):
+   m=run([exe,case],expected=1 if wrong else 0)
+   lines=[x for x in (m.stderr if wrong else m.stdout).splitlines() if x.startswith('FAIL landing' if wrong else 'PASS '+case)]
+   assert lines,(name,case,m.stdout,m.stderr);landings[name][case]=lines[-1]
+ result=dict(landings=landings,passed=True,exact_rational_lanes_per_mode=len(expected),modes=['scalar','scoped SIMD'],historical_ieee_multiply_mismatches=bad,scope_result=r.stdout.strip(),rejected_mutants=rejected,game_launched=False,FPSCR_exception_flags_tested=False,source_sha256={str(x.relative_to(ROOT)):hashlib.sha256(x.read_bytes()).hexdigest() for x in [p for p in [spu/'spu_channels.c',ROOT/'scripts/fixtures/spu_float_landing.c',spu/'spu_helpers.h',spu/'spu_float.h',spu/'spu_float_simd.c',spu/'spu_float_simd.h']]})
  (out/'result.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf8');print(json.dumps(result,indent=2));print('Evidence:',out)
 if __name__=='__main__':main()

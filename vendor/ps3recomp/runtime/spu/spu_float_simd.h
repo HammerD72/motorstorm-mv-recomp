@@ -25,6 +25,10 @@ extern SPU_SF_TLS int g_spu_sf_simd_scope;
 /* MXCSR of the caller of the outermost scope (control bits are used). */
 extern SPU_SF_TLS uint32_t g_spu_sf_host_csr;
 uint64_t spu_sf_simd_enter(void);
+/* The current float state as a token for spu_sf_simd_leave, without entering
+ * a scope. Take it before a setjmp: a longjmp out of a scope skips its leave,
+ * and whether longjmp itself restores the MXCSR depends on the platform. */
+uint64_t spu_sf_simd_mark(void);
 void spu_sf_simd_leave(uint64_t saved);
 int spu_sf_simd_fused(uint32_t *out,const uint32_t *a,const uint32_t *b,
                       const uint32_t *c,uint32_t negate_product,uint32_t negate_c);

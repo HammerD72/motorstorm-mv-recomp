@@ -42,6 +42,13 @@ uint64_t spu_sf_simd_enter(void) {
     return 0;
 #endif
 }
+uint64_t spu_sf_simd_mark(void) {
+#if SPU_SF_X86_SIMD
+    return ((uint64_t)(unsigned)g_spu_sf_simd_scope<<32)|_mm_getcsr();
+#else
+    return 0;
+#endif
+}
 void spu_sf_simd_leave(uint64_t saved) {
 #if SPU_SF_X86_SIMD
     g_spu_sf_simd_scope=(int)(saved>>32);
