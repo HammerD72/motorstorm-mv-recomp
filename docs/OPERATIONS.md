@@ -458,6 +458,24 @@ The launcher clears an inherited cap and records the selection. Game-free
 coverage: [check_rsx_submit_draws.py](../scripts/check_rsx_submit_draws.py)
 and the cap case in [check_rsx_record_retire.py](../scripts/check_rsx_record_retire.py).
 
+`--spurs-marker-wake 0|1` (default `0`) selects `SPURS_MARKER_WAKE=1`.
+A marker wait of the game reads the counters of its job list 64 times, then
+sleeps 100 us in a high-resolution timer. On the build machine Windows wakes
+the timer after 0.52 ms at least, so each cooperation is late by about
+0.4 ms. With the switch on, the runtime calls a host hook after each commit
+of a guest line. The job wait adapter keeps the lines of the waited job list
+and signals an event when one of these lines commits. The wait blocks on the
+event and on the timer, so a lost wake-up cannot hang. A value that is not
+`0` or `1` makes the adapter fall back to the guest wait and print an error
+line. Without the option the launcher clears an inherited value, because it
+does not clear the `SPURS_` prefix. The launch record names the key. In a
+race, one cooperation takes 0.52 to 0.59 ms for a due of 100 us, and a
+vehicle wait has 12 cooperations
+([#327](https://github.com/robbe1912/motorstorm-mv-recomp/issues/327)).
+Measured result (one machine, i7-12700K + RTX 4070 SUPER, exe `c45ff520ed9c4e4d`, idle-vehicle race, window 100 to 130 s, 6 interleaved races per arm): 859.2 presents per 30 s with the switch on against 815.5 off (+5.4 percent; every race with the switch above every race without). The vehicle wait drops from 8.49 to 7.48 ms per presented frame and the PVS wait from 5.13 to 4.79 ms; main thread CPU is unchanged. Runs and setup: [#327](https://github.com/robbe1912/motorstorm-mv-recomp/issues/327). Game-free coverage:
+[check_spurs_marker_wake.py](../scripts/check_spurs_marker_wake.py).
+
+
 Use identical cache targets, validation and profiling settings for comparisons.
 Retention validates every uploaded face with full XXH3; the reference retains
 its sparse source checksum. Complete hashing has a measurable cost. Verify the

@@ -195,6 +195,19 @@ class ExecutionProfileTests(unittest.TestCase):
     def test_submit_draws_rejects_tiny_cap(self):
         self.rejected('Submit draw cap must be 0', '--submit-draws', '15')
 
+    def check_spurs_marker_wake(self, mode):
+        with patch.dict(os.environ, {'SPURS_MARKER_WAKE': '1'}):
+            record, env = self.launch('--spurs-marker-wake', mode)
+        expected = '1' if mode == '1' else None
+        self.assertEqual(env.get('SPURS_MARKER_WAKE'), expected)
+        self.assertEqual(record['environment'].get('SPURS_MARKER_WAKE'), expected)
+
+    def test_spurs_marker_wake_default_clears_inherited_switch(self):
+        self.check_spurs_marker_wake('0')
+
+    def test_spurs_marker_wake_enabled(self):
+        self.check_spurs_marker_wake('1')
+
     def test_pm_native_services_default_clears_inherited_selection(self):
         with patch.dict(os.environ, {'SPU_PM_NATIVE_SVC': '1', 'SPU_PM_SVC_VERIFY': '1'}):
             record, env = self.launch('--native-owned-jobs')
