@@ -103,6 +103,7 @@ jobs:
           python scripts/check_rsx_record_retire.py
           python scripts/check_rsx_submit_draws.py
           python scripts/check_rsx_triangle_capacity.py
+          python scripts/check_title_fps.py
       - name: Actual indexed strip restart regression
         run: python scripts/check_rsx_restart.py
       - name: Lifter jump tables with spilled bases and lwax
@@ -350,6 +351,7 @@ jobs:
           python scripts/check_rsx_record_retire.py
           python scripts/check_rsx_submit_draws.py
           python scripts/check_rsx_triangle_capacity.py
+          python scripts/check_title_fps.py
       - name: Actual indexed strip restart regression
         run: python scripts/check_rsx_restart.py
       - name: Lifter jump tables with spilled bases and lwax

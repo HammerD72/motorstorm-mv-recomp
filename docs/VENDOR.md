@@ -95,6 +95,16 @@ parser (5 accepted, 10 rejected values, two mutants); `check_rsx_record_retire.p
 cap against the production ensure/submit/retire bodies with three mutants.
 Measured result: none. No run yet.
 
+## Title-bar FPS
+
+Game-repository change to `rsx_d3d12_backend.c`; not ported to the runtime fork.
+The title-bar statistics run on every `render_frame()`, which also executes
+batches that do not present (capacity drains, CPU-read submits, offscreen-only
+batches). `FPS` now counts only calls that present, and `batches` shows the
+`render_frame()` rate the old number was. The `[FPS]` lines already counted
+presents and are unchanged. Display only. `check_title_fps.py` compiles the
+production block (six states, five mutants).
+
 ## Job dispatch log and depth-guard ring (#327)
 
 The reusable depth guard is on own-fork branch `codex/spu-depth-ring` at
