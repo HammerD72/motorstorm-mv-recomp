@@ -30,8 +30,11 @@ Fraction oracle, rejects a compiled historical IEEE-multiply control, and
 checks SIMD lanes across host rounding modes, fallback and state restoration.
 The scope fixture also checks the held mode, exact results when SPU mode is
 not held, host-arithmetic helpers inside and outside a scope, and the integer
-comparisons against host IEEE comparisons, and the runner rejects two compiled
-mutants (host helpers left in SPU mode; -0 ordered below +0).
+comparisons against host IEEE comparisons. It also checks a caller that uses
+SPU controls before entry and a nested entry after the active controls change.
+The runner rejects four compiled scope mutants: host helpers left in SPU mode,
+host helpers switched outside a scope, nested host-state overwrite, and signed
+zero ordered below positive zero.
 A second fixture runs the real halt and reset jumps and reads the MXCSR and
 scope state at each landing. The runner also builds it with SPU mode forced at
 the landings, as a `longjmp` that keeps the MXCSR leaves it, and rejects
@@ -44,3 +47,5 @@ keeps the same private generated inputs; included helper changes require a
 fresh build, not regeneration. Its owner trial must establish any effect on
 missing menu objects or race loading. Arithmetic fixtures do not attribute
 those symptoms or establish a frame-rate improvement.
+
+Measured result: none. No run yet.

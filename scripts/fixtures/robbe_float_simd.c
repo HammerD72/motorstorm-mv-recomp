@@ -166,6 +166,28 @@ int main(void) {
         check(g_spu_sf_simd_scope==0 && _mm_getcsr()==caller,"caller environment restored exactly");
     }
     check(fast>10000,"normal SIMD path actually exercised");
+    /* A caller can use the same controls without entering a scope. */
+    _mm_setcsr(0x1f80u);
+    uint64_t stale_caller=spu_sf_simd_enter();
+    spu_sf_simd_leave(stale_caller);
+    _mm_setcsr(SPU_SF_CSR_SPU);
+    u128 integer;
+    for(unsigned lane=0;lane<4;++lane) integer._u32[lane]=16777219u;
+    u128 converted=spu_csflt(integer,155);
+    check(converted._u32[0]==0x4b800001u,"outside scope keeps caller truncation");
+    uint64_t held_caller=spu_sf_simd_enter();
+    converted=spu_csflt(integer,155);
+    check(converted._u32[0]==0x4b800001u,"SPU-mode caller keeps caller truncation");
+    spu_sf_simd_leave(held_caller);
+    _mm_setcsr(0x5f80u);
+    held_caller=spu_sf_simd_enter();
+    _mm_setcsr(0x3f80u);
+    uint64_t changed_inner=spu_sf_simd_enter();
+    converted=spu_csflt(integer,155);
+    check(converted._u32[0]==0x4b800002u,"nested scope keeps outer caller rounding");
+    spu_sf_simd_leave(changed_inner);
+    spu_sf_simd_leave(held_caller);
+    _mm_setcsr(0x7fa1u);
     jmp_buf jump;
     uint64_t outer=spu_sf_simd_enter();
     if(!setjmp(jump)){(void)spu_sf_simd_enter();longjmp(jump,1);}

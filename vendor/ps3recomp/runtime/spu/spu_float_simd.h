@@ -53,11 +53,11 @@ static inline uint32_t spu_sf_simd_round_begin(void) {
  * helper's own arithmetic and back. Outside SPU mode nothing changes. */
 static inline uint32_t spu_sf_host_begin(void) {
     uint32_t csr=_mm_getcsr();
-    if (spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr & ~0x3fu)|(csr & 0x3fu));
+    if (g_spu_sf_simd_scope && spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr & ~0x3fu)|(csr & 0x3fu));
     return csr;
 }
 static inline void spu_sf_host_end(uint32_t csr) {
-    if (spu_sf_csr_is_spu(csr)) _mm_setcsr(csr);
+    if (g_spu_sf_simd_scope && spu_sf_csr_is_spu(csr)) _mm_setcsr(csr);
 }
 static inline int spu_sf_simd_extended(__m128i a) {
     const __m128i exponent = _mm_set1_epi32(0x7f800000);

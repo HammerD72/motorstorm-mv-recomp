@@ -12,10 +12,11 @@ def main():
  out=ROOT/'temp/checks'/('spu-float-'+str(time.time_ns()));out.mkdir(parents=True);sdk=ROOT/'vendor/ps3recomp';spu=sdk/'runtime/spu';records=[]
  def run(cmd,input=None,expected=0):
   r=subprocess.run(list(map(str,cmd)),input=input,cwd=ROOT,capture_output=True,text=True,errors='replace',timeout=120);records.append(dict(command=list(map(str,cmd)),returncode=r.returncode,stdout=r.stdout if input is None else 'lane output retained separately',stderr=r.stderr));(out/'commands.json').write_text(json.dumps(records,indent=2),encoding='utf8');assert r.returncode==expected,(cmd,r.stdout[-2000:],r.stderr[-2000:]);return r
- def build(name,source,define=None,extra_include=None):
+ def build(name,source,define=None,extra_include=None,simd_source=None):
   exe=out/(name+('.exe' if os.name=='nt' else ''));inc=([str(extra_include)] if extra_include else [])+[str(sdk),str(sdk/'include'),str(spu)]
-  if msvc:cmd=[cc,'/nologo','/std:c17','/O1','/UNDEBUG','/D_CRT_SECURE_NO_WARNINGS',*['/I'+x for x in inc],*(['/D'+define] if define else []),source,spu/'spu_float_simd.c','/Fe'+str(exe),'/Fo'+str(out)+os.sep]
-  else:cmd=[cc,'-std=c17','-O1','-fno-strict-aliasing','-ffp-contract=off','-UNDEBUG',*['-I'+x for x in inc],*(['-D'+define] if define else []),source,spu/'spu_float_simd.c','-lm','-o',exe]
+  simd_source=simd_source or spu/'spu_float_simd.c'
+  if msvc:cmd=[cc,'/nologo','/std:c17','/O1','/UNDEBUG','/D_CRT_SECURE_NO_WARNINGS',*['/I'+x for x in inc],*(['/D'+define] if define else []),source,simd_source,'/Fe'+str(exe),'/Fo'+str(out)+os.sep]
+  else:cmd=[cc,'-std=c17','-O1','-fno-strict-aliasing','-ffp-contract=off','-UNDEBUG',*['-I'+x for x in inc],*(['-D'+define] if define else []),source,simd_source,'-lm','-o',exe]
   run(cmd);return exe
  rows=[];expected=[]
  for op,group in oracle.cases():
@@ -35,14 +36,16 @@ def main():
  # The scope fixture must reject host-arithmetic helpers left in the held SPU
  # mode, and float compares that order -0 below +0 (private header copies).
  rejected={}
- for name,file,old,new in [('host-arithmetic-in-spu-mode','spu_float_simd.h','if (spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr','if (0) _mm_setcsr((g_spu_sf_host_csr'),
+ for name,file,old,new in [('host-arithmetic-in-spu-mode','spu_float_simd.h','if (g_spu_sf_simd_scope && spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr','if (0) _mm_setcsr((g_spu_sf_host_csr'),
+                           ('host-outside-scope','spu_float_simd.h','g_spu_sf_simd_scope && spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr','spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr'),
+                           ('nested-host-overwrite','spu_float_simd.c','if (!g_spu_sf_simd_scope) g_spu_sf_host_csr=csr;','if (!spu_sf_csr_is_spu(csr)) g_spu_sf_host_csr=csr;'),
                            ('signed-zero-order','spu_helpers.h','? -(int32_t)(x & 0x7fffffffu) :','? -(int32_t)(x & 0x7fffffffu)-1 :')]:
   private=out/(name+'-headers');private.mkdir()   # not out/name: that is the executable on Linux
-  for header in ('spu_helpers.h','spu_float_simd.h'):
+  for header in ('spu_helpers.h','spu_float_simd.h','spu_float_simd.c'):
    text=(spu/header).read_text(encoding='utf8')
    if header==file:assert text.count(old)==1,(name,header);text=text.replace(old,new)
    (private/header).write_text(text,encoding='utf8')
-  m=run([build(name,ROOT/'scripts/fixtures/robbe_float_simd.c',extra_include=private)],expected=1);assert 'failures=0' not in m.stdout;rejected[name]=m.stdout.strip()
+  m=run([build(name,ROOT/'scripts/fixtures/robbe_float_simd.c',extra_include=private,simd_source=private/'spu_float_simd.c')],expected=1);assert 'failures=0' not in m.stdout;rejected[name]=m.stdout.strip()
  # Halt and stack-reset landings of the real spu_run_with_halt. "kept" forces
  # SPU mode at both landings, as a longjmp that keeps the MXCSR leaves it (the
  # Windows x64 one restores it), so each restore is tested on every platform.
