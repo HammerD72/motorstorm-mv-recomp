@@ -2215,3 +2215,35 @@ scope mutants. Its existing exact-rational oracle passes 36,816 helper lanes.
 These checks need no private input and do not cover SPU FPSCR status flags.
 
 Measured result: none. No run yet.
+
+## Whole-vector VMX float arithmetic in the curated lifter
+
+Game source commit: this branch. Not in the fork: `robbe1912/ps3recomp`
+emits `runtime/ppu/ppu_vmx.h` calls for VMX, with exact PowerPC results
+(fused multiply-add, NaN rules, VSCR[NJ]). This repository's curated lifter
+emits plain host single-precision operations instead, and this change keeps
+those results.
+
+`vaddfp`, `vsubfp`, `vmaddfp` and `vnmsubfp` were emitted as four
+byte-swapped scalar lanes each. They now call `ppu_vx_add`, `ppu_vx_sub`,
+`ppu_vx_madd` and `ppu_vx_nmsub` from the source preamble. With SSE2 each one
+loads, byte-swaps, computes and stores the whole vector: the same
+single-precision operations in the same order (the product is still rounded
+before the add or subtract) under the same MXCSR. Without SSE2, or with
+`PPU_VX_SCALAR`, the helpers are the old per-lane loops. A lift has to be
+regenerated to use them. `vrefp` and `vrsqrtefp` are unchanged.
+
+`scripts/check_ppu_vmx_float.py` compiles the lifter's output for
+hand-assembled instructions next to the previous output and compares every
+vector register, over random, special and near-cancellation operands, all
+four MXCSR rounding modes with and without FTZ/DAZ, and aliased registers.
+At the lifted code's flags (clang `-O1`, no contraction) every lane matches,
+including lanes where both operands are NaN. At `-O2` either form may return
+the other NaN in those lanes (the compiler orders the operands); every other
+lane matches. Default RelWithDebInfo builds without
+`PORT_OPTIMIZE_NATIVE` compile the lift at `/O2`. The per-lane fallback
+matches at `-O1`. Six mutants must differ in lanes that are not both NaN:
+the multiply-add addend, the multiply-subtract sign, the subtract order, the
+load and store byte swaps, and the emission's vB/vC order.
+
+Measured result: none. No run yet.

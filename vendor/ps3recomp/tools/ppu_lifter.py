@@ -297,6 +297,62 @@ static inline void ppu_vstu4(void* v, const uint32_t in[4]) {
     for (int i = 0; i < 4; i++) { uint32_t b = ppu_vbswap32(in[i]); memcpy(p + i*4, &b, 4); }
 }
 
+/* vaddfp, vsubfp, vmaddfp and vnmsubfp on the whole vector: d = a+b, a-b,
+ * a*c+b and b-a*c. Each lane is the same single-precision operations in the
+ * same order as the per-lane loops these replace (the product is rounded
+ * before the add or subtract, as before), under the same MXCSR, so the
+ * results are the same bits. The arguments may alias: every source is loaded
+ * before the store. Without SSE2, or with PPU_VX_SCALAR, the per-lane loops
+ * remain. */
+#if !defined(PPU_VX_SCALAR) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
+#include <emmintrin.h>
+static inline __m128 ppu_vx_ld(const void* v) {
+    __m128i x = _mm_loadu_si128((const __m128i*)v);
+    x = _mm_or_si128(_mm_slli_epi16(x, 8), _mm_srli_epi16(x, 8));
+    x = _mm_shufflehi_epi16(_mm_shufflelo_epi16(x, _MM_SHUFFLE(2, 3, 0, 1)), _MM_SHUFFLE(2, 3, 0, 1));
+    return _mm_castsi128_ps(x);
+}
+static inline void ppu_vx_st(void* v, __m128 f) {
+    __m128i x = _mm_castps_si128(f);
+    x = _mm_or_si128(_mm_slli_epi16(x, 8), _mm_srli_epi16(x, 8));
+    x = _mm_shufflehi_epi16(_mm_shufflelo_epi16(x, _MM_SHUFFLE(2, 3, 0, 1)), _MM_SHUFFLE(2, 3, 0, 1));
+    _mm_storeu_si128((__m128i*)v, x);
+}
+static inline void ppu_vx_add(void* d, const void* a, const void* b) {
+    ppu_vx_st(d, _mm_add_ps(ppu_vx_ld(a), ppu_vx_ld(b)));
+}
+static inline void ppu_vx_sub(void* d, const void* a, const void* b) {
+    ppu_vx_st(d, _mm_sub_ps(ppu_vx_ld(a), ppu_vx_ld(b)));
+}
+static inline void ppu_vx_madd(void* d, const void* a, const void* b, const void* c) {
+    ppu_vx_st(d, _mm_add_ps(_mm_mul_ps(ppu_vx_ld(a), ppu_vx_ld(c)), ppu_vx_ld(b)));
+}
+static inline void ppu_vx_nmsub(void* d, const void* a, const void* b, const void* c) {
+    ppu_vx_st(d, _mm_sub_ps(ppu_vx_ld(b), _mm_mul_ps(ppu_vx_ld(a), ppu_vx_ld(c))));
+}
+#else
+static inline void ppu_vx_add(void* d, const void* a, const void* b) {
+    float x[4], y[4], r[4]; ppu_vldf4(a, x); ppu_vldf4(b, y);
+    for (int i = 0; i < 4; i++) r[i] = x[i] + y[i];
+    ppu_vstf4(d, r);
+}
+static inline void ppu_vx_sub(void* d, const void* a, const void* b) {
+    float x[4], y[4], r[4]; ppu_vldf4(a, x); ppu_vldf4(b, y);
+    for (int i = 0; i < 4; i++) r[i] = x[i] - y[i];
+    ppu_vstf4(d, r);
+}
+static inline void ppu_vx_madd(void* d, const void* a, const void* b, const void* c) {
+    float x[4], y[4], z[4], r[4]; ppu_vldf4(a, x); ppu_vldf4(b, y); ppu_vldf4(c, z);
+    for (int i = 0; i < 4; i++) r[i] = x[i] * z[i] + y[i];
+    ppu_vstf4(d, r);
+}
+static inline void ppu_vx_nmsub(void* d, const void* a, const void* b, const void* c) {
+    float x[4], y[4], z[4], r[4]; ppu_vldf4(a, x); ppu_vldf4(b, y); ppu_vldf4(c, z);
+    for (int i = 0; i < 4; i++) r[i] = y[i] - x[i] * z[i];
+    ppu_vstf4(d, r);
+}
+#endif
+
 /* The guest timebase (mftb/mftbu): one global monotonic clock scaled to the
  * PS3's 79.8 MHz, provided by the runtime (runtime/syscalls/sys_timer.c). */
 #ifdef __cplusplus
@@ -2362,9 +2418,8 @@ class PPULifter:
             va = int(ops[1][1:])
             vb = int(ops[2][1:])   # ops[2] = vB = addend (encoding order)
             vc = int(ops[3][1:])   # ops[3] = vC = multiplicand
-            return (f"{{ float a[4],b[4],c[4],d[4]; ppu_vldf4(&ctx->vr[{va}],a); "
-                    f"ppu_vldf4(&ctx->vr[{vb}],b); ppu_vldf4(&ctx->vr[{vc}],c); "
-                    f"for(int i=0;i<4;i++) d[i]=a[i]*c[i]+b[i]; ppu_vstf4(&ctx->vr[{vd}],d); }}")
+            return (f"ppu_vx_madd(&ctx->vr[{vd}], &ctx->vr[{va}], "
+                    f"&ctx->vr[{vb}], &ctx->vr[{vc}]);")
 
         if mn == "vnmsubfp":
             # vD = -(vA*vC - vB) = vB - vA*vC. Encoding order [vD,vA,vB,vC]:
@@ -2373,19 +2428,16 @@ class PPULifter:
             va = int(ops[1][1:])
             vb = int(ops[2][1:])   # ops[2] = vB = minuend (encoding order)
             vc = int(ops[3][1:])   # ops[3] = vC = multiplicand
-            return (f"{{ float a[4],b[4],c[4],d[4]; ppu_vldf4(&ctx->vr[{va}],a); "
-                    f"ppu_vldf4(&ctx->vr[{vb}],b); ppu_vldf4(&ctx->vr[{vc}],c); "
-                    f"for(int i=0;i<4;i++) d[i]=b[i]-a[i]*c[i]; ppu_vstf4(&ctx->vr[{vd}],d); }}")
+            return (f"ppu_vx_nmsub(&ctx->vr[{vd}], &ctx->vr[{va}], "
+                    f"&ctx->vr[{vb}], &ctx->vr[{vc}]);")
 
         if mn == "vaddfp":
             vd, va, vb = int(ops[0][1:]), int(ops[1][1:]), int(ops[2][1:])
-            return (f"{{ float a[4],b[4],d[4]; ppu_vldf4(&ctx->vr[{va}],a); ppu_vldf4(&ctx->vr[{vb}],b); "
-                    f"for(int i=0;i<4;i++) d[i]=a[i]+b[i]; ppu_vstf4(&ctx->vr[{vd}],d); }}")
+            return f"ppu_vx_add(&ctx->vr[{vd}], &ctx->vr[{va}], &ctx->vr[{vb}]);"
 
         if mn == "vsubfp":
             vd, va, vb = int(ops[0][1:]), int(ops[1][1:]), int(ops[2][1:])
-            return (f"{{ float a[4],b[4],d[4]; ppu_vldf4(&ctx->vr[{va}],a); ppu_vldf4(&ctx->vr[{vb}],b); "
-                    f"for(int i=0;i<4;i++) d[i]=a[i]-b[i]; ppu_vstf4(&ctx->vr[{vd}],d); }}")
+            return f"ppu_vx_sub(&ctx->vr[{vd}], &ctx->vr[{va}], &ctx->vr[{vb}]);"
 
         if mn == "vmulfp":
             # Not a real PPC instruction but some disassemblers emit it
