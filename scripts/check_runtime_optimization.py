@@ -115,8 +115,21 @@ endif()
     for active in [False,True]:
         ns=dict(command=[],args=SimpleNamespace(optimize_runtime=active));exec(compile(ast.Module(body=[append],type_ignores=[]),'actual-option','exec'),ns)
         assert ns['command']==['-DPORT_OPTIMIZE_RUNTIME='+('ON' if active else 'OFF')]
-    p=run([sys.executable,ROOT/'scripts/project.py','build','--optimize-runtime','--configure-only'],success=False)
-    assert p.returncode and '--optimize-runtime requires --optimize' in p.stderr
+    # Check the actual argument guard without calling the game build wrapper.
+    import argparse,contextlib,io
+    guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
+               and 'args.optimize_runtime' in ast.unparse(n.test))
+    for active in [False,True]:
+        for native in [False,True]:
+            errors=io.StringIO()
+            ns=dict(args=SimpleNamespace(cmd='build',optimize_runtime=active,optimize=native),
+                    ap=argparse.ArgumentParser())
+            with contextlib.redirect_stderr(errors):
+                try:exec(compile(ast.Module(body=[guard],type_ignores=[]),'actual-guard','exec'),ns)
+                except SystemExit as error:
+                    assert active and not native and error.code==2
+                    assert '--optimize-runtime requires --optimize' in errors.getvalue()
+                else:assert not (active and not native)
     report['passed']=dict(build_types=kinds,compiled_modes=['off','on','off-again'],mutants=list(mutants),unrelated_commands_unchanged=True,invalid_options_rejected=3)
     (out/'result.json').write_text(json.dumps(report,indent=2))
     print(f'PASS actual checked compiler flags, target scoping, off/on/off builds in {len(kinds)} build types, {len(mutants)} mutants and CLI wiring:',out/'result.json')

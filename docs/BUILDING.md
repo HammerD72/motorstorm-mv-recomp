@@ -134,8 +134,8 @@ level is appended last; a Debug build has no toolkit level to lose. Guest PPU/SP
 compilation, assertions, aliasing and floating-point contraction settings are
 unchanged. `runtime_optimization` in build identity records the mode, and the
 helper hash is retained. `check_runtime_optimization.py` checks the scope in
-Debug and RelWithDebInfo. Measurements and their limits are on issue #165
-(RelWithDebInfo) and PR #352 (Debug).
+Debug and RelWithDebInfo. It compiles only authored targets. It does not call
+the game build wrapper. Measured result: none. No run yet.
 
 The renderer option's first native evaluation changed exactly eight object commands, leaving 207
 others unchanged. With matching executable/PDB identity, normal gated PLAY
