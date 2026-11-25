@@ -12,10 +12,10 @@ def main():
  out=ROOT/'temp/checks'/('spu-float-'+str(time.time_ns()));out.mkdir(parents=True);sdk=ROOT/'vendor/ps3recomp';spu=sdk/'runtime/spu';records=[]
  def run(cmd,input=None,expected=0):
   r=subprocess.run(list(map(str,cmd)),input=input,cwd=ROOT,capture_output=True,text=True,errors='replace',timeout=120);records.append(dict(command=list(map(str,cmd)),returncode=r.returncode,stdout=r.stdout if input is None else 'lane output retained separately',stderr=r.stderr));(out/'commands.json').write_text(json.dumps(records,indent=2),encoding='utf8');assert r.returncode==expected,(cmd,r.stdout[-2000:],r.stderr[-2000:]);return r
- def build(name,source,define=None,extra_include=None):
+ def build(name,source,define=None,extra_include=None,simd=None):
   exe=out/(name+('.exe' if os.name=='nt' else ''));inc=([str(extra_include)] if extra_include else [])+[str(sdk),str(sdk/'include'),str(spu)]
-  if msvc:cmd=[cc,'/nologo','/std:c17','/O1','/UNDEBUG','/D_CRT_SECURE_NO_WARNINGS',*['/I'+x for x in inc],*(['/D'+define] if define else []),source,spu/'spu_float_simd.c','/Fe'+str(exe),'/Fo'+str(out)+os.sep]
-  else:cmd=[cc,'-std=c17','-O1','-fno-strict-aliasing','-ffp-contract=off','-UNDEBUG',*['-I'+x for x in inc],*(['-D'+define] if define else []),source,spu/'spu_float_simd.c','-lm','-o',exe]
+  if msvc:cmd=[cc,'/nologo','/std:c17','/O1','/UNDEBUG','/D_CRT_SECURE_NO_WARNINGS',*['/I'+x for x in inc],*(['/D'+define] if define else []),source,simd or spu/'spu_float_simd.c','/Fe'+str(exe),'/Fo'+str(out)+os.sep]
+  else:cmd=[cc,'-std=c17','-O1','-fno-strict-aliasing','-ffp-contract=off','-UNDEBUG',*['-I'+x for x in inc],*(['-D'+define] if define else []),source,simd or spu/'spu_float_simd.c','-lm','-o',exe]
   run(cmd);return exe
  rows=[];expected=[]
  for op,group in oracle.cases():
@@ -32,17 +32,26 @@ def main():
  text,n=re.subn(pattern,'static inline u128 spu_fm(u128 a, u128 b) { u128 r; for(int i=0;i<4;i++) r._f32[i]=a._f32[i]*b._f32[i]; return r; }',text);assert n==1
  (old/'spu_helpers.h').write_text(text,encoding='utf8');bad=mismatches('historical-ieee-mul',build('historical-ieee-mul',driver,extra_include=out/'ieee'));assert bad>0
  r=run([build('scope',ROOT/'scripts/fixtures/robbe_float_simd.c')]);assert 'failures=0' in r.stdout;print(r.stdout.strip())
- # The scope fixture must reject host-arithmetic helpers left in the held SPU
- # mode, and float compares that order -0 below +0 (private header copies).
- rejected={}
- for name,file,old,new in [('host-arithmetic-in-spu-mode','spu_float_simd.h','if (spu_sf_csr_is_spu(csr)) _mm_setcsr((g_spu_sf_host_csr','if (0) _mm_setcsr((g_spu_sf_host_csr'),
-                           ('signed-zero-order','spu_helpers.h','? -(int32_t)(x & 0x7fffffffu) :','? -(int32_t)(x & 0x7fffffffu)-1 :')]:
-  private=out/(name+'-headers');private.mkdir()   # not out/name: that is the executable on Linux
-  for header in ('spu_helpers.h','spu_float_simd.h'):
-   text=(spu/header).read_text(encoding='utf8')
-   if header==file:assert text.count(old)==1,(name,header);text=text.replace(old,new)
-   (private/header).write_text(text,encoding='utf8')
-  m=run([build(name,ROOT/'scripts/fixtures/robbe_float_simd.c',extra_include=private)],expected=1);assert 'failures=0' not in m.stdout;rejected[name]=m.stdout.strip()
+ # The scope fixture must reject, each by the named check: host-arithmetic
+ # helpers left in the held SPU mode or not returned to it, helpers that leave a
+ # caller's own SPU controls outside a scope, a nested entry that replaces the
+ # outermost caller, an outermost entry that does not record a caller with SPU
+ # controls, and float compares that order -0 below +0 (private source copies).
+ rejected={};capture='if (!g_spu_sf_simd_scope) g_spu_sf_host_csr=csr;'
+ for name,file,old,new,wrong in [
+   ('host-arithmetic-in-spu-mode','spu_float_simd.h','    _mm_setcsr((g_spu_sf_host_csr','    if (0) _mm_setcsr((g_spu_sf_host_csr','host-arithmetic helpers keep caller-environment results inside the scope'),
+   ('host-arithmetic-not-restored','spu_float_simd.h','if (held) _mm_setcsr(held);','(void)held;','host-arithmetic helpers return to the held SPU mode'),
+   ('host-switch-outside-scope','spu_float_simd.h',' || !g_spu_sf_simd_scope) return 0;',') return 0;','outside a scope a truncating caller truncates'),
+   ('nested-capture','spu_float_simd.c',capture,'if (!spu_sf_csr_is_spu(csr)) g_spu_sf_host_csr=csr;',"nested scope keeps the outermost caller's rounding"),
+   ('no-capture-of-spu-caller','spu_float_simd.c',capture,capture.replace('scope)','scope && !spu_sf_csr_is_spu(csr))'),'the outermost scope records a caller with SPU controls'),
+   ('signed-zero-order','spu_helpers.h','? -(int32_t)(x & 0x7fffffffu) :','? -(int32_t)(x & 0x7fffffffu)-1 :','float compares match host IEEE compares inside the scope')]:
+  private=out/(name+'-sources');private.mkdir()   # not out/name: that is the executable on Linux
+  for part in ('spu_helpers.h','spu_float_simd.h','spu_float_simd.c'):
+   text=(spu/part).read_text(encoding='utf8')
+   if part==file:assert text.count(old)==1,(name,part);text=text.replace(old,new)
+   (private/part).write_text(text,encoding='utf8')
+  m=run([build(name,ROOT/'scripts/fixtures/robbe_float_simd.c',extra_include=private,simd=private/'spu_float_simd.c')],expected=1)
+  failed=sorted({x[5:] for x in m.stderr.splitlines() if x.startswith('FAIL ')});assert wrong in failed,(name,failed);rejected[name]=dict(result=m.stdout.strip(),failed=failed)
  # Halt and stack-reset landings of the real spu_run_with_halt. "kept" forces
  # SPU mode at both landings, as a longjmp that keeps the MXCSR leaves it (the
  # Windows x64 one restores it), so each restore is tested on every platform.

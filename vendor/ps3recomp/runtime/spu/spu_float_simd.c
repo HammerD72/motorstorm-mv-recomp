@@ -34,8 +34,10 @@ uint64_t spu_sf_simd_enter(void) {
 #if SPU_SF_X86_SIMD
     uint32_t csr=_mm_getcsr();
     uint64_t saved=((uint64_t)(unsigned)g_spu_sf_simd_scope<<32)|csr;
+    /* Only the outermost entry sees its caller; a nested one may find controls
+     * that host code changed inside the scope. */
+    if (!g_spu_sf_simd_scope) g_spu_sf_host_csr=csr;
     g_spu_sf_simd_scope=capability();
-    if (!spu_sf_csr_is_spu(csr)) g_spu_sf_host_csr=csr;
     _mm_setcsr(csr|SPU_SF_CSR_SPU);
     return saved;
 #else
