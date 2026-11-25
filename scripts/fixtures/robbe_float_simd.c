@@ -61,6 +61,52 @@ static u128 execute(unsigned op,u128 a,u128 b,u128 c) {
     case 2:return spu_fm(a,b);case 3:return spu_fma(a,b,c);
     case 4:return spu_fms(a,b,c);default:return spu_fnms(a,b,c);}
 }
+#if SPU_SF_X86_SIMD
+/* 1 + 3*2^-54 in each double lane: three quarters of the last place of 1, so
+ * the rounding direction shows in the last bit. */
+static uint64_t host_rounding(void) {
+    u128 one,part,r;memset(&one,0,sizeof one);memset(&part,0,sizeof part);
+    for(int i=0;i<2;i++){spu__dset(&one,i,1.0);spu__dset(&part,i,0x1.8p-53);}
+    r=spu_dfa(one,part);double d=spu__dget(r,0);uint64_t bits;memcpy(&bits,&d,8);return bits;
+}
+/* Nearest and up round up, down and toward zero do not. */
+static uint64_t expected_rounding(uint32_t csr) {
+    unsigned rc=(csr>>13)&3;return 0x3ff0000000000000ull+(rc==0 || rc==2);
+}
+/* A caller that already uses SPU controls without a scope is an ordinary host
+ * environment: helpers run in it as it is, whatever an earlier scope recorded,
+ * and leave it alone. A scope it enters records it. */
+static void outside_scope(uint32_t *state) {
+    const uint32_t callers[]={SPU_SF_CSR_SPU,SPU_SF_CSR_SPU|0x21u};
+    for(unsigned n=0;n<2;++n) {
+        uint32_t caller=callers[n];unsigned changed=0,moved=0,scoped=0;
+        check(g_spu_sf_simd_scope==0,"no scope is active");
+        for(unsigned i=0;i<20000;++i) {
+            u128 a,b,c,first,second,inside;static const int scale[]={173,155,0,100,200,255,140,190};
+            for(unsigned lane=0;lane<4;++lane){a._u32[lane]=mixed_word(state);b._u32[lane]=mixed_word(state);c._u32[lane]=mixed_word(state);}
+            unsigned k=i%HOST_OPS;int imm=scale[(i/HOST_OPS)%8];
+            uint32_t recorded=(0x1f80u|((i&3u)<<13)); /* what some earlier scope left behind */
+            _mm_setcsr(caller);g_spu_sf_host_csr=caller;first=host_op(k,a,b,c,imm);
+            moved+=(_mm_getcsr()&~0x3fu)!=(caller&~0x3fu);
+            _mm_setcsr(caller);g_spu_sf_host_csr=recorded;second=host_op(k,a,b,c,imm);
+            moved+=(_mm_getcsr()&~0x3fu)!=(caller&~0x3fu);
+            changed+=memcmp(&first,&second,sizeof first)!=0;
+            _mm_setcsr(caller);uint64_t token=spu_sf_simd_enter();inside=host_op(k,a,b,c,imm);spu_sf_simd_leave(token);
+            scoped+=memcmp(&first,&inside,sizeof first)!=0;
+        }
+        _mm_setcsr(caller);g_spu_sf_host_csr=0x1f80u;
+        check(host_rounding()==expected_rounding(caller),"outside a scope a truncating caller truncates");
+        check(!changed,"outside a scope helpers ignore the recorded environment");
+        check(!moved,"outside a scope helpers leave the caller's controls alone");
+        check(!scoped,"a scope entered by a caller with SPU controls gives the same results");
+        _mm_setcsr(caller);   /* the rounding probe left its inexact flag */
+        uint64_t token=spu_sf_simd_enter();
+        check(g_spu_sf_host_csr==caller,"the outermost scope records a caller with SPU controls");
+        spu_sf_simd_leave(token);
+        check(_mm_getcsr()==caller,"a caller with SPU controls is restored exactly");
+    }
+}
+#endif
 int main(void) {
 #if SPU_SF_X86_SIMD
     uint32_t original=_mm_getcsr();
@@ -80,6 +126,17 @@ int main(void) {
         check(g_spu_sf_host_csr==caller,"nested scope keeps the outermost caller environment");
         spu_sf_simd_leave(inner);
         check(g_spu_sf_simd_scope==capability,"nested scope preserves enable state");
+        /* Controls changed inside the scope (as by host code it calls) do not
+         * make a nested entry the outermost one. */
+        uint32_t held_now=_mm_getcsr(),changed=caller^0x2000u;
+        _mm_setcsr(changed);
+        inner=spu_sf_simd_enter();
+        check(g_spu_sf_host_csr==caller,"nested entry after a control change keeps the outermost caller environment");
+        check(spu_sf_csr_is_spu(_mm_getcsr()),"nested entry after a control change holds SPU mode");
+        check(host_rounding()==expected_rounding(caller),"nested scope keeps the outermost caller's rounding");
+        spu_sf_simd_leave(inner);
+        check(g_spu_sf_host_csr==caller && (_mm_getcsr()&~0x3fu)==(changed&~0x3fu),"nested leave restores the changed controls");
+        _mm_setcsr(held_now);
         check(_mm_getcsr()==(caller|SPU_SF_CSR_SPU),"nested scope restores the held SPU mode");
         u128 one,above_half,constant_result;
         for(unsigned lane=0;lane<4;++lane){one._u32[lane]=0x3f800000u;above_half._u32[lane]=0x33800001u;}
@@ -165,28 +222,8 @@ int main(void) {
         spu_sf_simd_leave(outer);
         check(g_spu_sf_simd_scope==0 && _mm_getcsr()==caller,"caller environment restored exactly");
     }
+    outside_scope(&state);
     check(fast>10000,"normal SIMD path actually exercised");
-    /* A caller can use the same controls without entering a scope. */
-    _mm_setcsr(0x1f80u);
-    uint64_t stale_caller=spu_sf_simd_enter();
-    spu_sf_simd_leave(stale_caller);
-    _mm_setcsr(SPU_SF_CSR_SPU);
-    u128 integer;
-    for(unsigned lane=0;lane<4;++lane) integer._u32[lane]=16777219u;
-    u128 converted=spu_csflt(integer,155);
-    check(converted._u32[0]==0x4b800001u,"outside scope keeps caller truncation");
-    uint64_t held_caller=spu_sf_simd_enter();
-    converted=spu_csflt(integer,155);
-    check(converted._u32[0]==0x4b800001u,"SPU-mode caller keeps caller truncation");
-    spu_sf_simd_leave(held_caller);
-    _mm_setcsr(0x5f80u);
-    held_caller=spu_sf_simd_enter();
-    _mm_setcsr(0x3f80u);
-    uint64_t changed_inner=spu_sf_simd_enter();
-    converted=spu_csflt(integer,155);
-    check(converted._u32[0]==0x4b800002u,"nested scope keeps outer caller rounding");
-    spu_sf_simd_leave(changed_inner);
-    spu_sf_simd_leave(held_caller);
     _mm_setcsr(0x7fa1u);
     jmp_buf jump;
     uint64_t outer=spu_sf_simd_enter();

@@ -2192,11 +2192,13 @@ This single trial is not scanout, matched performance evidence or stable30FPS.
 Fork branch: `review/spu-float-held`,
 [draft runtime PR #18](https://github.com/robbe1912/ps3recomp/pull/18).
 Fork port: `376f4efcbd20487f51275dc47fb1ea804842cb6d`.
+Host-token follow-up: `9d631ce6a091191aa020ab487f8fe2c1504d8a9a`.
 Its prerequisite, `07769db067a0c284a7ee76dbf146adb5f4f98657`,
 encodes three comment characters as UTF-8 and keeps CRLF.
 The encoding changes no code and grows the file by four bytes.
-Game source commits: `0c4043c77d82f655eb4ebf96adb35cffbac3f1b1`
-and `40451bbc0f1748959eca5f0c572c50018f423bfe`.
+Game source commits: `0c4043c77d82f655eb4ebf96adb35cffbac3f1b1`,
+`40451bbc0f1748959eca5f0c572c50018f423bfe`
+and `d3004f587e1cf62bb8f8286a0939a990e3cbb1bb`.
 
 This selective port holds SPU controls during a float scope. The outermost
 entry records caller controls. Nested entry keeps that record, even after
@@ -2207,8 +2209,8 @@ helper semantics. The game keeps its existing curated helper semantics.
 
 `scripts/check_spu_float.py` checks exact-rational scalar/SIMD values,
 host arithmetic, nested controls and normal/forced-kept-MXCSR landings.
-It rejects four scope mutants and five landing mutants.
-The fork's `tools/test_spu_float_scope.py` checks actual helpers and three
+It rejects six scope mutants and five landing mutants.
+The fork's `tools/test_spu_float_scope.py` checks actual helpers and five
 scope mutants. Its existing exact-rational oracle passes 36,816 helper lanes.
 These checks need no private input and do not cover SPU FPSCR status flags.
 
