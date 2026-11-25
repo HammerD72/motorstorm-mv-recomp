@@ -73,6 +73,28 @@ init, render_frame and flush wiring; `check_cpu_surface_prompt.py` covers the
 eager request on the shared flush hook. Visual parity in a driven race was
 checked on a local build; broader title coverage is open.
 
+## Draw cap per submitted batch
+
+Fork branch: `review/submit-draws-cap` at
+`8b53c327` ([draft runtime PR #17](https://github.com/robbe1912/ps3recomp/pull/17)).
+Game source commits: `618f6373` and `1ef6555e`. This selective port keeps
+the fork's serialized retirement path. The game retains its existing overlap
+path. `tools/check_submit_draws.py` in the fork checks the parser and boundary
+with five compiled mutants.
+
+`RSX_SUBMIT_DRAWS=<n>` (opt-in; decimal 16..`MAX_DRAWS`; any other value is
+reported once and leaves the cap off) makes `ensure_draw_record_capacity()` submit the batch through
+`submit_record_capacity()` at the first draw boundary with `n` or more draws,
+once the backend is initialized. The check uses `>=`, so a draw added without
+passing a boundary only delays the submission and never trips the capacity
+helper's overflow abort. Draw merges skip the boundary as before. A CPU read
+still waits for the batch that writes its surface; with a cap, less of that
+batch is left to prepare and replay when the read arrives. `run.py
+--submit-draws N` sets it. `check_rsx_submit_draws.py` compiles the production
+parser (5 accepted, 10 rejected values, two mutants); `check_rsx_record_retire.py` runs the
+cap against the production ensure/submit/retire bodies with three mutants.
+Measured result: none. No run yet.
+
 ## Job dispatch log and depth-guard ring (#327)
 
 The reusable depth guard is on own-fork branch `codex/spu-depth-ring` at
