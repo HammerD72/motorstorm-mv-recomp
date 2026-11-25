@@ -59,6 +59,7 @@ def main():
     b=sub.add_parser('build'); b.add_argument('--jobs',type=int,default=8); b.add_argument('--configure-only',action='store_true')
     b.add_argument('--optimize',action='store_true',help='Enable native O1 optimization with symbols and assertions retained')
     b.add_argument('--optimize-renderer',action='store_true',help='Use checked O2/automatic inlining for native video/FIFO sources; requires --optimize')
+    b.add_argument('--optimize-runtime',action='store_true',help='Use checked O2/automatic inlining for the whole ps3recomp runtime; requires --optimize')
     b.add_argument('--ps3recomp-dir',type=Path,help='Selected toolkit source (default: curated vendor runtime)')
     b.add_argument('--native-world-transforms',action=argparse.BooleanOptionalAction,default=True,
                    help='Bind verified native hierarchy work (default on; selected debug-US ELF only)')
@@ -76,6 +77,8 @@ def main():
     args=ap.parse_args()
     if args.cmd=='build' and args.optimize_renderer and not args.optimize:
         ap.error('--optimize-renderer requires --optimize')
+    if args.cmd=='build' and args.optimize_runtime and not args.optimize:
+        ap.error('--optimize-runtime requires --optimize')
     if args.cmd=='setup':
         c={'elf':str(Path(args.elf).resolve()),'disc':str(Path(args.disc).resolve()),'ffmpeg':str(Path(args.ffmpeg).resolve()),'keys':str(Path(args.keys_dir).resolve()),'userdata':'game/userdata','generated':'build/generated/named'}
         for key in ('elf','disc','ffmpeg'):
@@ -127,6 +130,7 @@ def main():
         menu_boot = args.menu_boot and hashlib.sha256(c['elf'].read_bytes()).hexdigest() == PRODUCTION.elf_sha256
         command.append(f'-DPORT_NATIVE_MENU_BOOT={"ON" if menu_boot else "OFF"}')
         command.append(f'-DPORT_OPTIMIZE_RENDERER={"ON" if args.optimize_renderer else "OFF"}')
+        command.append(f'-DPORT_OPTIMIZE_RUNTIME={"ON" if args.optimize_runtime else "OFF"}')
         command.extend([f'-DPORT_NATIVE_WORLD_TRANSFORMS={"ON" if args.native_world_transforms else "OFF"}',
                         f'-DPORT_NATIVE_JOB_WAIT={"ON" if args.native_job_wait else "OFF"}',
                         f'-DPORT_NATIVE_VISIBILITY={"ON" if args.native_visibility else "OFF"}',
@@ -152,6 +156,10 @@ def main():
         if identity['renderer_optimization']['enabled'] != args.optimize_renderer:
             raise SystemExit('Renderer build configuration did not match the requested mode')
         identity['renderer_optimization_helper_sha256']=hashlib.sha256((ROOT/'src/renderer_optimization.cmake').read_bytes()).hexdigest()
+        identity['runtime_optimization']=json.loads((binary/'runtime-optimization.json').read_text())
+        if identity['runtime_optimization']['enabled'] != args.optimize_runtime:
+            raise SystemExit('Runtime build configuration did not match the requested mode')
+        identity['runtime_optimization_helper_sha256']=hashlib.sha256((ROOT/'src/runtime_optimization.cmake').read_bytes()).hexdigest()
         if args.native_particle_thresholds:
             identity['native_particle_binding']=json.loads((binary/'native-particle-input/identity.json').read_text())
             identity['native_particle_binding_generator_sha256']=hashlib.sha256((ROOT/'scripts/native_particle_binding.py').read_bytes()).hexdigest()

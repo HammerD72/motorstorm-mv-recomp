@@ -110,6 +110,8 @@ add_subdirectory("${PS3RECOMP_DIR}" "${CMAKE_BINARY_DIR}/ps3recomp_sdk"
                  EXCLUDE_FROM_ALL)
 include("${CMAKE_CURRENT_SOURCE_DIR}/src/renderer_optimization.cmake")
 motorstorm_configure_renderer_optimization("${PS3RECOMP_DIR}")
+include("${CMAKE_CURRENT_SOURCE_DIR}/src/runtime_optimization.cmake")
+motorstorm_configure_runtime_optimization()
 # Measurement option (#155/#293): per-batch D3D12 draw records. Empty keeps the
 # backend default (2048); the backend rejects anything but a power of two in
 # 1024..8192 at compile time. Compare with the empty string, not truthiness:

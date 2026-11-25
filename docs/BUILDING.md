@@ -126,7 +126,18 @@ existing settings. `renderer_optimization` in build identity records the selecte
 source list, and the helper hash is retained. This is an experimental build
 comparison under issue #296; compilation alone proves no frame-rate improvement.
 
-The first native evaluation changed exactly eight object commands, leaving 207
+`--optimize-runtime` (with `--optimize`; CMake `PORT_OPTIMIZE_RUNTIME`, default off)
+applies O2, plus `/Ob2` on clang-cl, to the whole `ps3recomp_runtime` library:
+renderer, GCM/FIFO, SPU runtime and HLE. The toolkit asks for `-O2` in non-Debug
+builds only, and under clang-cl the forwarded `/clang:-O1` wins over it, so the
+level is appended last; a Debug build has no toolkit level to lose. Guest PPU/SPU
+compilation, assertions, aliasing and floating-point contraction settings are
+unchanged. `runtime_optimization` in build identity records the mode, and the
+helper hash is retained. `check_runtime_optimization.py` checks the scope in
+Debug and RelWithDebInfo. Measurements and their limits are on issue #165; only
+RelWithDebInfo has been timed.
+
+The renderer option's first native evaluation changed exactly eight object commands, leaving 207
 others unchanged. With matching executable/PDB identity, normal gated PLAY
 reached original menu/bike assets and a race. Its unsuspended diagnostic window
 still ended at about 3.81 successful API Presents/s; no controlled game gain was
