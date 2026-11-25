@@ -75,6 +75,13 @@ checked on a local build; broader title coverage is open.
 
 ## Draw cap per submitted batch
 
+Fork branch: `review/submit-draws-cap` at
+`8b53c327` ([draft runtime PR #17](https://github.com/robbe1912/ps3recomp/pull/17)).
+Game source commits: `618f6373` and `1ef6555e`. This selective port keeps
+the fork's serialized retirement path. The game retains its existing overlap
+path. `tools/check_submit_draws.py` in the fork checks the parser and boundary
+with five compiled mutants.
+
 `RSX_SUBMIT_DRAWS=<n>` (opt-in; decimal 16..`MAX_DRAWS`; any other value is
 reported once and leaves the cap off) makes `ensure_draw_record_capacity()` submit the batch through
 `submit_record_capacity()` at the first draw boundary with `n` or more draws,
@@ -86,7 +93,7 @@ batch is left to prepare and replay when the read arrives. `run.py
 --submit-draws N` sets it. `check_rsx_submit_draws.py` compiles the production
 parser (5 accepted, 10 rejected values, two mutants); `check_rsx_record_retire.py` runs the
 cap against the production ensure/submit/retire bodies with three mutants.
-Visual parity in a driven race was checked on a local build.
+Measured result: none. No run yet.
 
 ## Job dispatch log and depth-guard ring (#327)
 

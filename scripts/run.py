@@ -40,7 +40,7 @@ def main():
     ap.add_argument('--profile-cpu-surfaces',action='store_true',help='Existing per-request CPU surface read queue, match, copy and fence diagnostics; adds timing and logging overhead')
     ap.add_argument('--surface-prefetch',choices=('0','1'),default='0',help='Copy the race feedback surfaces (deformation 01A80500, 1280x720 00A80500, exposure 02A30480) ahead of coherent CPU reads (default 0: copy on read)')
     ap.add_argument('--eager-surface-submit',choices=('0','1'),default='0',help='Submit the batch as soon as the game stops drawing into the race exposure target (02A30480), ahead of its coherent CPU read (default 0: submit at the read or frame end)')
-    ap.add_argument('--submit-draws',type=int,default=0,help='Submit the batch at the first draw boundary holding this many draws, so CPU reads wait for a shorter tail (0 = off, the default; otherwise 16 up to the build draw-record capacity; 256 measured best in races)')
+    ap.add_argument('--submit-draws',type=int,default=0,help='Submit the batch at the first draw boundary holding this many draws (0 = off, the default; otherwise 16 up to the build draw-record capacity)')
     ap.add_argument('--cpu-surface-prompt',choices=('default','0','1'),default='default',help='Prompt disjoint CPU surface reads; default preserves backend policy, 0 uses batch-end service')
     ap.add_argument('--cpu-surface-flush',choices=('default','0','1'),default='default',help='Submit recorded writes needed by queued CPU reads at the next draw boundary or idle pump')
     ap.add_argument('--drain-overlap',choices=('default','0','1'),default='default',help='Overlap recording with a submitted capacity batch; default preserves backend policy')
