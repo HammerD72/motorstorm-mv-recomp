@@ -2186,3 +2186,32 @@ The last 60 intact diagnostic groups through nominal second401 recorded
 115.040-355.418ms intervals; rounding bound0.0001645s, no missing groups).
 This single trial is not scanout, matched performance evidence or stable30FPS.
 #71's intermittent freeze and #27's full performance/graphics goal remain open.
+
+## Held SPU float controls (#338)
+
+Fork branch: `review/spu-float-held`,
+[draft runtime PR #18](https://github.com/robbe1912/ps3recomp/pull/18).
+Fork port: `376f4efcbd20487f51275dc47fb1ea804842cb6d`.
+Host-token follow-up: `9d631ce6a091191aa020ab487f8fe2c1504d8a9a`.
+Its prerequisite, `07769db067a0c284a7ee76dbf146adb5f4f98657`,
+encodes three comment characters as UTF-8 and keeps CRLF.
+The encoding changes no code and grows the file by four bytes.
+Game source commits: `0c4043c77d82f655eb4ebf96adb35cffbac3f1b1`,
+`40451bbc0f1748959eca5f0c572c50018f423bfe`
+and `d3004f587e1cf62bb8f8286a0939a990e3cbb1bb`.
+
+This selective port holds SPU controls during a float scope. The outermost
+entry records caller controls. Nested entry keeps that record, even after
+controls change. Host arithmetic switches controls only inside an active
+scope. Halt and reset landings restore both MXCSR and the scope state.
+The fork keeps its integer conversions, comparisons and extended-range
+helper semantics. The game keeps its existing curated helper semantics.
+
+`scripts/check_spu_float.py` checks exact-rational scalar/SIMD values,
+host arithmetic, nested controls and normal/forced-kept-MXCSR landings.
+It rejects six scope mutants and five landing mutants.
+The fork's `tools/test_spu_float_scope.py` checks actual helpers and five
+scope mutants. Its existing exact-rational oracle passes 36,816 helper lanes.
+These checks need no private input and do not cover SPU FPSCR status flags.
+
+Measured result: none. No run yet.
