@@ -353,6 +353,7 @@ class ExecutionProfileTests(unittest.TestCase):
         helper = self.root / 'src/renderer_optimization.cmake'
         helper.parent.mkdir(parents=True, exist_ok=True)
         helper.write_text('# authored renderer-optimization helper identity\n', encoding='utf-8')
+        (self.root / 'src/runtime_optimization.cmake').write_text('# authored runtime-optimization helper identity\n', encoding='utf-8')
         # The wrapper hashes the platform's own output name (ms1_recomp.exe on
         # Windows, ms1_recomp elsewhere). The mocked compiler creates that inert
         # output; the launcher's selected executable fixture is left as it is.
@@ -362,6 +363,7 @@ class ExecutionProfileTests(unittest.TestCase):
             commands.append([str(x) for x in command])
             if command[1] == '-S':
                 (binary / 'renderer-optimization.json').write_text('{"enabled":false}', encoding='utf-8')
+                (binary / 'runtime-optimization.json').write_text('{"enabled":false}', encoding='utf-8')
             if command[1] == '--build':
                 if not output.exists():
                     output.write_bytes(b'authored inert build output; never executed')
