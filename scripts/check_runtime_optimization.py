@@ -31,9 +31,9 @@ def main():
         (sdk/name).write_text(HEADER+f'int authored_{i}(int x){{assert(x);return x+{i};}}\n')
     for name in ('authored_app.cpp','authored_ppu.c','authored_spu.c'):
         (fixture/name).write_text(HEADER+f'int {Path(name).stem}(int x){{assert(x);return x;}}\n')
-    # The toolkit's own plain -O2 (non-Debug there), which /clang:-O1 overrides under clang-cl.
+    # The toolkit's own rule: plain -O2 outside Debug, which /clang:-O1 overrides under clang-cl.
     (sdk/'CMakeLists.txt').write_text('add_library(ps3recomp_runtime STATIC '+' '.join(RUNTIME)+')\n'
-        'target_compile_options(ps3recomp_runtime PRIVATE -fno-strict-aliasing -ffp-contract=off -O2)\n')
+        'target_compile_options(ps3recomp_runtime PRIVATE -fno-strict-aliasing -ffp-contract=off $<$<CONFIG:Release,RelWithDebInfo>:-O2>)\n')
     (fixture/'CMakeLists.txt').write_text('cmake_minimum_required(VERSION 3.20)\nproject(authored_runtime C CXX)\n'+checked+'''
 add_subdirectory(sdk)
 include("${CMAKE_CURRENT_SOURCE_DIR}/runtime.cmake")
@@ -74,6 +74,8 @@ endif()
             if not (active and name in RUNTIME):
                 assert cmd==baseline[name],('Unrelated command changed',name);continue
             assert effective(cmd)=='-O2',(name,cmd)
+            if os.name!='nt' and cmd==baseline[name] and effective(baseline[name])=='-O2':
+                continue  # The toolkit's -O2 already applies there and CMake drops the duplicate.
             # Same command with exactly the level added: nothing lost or reordered.
             places=[m.start() for m in re.finditer(re.escape(added)+r'(?=\s)',cmd)]
             assert any(cmd[:i]+cmd[i+len(added):]==baseline[name] for i in places),('More than the level changed',name,cmd,baseline[name])
@@ -83,8 +85,9 @@ endif()
     kinds=['Debug','RelWithDebInfo']
     for kind in kinds:
         _,build=configure(False,kind=kind);baseline=commands(build);verify(False,build,baseline);run(['cmake','--build',build])
-        if os.name=='nt':
-            assert all(effective(baseline[name])=='-O1' for name in RUNTIME),'the library level was expected to lose to /clang:-O1'
+        # -O1 everywhere, except where the toolkit's -O2 follows it (non-Debug without clang-cl).
+        expected='-O2' if os.name!='nt' and kind!='Debug' else '-O1'
+        assert all(effective(baseline[name])==expected for name in RUNTIME),('Unexpected level without the option',kind)
         configure(True,kind=kind);verify(True,build,baseline);run(['cmake','--build',build])
         configure(False,kind=kind);verify(False,build,baseline);run(['cmake','--build',build])
     assert configure(True,native=False,success=False)[0].returncode
