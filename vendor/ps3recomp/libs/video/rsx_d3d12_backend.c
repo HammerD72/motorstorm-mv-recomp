@@ -222,6 +222,7 @@ typedef struct {
     u64 gpu_generation,cpu_generation;
     ID3D12Resource *cpu_readback;
 } OffRT;
+static void off_rt_changed(void);   /* a slot's res or off changed: see off_rt_find */
 #define INITIAL_OFF_RTS 16
 /* Per-draw SRV windows: each VP draw gets 16 consecutive descriptors (t0-t15)
  * so decompiled fragment programs -- which declare rsx_tex[16] -- can sample
@@ -1378,6 +1379,7 @@ static int init_d3d12(u32 width, u32 height)
             else {
                 s_d3d.off_rt = (OffRT*)calloc(INITIAL_OFF_RTS, sizeof(OffRT));
                 if (s_d3d.off_rt) s_d3d.off_rt_cap = INITIAL_OFF_RTS;
+                off_rt_changed();
             }
         }
     }
@@ -4556,11 +4558,68 @@ static DXGI_FORMAT rsx_surface_dxgi(u32 fmt)
     }
 }
 
+/* off_rt_find runs for every target and texture unit of every draw, twice a
+ * frame, and most texture offsets are not render targets, so a scan of the
+ * whole pool usually ran to its end. An open-addressed index of the live
+ * slots answers instead, exactly as the scan would: live = res set, the
+ * lowest slot wins an offset. It is rebuilt on the next lookup after any
+ * change to a slot's res or off (off_rt_changed, called right after each such
+ * write in off_rt_get) and whenever the pool array or its capacity differs
+ * from the one it was built over. Without memory for the index the scan runs. */
+static struct {
+    const OffRT* pool;     /* the pool and capacity it was built over */
+    int          cap;
+    int          stale;
+    unsigned     mask;     /* size - 1, a power of two at least twice cap */
+    u32*         key;      /* RSX offset; 0 = empty */
+    int*         slot;
+} s_off_rt_index = {NULL, 0, 1, 0, NULL, NULL};
+
+static void off_rt_changed(void) { s_off_rt_index.stale = 1; }
+
+static unsigned off_rt_index_home(u32 off)
+{
+    return (unsigned)((off * 0x9E3779B97F4A7C15ull) >> 32) & s_off_rt_index.mask;
+}
+
+static int off_rt_index_build(void)
+{
+    const int cap = s_d3d.off_rt_cap;
+    unsigned size = 16;
+    while (size < 2u * (unsigned)cap) size <<= 1;
+    if (size - 1u != s_off_rt_index.mask || !s_off_rt_index.key) {
+        u32* key = (u32*)malloc(size * sizeof(u32));
+        int* slot = (int*)malloc(size * sizeof(int));
+        if (!key || !slot) { free(key); free(slot); return 0; }
+        free(s_off_rt_index.key); free(s_off_rt_index.slot);
+        s_off_rt_index.key = key; s_off_rt_index.slot = slot;
+        s_off_rt_index.mask = size - 1u;
+    }
+    memset(s_off_rt_index.key, 0, size * sizeof(u32));
+    for (int i = 0; i < cap; i++) {
+        const u32 off = s_d3d.off_rt[i].off;
+        if (!s_d3d.off_rt[i].res || !off) continue;
+        unsigned h = off_rt_index_home(off);
+        while (s_off_rt_index.key[h] && s_off_rt_index.key[h] != off) h = (h + 1u) & s_off_rt_index.mask;
+        if (!s_off_rt_index.key[h]) { s_off_rt_index.key[h] = off; s_off_rt_index.slot[h] = i; }
+    }
+    s_off_rt_index.pool = s_d3d.off_rt;
+    s_off_rt_index.cap = cap;
+    s_off_rt_index.stale = 0;
+    return 1;
+}
+
 static int off_rt_find(u32 off)
 {
     if (!off) return -1;
-    for (int i = 0; i < s_d3d.off_rt_cap; i++)
-        if (s_d3d.off_rt[i].res && s_d3d.off_rt[i].off == off) return i;
+    if ((s_off_rt_index.stale || s_off_rt_index.pool != s_d3d.off_rt ||
+         s_off_rt_index.cap != s_d3d.off_rt_cap) && !off_rt_index_build()) {
+        for (int i = 0; i < s_d3d.off_rt_cap; i++)
+            if (s_d3d.off_rt[i].res && s_d3d.off_rt[i].off == off) return i;
+        return -1;
+    }
+    for (unsigned h = off_rt_index_home(off); s_off_rt_index.key[h]; h = (h + 1u) & s_off_rt_index.mask)
+        if (s_off_rt_index.key[h] == off) return s_off_rt_index.slot[h];
     return -1;
 }
 
@@ -4598,6 +4657,7 @@ static int off_rt_grow(void)
     if (s_d3d.rt_rtv_heap) s_d3d.rt_rtv_heap->lpVtbl->Release(s_d3d.rt_rtv_heap);
     s_d3d.rt_rtv_heap = heap;
     s_d3d.off_rt_cap = cap;
+    off_rt_changed();
     return 0;
 }
 
@@ -4628,6 +4688,7 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
         wait_for_gpu_required();
         cpu_surface_retire(r);
         r->res->lpVtbl->Release(r->res); r->res = NULL;   /* dims/format changed */
+        off_rt_changed();
         if (r->up) { r->up->lpVtbl->Release(r->up); r->up = NULL; }
     } else {
         for (int i = 0; i < s_d3d.off_rt_cap; i++)
@@ -4647,6 +4708,7 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
                 cpu_surface_retire(&s_d3d.off_rt[slot]);
                 s_d3d.off_rt[slot].res->lpVtbl->Release(s_d3d.off_rt[slot].res);
                 s_d3d.off_rt[slot].res = NULL;
+                off_rt_changed();
                 if (s_d3d.off_rt[slot].up) {
                     s_d3d.off_rt[slot].up->lpVtbl->Release(s_d3d.off_rt[slot].up);
                     s_d3d.off_rt[slot].up = NULL;
@@ -4664,12 +4726,15 @@ static int off_rt_get(u32 off, u32 w, u32 h, u32 rsx_fmt)
     td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     D3D12_CLEAR_VALUE cv = {0};
     cv.Format = td.Format;
-    if (FAILED(s_d3d.device->lpVtbl->CreateCommittedResource(
+    HRESULT created = s_d3d.device->lpVtbl->CreateCommittedResource(
             s_d3d.device, &hp, D3D12_HEAP_FLAG_NONE, &td,
             D3D12_RESOURCE_STATE_COPY_DEST, &cv,
-            &IID_ID3D12Resource, (void**)&r->res)))
+            &IID_ID3D12Resource, (void**)&r->res);
+    off_rt_changed();
+    if (FAILED(created))
         return -1;
     r->off = off; r->w = w; r->h = h; r->dxgi = (u32)want_fmt;
+    off_rt_changed();
     r->st = D3D12_RESOURCE_STATE_COPY_DEST;
     r->used = 1;
 
