@@ -2225,3 +2225,45 @@ scope mutants. Its existing exact-rational oracle passes 36,816 helper lanes.
 These checks need no private input and do not cover SPU FPSCR status flags.
 
 Measured result: none. No run yet.
+
+## Whole-vector VMX float arithmetic in the curated lifter
+
+Game source commit: this branch. Not in the fork: `robbe1912/ps3recomp`
+emits `runtime/ppu/ppu_vmx.h` calls for VMX, with exact PowerPC results
+(fused multiply-add, NaN rules, VSCR[NJ]). This repository's curated lifter
+emits host single-precision operations instead. The vector path keeps this
+arithmetic. It does not guarantee the same payload for two NaN operands.
+
+`vaddfp`, `vsubfp`, `vmaddfp` and `vnmsubfp` were emitted as four
+byte-swapped scalar lanes each. They now call `ppu_vx_add`, `ppu_vx_sub`,
+`ppu_vx_madd` and `ppu_vx_nmsub` from the source preamble. With SSE2 each one
+loads, byte-swaps, computes and stores the whole vector: the same
+single-precision operations in the same order (the product is still rounded
+before the add or subtract) under the same MXCSR. Without SSE2, or with
+`PPU_VX_SCALAR`, the helpers are the old per-lane loops. A lift has to be
+regenerated to use them. `vrefp` and `vrsqrtefp` are unchanged.
+
+`scripts/check_ppu_vmx_float.py` compiles the lifter's output for
+hand-assembled instructions next to the previous output and compares every
+vector register, over random, special and near-cancellation operands, all
+four MXCSR rounding modes with and without FTZ/DAZ, and aliased registers.
+Every lane matches except, possibly, lanes where both operands of one
+operation are NaN: which NaN comes out there follows the compiler's operand
+order, in either form. With clang-cl 23 at the lifted code's flags (`-O1`,
+no contraction) those lanes match too (`--strict-nan`); with clang++ on the
+Linux runner at `-O1`, and at `-O2`, either form may return the other NaN.
+They are counted and reported. Default RelWithDebInfo builds without
+`PORT_OPTIMIZE_NATIVE` compile the lift at `/O2`. The per-lane fallback
+matches in every lane. Six mutants must differ in lanes that are not both NaN:
+the multiply-add addend, the multiply-subtract sign, the subtract order, the
+load and store byte swaps, and the emission's vB/vC order.
+
+Measured result (25 Nov, race scene, vehicle idle, 30 s windows, ABBA order,
+one warm-up each): a lift with this branch's output spliced into the working
+lift for these four instructions (23,888 sites), against the same lift without
+it, both built from 38b6c3a2 with `PORT_OPTIMIZE_NATIVE` and
+`PORT_OPTIMIZE_RUNTIME`. The unnamed PPU thread used 16.41 ms of CPU per
+presented frame against 18.40 ms (-2.0 ms, -11%; every run with the helpers
+was below every run without). Other threads were within noise. Frame rate was
+24.47 against 24.00 fps (5 runs each, sd 0.59 and 0.29), inside run-to-run
+noise. No launch exited early (12 of 12).
