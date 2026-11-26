@@ -298,12 +298,11 @@ static inline void ppu_vstu4(void* v, const uint32_t in[4]) {
 }
 
 /* vaddfp, vsubfp, vmaddfp and vnmsubfp on the whole vector: d = a+b, a-b,
- * a*c+b and b-a*c. Each lane is the same single-precision operations in the
- * same order as the per-lane loops these replace (the product is rounded
- * before the add or subtract, as before), under the same MXCSR, so the
- * results are the same bits. The arguments may alias: every source is loaded
- * before the store. Without SSE2, or with PPU_VX_SCALAR, the per-lane loops
- * remain. */
+ * a*c+b and b-a*c. The product rounds before the add or subtract, as in
+ * the per-lane loops. If both operands are NaN, the selected payload can
+ * differ with compiler operand order. The arguments can alias because
+ * each helper loads all sources before it stores the result.
+ * Without SSE2, or with PPU_VX_SCALAR, use the per-lane loops. */
 #if !defined(PPU_VX_SCALAR) && (defined(__SSE2__) || defined(_M_X64) || defined(_M_AMD64))
 #include <emmintrin.h>
 static inline __m128 ppu_vx_ld(const void* v) {

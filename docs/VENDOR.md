@@ -2221,8 +2221,8 @@ Measured result: none. No run yet.
 Game source commit: this branch. Not in the fork: `robbe1912/ps3recomp`
 emits `runtime/ppu/ppu_vmx.h` calls for VMX, with exact PowerPC results
 (fused multiply-add, NaN rules, VSCR[NJ]). This repository's curated lifter
-emits plain host single-precision operations instead, and this change keeps
-those results.
+emits host single-precision operations instead. The vector path keeps this
+arithmetic. It does not guarantee the same payload for two NaN operands.
 
 `vaddfp`, `vsubfp`, `vmaddfp` and `vnmsubfp` were emitted as four
 byte-swapped scalar lanes each. They now call `ppu_vx_add`, `ppu_vx_sub`,
