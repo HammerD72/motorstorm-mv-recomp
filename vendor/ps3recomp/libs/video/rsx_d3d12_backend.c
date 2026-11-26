@@ -7031,22 +7031,27 @@ skip_dump_consider: ;
     s_d3d.frame_count++;
 
     /* RPCS3-style titlebar stats, refreshed once a second: presented FPS,
-     * draw count of the last frame, and the backbuffer size. */
+     * draw count of the last frame, and the backbuffer size. render_frame also
+     * runs for batches that do not present (capacity drains, CPU-read submits,
+     * offscreen batches), so FPS counts only real Presents; "batches" is the
+     * render_frame rate. */
     {
         static ULONGLONG s_tt0 = 0;
-        static u64 s_tframes = 0;
-        s_tframes++;
+        static u64 s_tframes = 0, s_tbatches = 0;
+        s_tbatches++;
+        if (s_present_this_frame) s_tframes++;
         ULONGLONG tnow = GetTickCount64();
         if (s_tt0 == 0) s_tt0 = tnow;
         if (tnow - s_tt0 >= 1000 && s_d3d.hwnd) {
             extern char g_rsx_title_base[128];
             char tb[256];
-            snprintf(tb, sizeof(tb), "%s | FPS: %.2f | draws: %u | %ux%u",
+            snprintf(tb, sizeof(tb), "%s | FPS: %.2f | batches: %.1f | draws: %u | %ux%u",
                      g_rsx_title_base,
                      s_tframes * 1000.0 / (double)(tnow - s_tt0),
+                     s_tbatches * 1000.0 / (double)(tnow - s_tt0),
                      s_dbg_last_draws, s_d3d.width, s_d3d.height);
             SetWindowTextA(s_d3d.hwnd, tb);
-            s_tframes = 0;
+            s_tframes = 0; s_tbatches = 0;
             s_tt0 = tnow;
         }
     }
