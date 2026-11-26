@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -60,7 +61,7 @@ def main():
 
     out = ROOT / "build/self-tests/cpu-surface-eager"
     out.mkdir(parents=True, exist_ok=True)
-    compiler = os.environ.get("MV_CLANG") or os.environ.get("CC") or ("clang-cl" if os.name == "nt" else "cc")
+    compiler = os.environ.get("MV_CLANG") or os.environ.get("CC") or ("clang-cl" if os.name == "nt" else shutil.which("clang") or "cc")
     msvc = Path(compiler).name.lower() in {"cl", "cl.exe", "clang-cl", "clang-cl.exe"}
     results = {}
 

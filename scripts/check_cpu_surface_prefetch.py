@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -117,7 +118,7 @@ def main():
         args.compiler
         or os.environ.get("MV_CLANG")
         or os.environ.get("CC")
-        or ("clang-cl" if os.name == "nt" else "cc")
+        or ("clang-cl" if os.name == "nt" else shutil.which("clang") or "cc")
     )
 
     def build(name, text):
