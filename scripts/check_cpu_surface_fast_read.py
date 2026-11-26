@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts/analysis"))
 import cpu_surface_report  # noqa: E402 -- the production record reader
 START = "typedef struct CpuSurfaceRequest {"
-STOP = "static void cpu_surface_snapshot_trace("
+STOP = "static void cpu_surface_service("  # the function after cpu_surface_read on main and on the snapshot branch
 TAIL = ("cpu_surface_bind", "cpu_surface_written", "cpu_surface_retire")
 RECHECK = "if(cpu_surface_view_load(&v->sequence)!=sequence)return CPU_SURFACE_VIEW_CHANGING;"
 CALL = "if(cpu_surface_fast_request(address,bytes,client_thread))return;"
