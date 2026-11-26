@@ -20,8 +20,8 @@ keeps the lines of the job list that a marker wait waits on, and signals an
 event when one of these lines commits. The wait blocks on the event and on
 the timer, so a lost wake-up cannot hang. The runtime calls the hook only
 after a successful PUTLLC or PUTLLUC, after the coherence lock is released.
-The line filter and the event are shared by all threads. A second waiting
-thread gets the wake-ups of the first and the timer as its fallback.
+One waiting thread owns the line filter and event. Other threads keep the
+timer path. The owner clears the filter when its marker wait ends.
 
 Checks: `python scripts/check_spurs_marker_wake.py` here rejects 5 source
 mutants of `spu_channels.c`, 2 adapter audit mutants, 12 adapter mutants and

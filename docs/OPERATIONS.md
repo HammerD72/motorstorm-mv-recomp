@@ -465,8 +465,9 @@ the timer after 0.52 ms at least, so each cooperation is late by about
 0.4 ms. With the switch on, the runtime calls a host hook after each commit
 of a guest line. The job wait adapter keeps the lines of the waited job list
 and signals an event when one of these lines commits. The wait blocks on the
-event and on the timer, so a lost wake-up cannot hang. A value that is not
-`0` or `1` makes the adapter fall back to the guest wait and print an error
+event and on the timer. If another thread owns the event or event creation
+fails, the wait uses the timer. A value that is not `0` or `1` makes the
+adapter fall back to the guest wait and print an error
 line. Without the option the launcher clears an inherited value, because it
 does not clear the `SPURS_` prefix. The launch record names the key. In a
 race, one cooperation takes 0.52 to 0.59 ms for a due of 100 us, and a

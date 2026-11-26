@@ -106,10 +106,10 @@ void report_wait(std::uint64_t caller, std::uint64_t object, std::uint32_t marke
 #define MOTORSTORM_JOB_WAIT_WAKE_FALLBACK_MS 0
 #endif
 #if defined(_WIN32) && !defined(MOTORSTORM_JOB_WAIT_FIXTURE)
-// The lines of the counters of the waited job list: taken at +18, active at
-// +20 to +31. The first line is 0 when no thread waits.
-std::atomic<std::uint32_t> marker_wake_first{0}, marker_wake_last{0}, marker_wake_generation{0};
-// Set while a thread waits on the event.
+// One wait owns the event. Other waits keep the timer path.
+std::atomic_flag marker_wake_claimed = ATOMIC_FLAG_INIT;
+thread_local bool marker_wake_owned = false;
+std::atomic<std::uint32_t> marker_wake_owner{0}, marker_wake_generation{0};
 std::atomic<bool> marker_wake_waiting{false};
 // Auto-reset event of the wake: the callback sets it, the wait consumes it.
 HANDLE const marker_wake_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -120,15 +120,26 @@ bool marker_wake_on() {
     }();
     return on;
 }
+struct MarkerWakeScope {
+    bool owns = marker_wake_on() && marker_wake_event &&
+        !marker_wake_claimed.test_and_set(std::memory_order_acquire);
+    MarkerWakeScope() { if (owns) marker_wake_owned = true; }
+    ~MarkerWakeScope() {
+        if (!owns) return;
+        marker_wake_owner.store(0, std::memory_order_release);
+        marker_wake_owned = false;
+        marker_wake_claimed.clear(std::memory_order_release);
+    }
+};
 // The runtime calls this after a committing PUTLLC on `line`, outside its line lock.
 void marker_wake_commit(std::uint32_t line) noexcept {
-    const std::uint32_t first = marker_wake_first.load(std::memory_order_acquire);
+    const std::uint32_t owner = marker_wake_owner.load(std::memory_order_acquire);
     const std::uint32_t number = line >> 7;
-    if (!first || number < first || number > marker_wake_last.load(std::memory_order_relaxed)) return;
-    marker_wake_generation.fetch_add(1, std::memory_order_release);
-    // The wait counts the commit before it reads the flag, so it never sleeps
-    // through this one.
-    if (marker_wake_waiting.load(std::memory_order_acquire)) SetEvent(marker_wake_event);
+    if (!owner || number < ((owner + 18) >> 7) || number > ((owner + 31) >> 7)) return;
+    // Order the generation update and the waiting flag in the same order
+    // as the wait, so at least one thread sees the other's update.
+    marker_wake_generation.fetch_add(1, std::memory_order_seq_cst);
+    if (marker_wake_waiting.load(std::memory_order_seq_cst)) SetEvent(marker_wake_event);
 }
 // Ends when a job list line commits, or when `timer` ends the fallback time.
 void marker_wake_wait(HANDLE timer) {
@@ -136,9 +147,8 @@ void marker_wake_wait(HANDLE timer) {
     const auto now = marker_wake_generation.load(std::memory_order_acquire);
     // A commit since the last wait ends this wait at once: the loop polls again.
     if (now != seen) { seen = now; return; }
-    marker_wake_waiting.store(true, std::memory_order_release);
-    // A commit between the read above and the flag does not set the event.
-    if (marker_wake_generation.load(std::memory_order_acquire) != seen) {
+    marker_wake_waiting.store(true, std::memory_order_seq_cst);
+    if (marker_wake_generation.load(std::memory_order_seq_cst) != seen) {
         marker_wake_waiting.store(false, std::memory_order_release);
         seen = marker_wake_generation.load(std::memory_order_acquire);
         return;
@@ -172,12 +182,7 @@ motorstorm::game::JobProgressStart begin(void* user) {
     if (!owner || std::uint64_t(owner) + 32 > 0x100000000ULL)
         throw std::runtime_error("Unsupported job progress ownership range");
 #if defined(_WIN32) && !defined(MOTORSTORM_JOB_WAIT_FIXTURE)
-    // SPURS_MARKER_WAKE=1: a commit on a line of the counters of this job list ends the wait.
-    // The last line goes first: the callback starts at a nonzero first line.
-    if (marker_wake_on()) {
-        marker_wake_last.store((owner + 31) >> 7, std::memory_order_release);
-        marker_wake_first.store((owner + 18) >> 7, std::memory_order_release);
-    }
+    if (marker_wake_owned) marker_wake_owner.store(owner, std::memory_order_release);
 #endif
     return {owner, vm_read16(owner + 18)};
 }
@@ -200,7 +205,7 @@ void cooperate(void*) {
         ~Timer() { CloseHandle(handle); }
     };
     thread_local Timer timer;
-    if (marker_wake_on()) { marker_wake_wait(timer.handle); return; }
+    if (marker_wake_owned) { marker_wake_wait(timer.handle); return; }
     LARGE_INTEGER due; due.QuadPart = -1000; // Relative 100 microseconds.
     if (!SetWaitableTimer(timer.handle, &due, 0, nullptr, nullptr, FALSE))
         throw std::runtime_error("Native job timer setup failed: " + std::to_string(GetLastError()));
@@ -221,6 +226,9 @@ void motorstorm_job_marker_wait(ppu_context* ctx) {
             const auto caller = ctx->lr, object = ctx->gpr[3];
             Tick start;
             const bool start_ok = runtime->profile && profile_clock(start);
+#if defined(_WIN32) && !defined(MOTORSTORM_JOB_WAIT_FIXTURE)
+            const MarkerWakeScope wake;
+#endif
             const auto result = motorstorm::game::wait_for_job_marker(
                 {ctx, begin, barrier, active, cooperate}, marker);
             if (runtime->profile) report_wait(caller, object, marker, result, start, start_ok);

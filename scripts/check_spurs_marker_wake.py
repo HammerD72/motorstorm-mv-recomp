@@ -69,11 +69,9 @@ ADAPTER_WIRING = [
      '#endif\n', 1),
     # An auto-reset event: each wake ends one wait.
     ('HANDLE const marker_wake_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);\n', 1),
-    # Only a commit on a line of the waited job list wakes the wait.
-    ('    if (!first || number < first || number > marker_wake_last.load(std::memory_order_relaxed)) return;\n', 1),
-    # The wait flags itself, then tests the count again: a commit in between is not lost.
-    ('    marker_wake_waiting.store(true, std::memory_order_release);\n', 1),
-    ('    if (marker_wake_generation.load(std::memory_order_acquire) != seen) {\n', 1),
+    ('    if (!owner || number < ((owner + 18) >> 7) || number > ((owner + 31) >> 7)) return;\n', 1),
+    ('    marker_wake_waiting.store(true, std::memory_order_seq_cst);\n', 1),
+    ('    if (marker_wake_generation.load(std::memory_order_seq_cst) != seen) {\n', 1),
     ('    const DWORD wait = WaitForMultipleObjects(2, handles, FALSE, INFINITE);\n', 1),
     # No WaitOnAddress or WakeByAddressAll: they need a library that the game does not link.
     ('WaitOnAddress', 0),
@@ -82,8 +80,8 @@ ADAPTER_WIRING = [
 ADAPTER_AUDIT_MUTANTS = [
     # name, text in the adapter, replacement; the audit must reject each one
     ('wake-on-any-line',
-     '    if (!first || number < first || number > marker_wake_last.load(std::memory_order_relaxed)) return;\n',
-     '    if (!first) return;\n'),
+     '    if (!owner || number < ((owner + 18) >> 7) || number > ((owner + 31) >> 7)) return;\n',
+     '    if (!owner) return;\n'),
     ('event-is-manual-reset', 'HANDLE const marker_wake_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);\n',
      'HANDLE const marker_wake_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);\n'),
 ]
@@ -97,14 +95,13 @@ ADAPTER_MUTANTS = [
      'g_spu_host_line_commit_hook = &marker_wake_commit;'),
     ('switch-any-value', '        return mode && !std::strcmp(mode, "1");\n', '        return mode != nullptr;\n'),
     ('switch-always-off', '        return mode && !std::strcmp(mode, "1");\n', '        return false;\n'),
-    ('wake-not-signaled', '    if (marker_wake_waiting.load(std::memory_order_acquire)) SetEvent(marker_wake_event);\n', ''),
-    ('wait-does-not-flag', '    marker_wake_waiting.store(true, std::memory_order_release);\n', ''),
-    ('commit-not-counted', '    marker_wake_generation.fetch_add(1, std::memory_order_release);\n', ''),
+    ('wake-not-signaled', '    if (marker_wake_waiting.load(std::memory_order_seq_cst)) SetEvent(marker_wake_event);\n', ''),
+    ('wait-does-not-flag', '    marker_wake_waiting.store(true, std::memory_order_seq_cst);\n', ''),
+    ('commit-not-counted', '    marker_wake_generation.fetch_add(1, std::memory_order_seq_cst);\n', ''),
     ('commit-during-poll-waits', '    if (now != seen) { seen = now; return; }\n', '    seen = now;\n'),
     ('waited-lines-not-set',
-     '    if (marker_wake_on()) {\n        marker_wake_last.store((owner + 31) >> 7, std::memory_order_release);\n',
-     '    if (false) {\n        marker_wake_last.store((owner + 31) >> 7, std::memory_order_release);\n'),
-    ('wait-ignores-switch', '    if (marker_wake_on()) { marker_wake_wait(timer.handle); return; }\n',
+     '    if (marker_wake_owned) marker_wake_owner.store(owner, std::memory_order_release);\n', ''),
+    ('wait-ignores-switch', '    if (marker_wake_owned) { marker_wake_wait(timer.handle); return; }\n',
      '    { marker_wake_wait(timer.handle); return; }\n'),
     ('fallback-missing',
      '    const DWORD wait = WaitForMultipleObjects(2, handles, FALSE, INFINITE);\n',
