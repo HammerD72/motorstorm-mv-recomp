@@ -2246,4 +2246,12 @@ matches at `-O1`. Six mutants must differ in lanes that are not both NaN:
 the multiply-add addend, the multiply-subtract sign, the subtract order, the
 load and store byte swaps, and the emission's vB/vC order.
 
-Measured result: none. No run yet.
+Measured result (25 Nov, race scene, vehicle idle, 30 s windows, ABBA order,
+one warm-up each): a lift with this branch's output spliced into the working
+lift for these four instructions (23,888 sites), against the same lift without
+it, both built from 38b6c3a2 with `PORT_OPTIMIZE_NATIVE` and
+`PORT_OPTIMIZE_RUNTIME`. The unnamed PPU thread used 16.41 ms of CPU per
+presented frame against 18.40 ms (-2.0 ms, -11%; every run with the helpers
+was below every run without). Other threads were within noise. Frame rate was
+24.47 against 24.00 fps (5 runs each, sd 0.59 and 0.29), inside run-to-run
+noise. No launch exited early (12 of 12).
