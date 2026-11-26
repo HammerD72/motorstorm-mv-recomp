@@ -2237,12 +2237,14 @@ regenerated to use them. `vrefp` and `vrsqrtefp` are unchanged.
 hand-assembled instructions next to the previous output and compares every
 vector register, over random, special and near-cancellation operands, all
 four MXCSR rounding modes with and without FTZ/DAZ, and aliased registers.
-At the lifted code's flags (clang `-O1`, no contraction) every lane matches,
-including lanes where both operands are NaN. At `-O2` either form may return
-the other NaN in those lanes (the compiler orders the operands); every other
-lane matches. Default RelWithDebInfo builds without
+Every lane matches except, possibly, lanes where both operands of one
+operation are NaN: which NaN comes out there follows the compiler's operand
+order, in either form. With clang-cl 23 at the lifted code's flags (`-O1`,
+no contraction) those lanes match too (`--strict-nan`); with clang++ on the
+Linux runner at `-O1`, and at `-O2`, either form may return the other NaN.
+They are counted and reported. Default RelWithDebInfo builds without
 `PORT_OPTIMIZE_NATIVE` compile the lift at `/O2`. The per-lane fallback
-matches at `-O1`. Six mutants must differ in lanes that are not both NaN:
+matches in every lane. Six mutants must differ in lanes that are not both NaN:
 the multiply-add addend, the multiply-subtract sign, the subtract order, the
 load and store byte swaps, and the emission's vB/vC order.
 

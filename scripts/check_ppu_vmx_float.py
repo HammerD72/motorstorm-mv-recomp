@@ -16,10 +16,13 @@ compares every vector register bit for bit:
 - the SSE2 helpers and the per-lane fallback (PPU_VX_SCALAR);
 - the lifted code's flags (clang -O1, no contraction, no strict aliasing) and -O2.
 
-Lanes where both operands of one operation are NaN are compared too. Which NaN
-comes out there follows the compiler's operand order, in both forms: with these
-flags they agree, but with plain clang-cl /O1 the per-lane add returns the other
-NaN. So the check builds with clang (clang-cl on Windows), as the lift does.
+Lanes where both operands of one operation are NaN are compared too, but which
+NaN comes out there follows the compiler's operand order, in both forms. With
+clang-cl 23 at the lift's flags they agree; with clang++ on Linux at -O1, and
+with -O2, either form may return the other NaN. Those lanes are counted and
+reported; --strict-nan makes them fail the -O1 SSE2 build as well. Every other
+lane must match. The per-lane fallback is the previous code and must match in
+every lane. The check builds with clang (clang-cl on Windows), as the lift does.
 
 Compiled mutants of the helpers and of the emission must each differ.
 
@@ -185,6 +188,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--compiler', default=os.environ.get('MV_CLANGXX') or ('clang-cl' if os.name == 'nt' else 'clang++'))
     ap.add_argument('--rounds', type=int, default=2000)
+    ap.add_argument('--strict-nan', action='store_true', help='fail the -O1 SSE2 build on NaN-choice lanes too')
     args = ap.parse_args()
     cc = shutil.which(args.compiler) or args.compiler
     msvc = Path(cc).name.lower() in ('clang-cl', 'clang-cl.exe')
@@ -222,10 +226,10 @@ def main():
             print(f'FAIL {op} is not emitted through a ppu_vx_ helper: {text}')
             failures.append(f'emission {op}')
 
-    # At the lift's -O1 every lane must match, NaN choice included. At -O2 the
-    # compiler may order operands differently in either form: only lanes where
-    # both results are NaN may differ there, and they are reported.
-    for name, opt, define, strict in [('sse2', 'O1', None, True), ('sse2-O2', 'O2', None, False),
+    # Only lanes where both operands are NaN may differ, and they are reported:
+    # the compiler picks which NaN either form returns. --strict-nan fails them
+    # at -O1 too (clang-cl 23 at the lift's flags agrees in every lane).
+    for name, opt, define, strict in [('sse2', 'O1', None, args.strict_nan), ('sse2-O2', 'O2', None, False),
                                       ('scalar', 'O1', 'PPU_VX_SCALAR', True)]:
         rc, lines = build_and_run(name, translation_unit(preamble, lift), opt, define, strict)
         status = 'ok  ' if rc == 0 else 'FAIL'
@@ -272,7 +276,7 @@ def main():
     if failures:
         print('FAILED: ' + ', '.join(failures))
         return 1
-    print('PASS: whole-vector vaddfp/vsubfp/vmaddfp/vnmsubfp give the per-lane bits; 6 mutants rejected')
+    print('PASS: whole-vector vaddfp/vsubfp/vmaddfp/vnmsubfp give the per-lane bits outside NaN-choice lanes; 6 mutants rejected')
     return 0
 
 
