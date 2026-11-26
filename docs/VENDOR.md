@@ -2269,7 +2269,7 @@ with a fake watch, covering skip, re-arm, a write racing the arming, stale,
 refused, off and verify modes. It rejects three runtime and six lookup
 mutants, and audits the wiring above. These checks need no game data.
 
-Measured result (i7-12700K, RTX 3080, idle-vehicle race, 30 s samples, both
+Measured result (i7-12700K, RTX 4070 SUPER, idle-vehicle race, 30 s samples, both
 arms in the same build): 18 races per arm over three alternating sets,
 25.47 fps with the watch against 24.48 without (+0.99 ± 0.42 standard error, medians 26.02
 and 24.57; Mann-Whitney U 249 of 324). Mean frame clock 34.0 to 31.1 ms per
