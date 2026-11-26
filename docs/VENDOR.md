@@ -1,5 +1,31 @@
 # Vendor provenance and upstream
 
+## Compact VP vertex layout (#339)
+
+Local to this vendor copy; there is no `combined` counterpart. The D3D12 VP
+path wrote every vertex as all 16 float4 attribute slots (256 bytes), while
+MotorStorm's race vertex programs read about 4. When `rsx_vp_analyze_inputs`
+knows a program's inputs exactly, the vertex shader is built with
+`rsx_vp_decompile_compact_ex`, the PSO input layout lists only those slots
+16 bytes apart, and the upload packs only them (`rsx_vp_layout.h`). Draws
+start at a multiple of their stride, records carry `vb_stride`, and replay
+rebinds the vertex buffer view when the stride changes. A compact record
+without its own guest fragment-program pipeline is skipped and logged,
+because the fallback pipelines read all 16 slots. The full layout is the
+default. `RSX_VP_COMPACT=1` enables compact uploads. The slot debug switches
+(`VP_BYPASS`, `VP_TESTTRI`, `RSX_DBG_VTX`, `RSX_DBG_SCALE`, `RSX_DBG_TRACK`,
+`VTX_DUMP`, `IDX_DBG`) force it. Game-free coverage: the vp_upload,
+indexed_strip, restart, triangle_capacity and depth_contract checks run the
+production code with compact layouts too.
+
+Measured result (26 Nov, i7-12700K + RTX 4070 SUPER, EXE
+`02692b17972dc56dfd6e5f942dfdc23e3c2ac92d930db7243026213aaa9fb7a0` on a local
+tree with #355-#358, one EXE, 8 races per arm, window t=100-130 s): compact
+860.1 presents per 30 s (842-883) vs `RSX_VP_COMPACT=0` 833.6 (791-870),
++0.88 fps +/- 0.38 SE, one-sided permutation p = 0.018; renderer CPU per
+present 25.2-25.8 ms vs 27.6-31.0 ms. 0 skipped draws. No 30 FPS, graphics
+parity or interpreter-removal acceptance is claimed.
+
 ## Native policy-module services (#327)
 
 Own-fork branch `codex/pm-native-services` carries the reusable runtime and
