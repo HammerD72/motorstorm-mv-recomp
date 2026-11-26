@@ -195,6 +195,30 @@ class ExecutionProfileTests(unittest.TestCase):
     def test_submit_draws_rejects_tiny_cap(self):
         self.rejected('Submit draw cap must be 0', '--submit-draws', '15')
 
+    WATCH_KEYS = ('PS3RECOMP_VM_WRITE_WATCH', 'PS3RECOMP_VM_WRITE_WATCH_STRICT', 'RSX_TEX_WATCH', 'RSX_TEX_WATCH_VERIFY')
+
+    def check_texture_watch(self, options, expected):
+        with patch.dict(os.environ, {k: 'inherited' for k in self.WATCH_KEYS}):
+            record, env = self.launch(*options)
+        for key in self.WATCH_KEYS:
+            self.assertEqual(env.get(key), expected.get(key), key)
+            self.assertEqual(record['environment'].get(key), expected.get(key), key)
+
+    def test_texture_watch_default_clears_inherited_watch(self):
+        self.check_texture_watch(('--texture-retention', '1'), {})
+
+    def test_texture_watch_sets_watch(self):
+        self.check_texture_watch(('--texture-retention', '1', '--texture-watch', '1'),
+                                 {'PS3RECOMP_VM_WRITE_WATCH': '1', 'RSX_TEX_WATCH': '1'})
+
+    def test_texture_watch_verify_sets_strict_checks(self):
+        self.check_texture_watch(('--texture-retention', '1', '--texture-watch', 'verify'),
+                                 {'PS3RECOMP_VM_WRITE_WATCH': '1', 'RSX_TEX_WATCH': '1',
+                                  'RSX_TEX_WATCH_VERIFY': '1', 'PS3RECOMP_VM_WRITE_WATCH_STRICT': '1'})
+
+    def test_texture_watch_requires_retention(self):
+        self.rejected('Texture watch needs --texture-retention 1', '--texture-watch', '1')
+
     def test_pm_native_services_default_clears_inherited_selection(self):
         with patch.dict(os.environ, {'SPU_PM_NATIVE_SVC': '1', 'SPU_PM_SVC_VERIFY': '1'}):
             record, env = self.launch('--native-owned-jobs')

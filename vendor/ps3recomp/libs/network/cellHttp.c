@@ -6,6 +6,7 @@
  * responses with header parsing and body streaming.
  */
 
+#include "../../runtime/memory/vm_watch_hooks.h"   /* OS writes into guest memory are announced */
 #include "cellHttp.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -711,6 +712,7 @@ s32 cellHttpRecvResponse(CellHttpTransId transId, void* buf, u32 size,
         if (want == 0)
             break;
 
+        vm_note_host_write((char*)buf + filled, (size_t)want);
         int n = recv(t->sock, (char*)buf + filled, (int)want, 0);
         if (n < 0) {
             /* Error - if we already have some data, return it */

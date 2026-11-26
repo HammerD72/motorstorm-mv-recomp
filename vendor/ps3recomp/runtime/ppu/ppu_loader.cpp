@@ -1,3 +1,4 @@
+#include "../memory/vm_watch_hooks.h"
 #include "ps3emu/guest_read_sync.h"
 #include "ps3emu/native_atomic_observer.h"
 /*
@@ -1256,6 +1257,8 @@ extern "C" void ppu_guard_page(uint32_t guest_ea)
     /* The whole 64 KB demand-commit block: vm_commit_veh commits a block at a
      * time on first touch, and doing so later re-commits this page read-write,
      * silently disarming the guard. */
+    vm_watch_forget_host((void*)(s_guard_page & ~(uintptr_t)0xFFFF), 0x10000, 1);
+    vm_watch_forget_host((void*)s_guard_page, 0x1000, 0);   /* pinned: the guard owns it */
     VirtualAlloc((void*)(s_guard_page & ~(uintptr_t)0xFFFF), 0x10000, MEM_COMMIT, PAGE_READWRITE);
     DWORD old;
     VirtualProtect((void*)s_guard_page, 0x1000, PAGE_READONLY, &old);

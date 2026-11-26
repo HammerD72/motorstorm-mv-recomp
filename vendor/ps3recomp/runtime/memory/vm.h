@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <assert.h>
+#include "vm_watch_hooks.h"   /* runtime protection changes release watched pages */
 
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -280,6 +281,7 @@ static inline int32_t vm_commit(uint32_t addr, uint32_t size)
 {
     if (!VM_READY) return CELL_EFAULT;
     size = VM_ALIGN_UP(size, VM_PAGE_SIZE);
+    vm_watch_forget(addr, size, 1);
 
 #ifdef _WIN32
     if (!VirtualAlloc(vm_base + addr, size, MEM_COMMIT, PAGE_READWRITE))
@@ -296,6 +298,7 @@ static inline int32_t vm_protect(uint32_t addr, uint32_t size, int read, int wri
 {
     if (!VM_READY) return CELL_EFAULT;
     size = VM_ALIGN_UP(size, VM_PAGE_SIZE);
+    vm_watch_forget(addr, size, read && write);
 
 #ifdef _WIN32
     DWORD prot = PAGE_NOACCESS;

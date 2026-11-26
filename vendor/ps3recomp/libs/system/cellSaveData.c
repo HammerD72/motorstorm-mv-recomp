@@ -8,6 +8,7 @@
  * through ppu_fs, so saves are round-trip visible to the title via cellFs.
  */
 
+#include "../../runtime/memory/vm_watch_hooks.h"   /* OS writes into guest memory are announced */
 #include "cellSaveData.h"
 #include "ps3emu/guest_call.h"
 #include "../../runtime/ppu/ppu_memory.h"
@@ -779,8 +780,10 @@ static s32 process_file_op(const char* save_path, CellSaveDataFileSet* set)
         }
         size_t read_size = (size_t)set->fileSize;
         if (read_size > set->fileBufSize) read_size = set->fileBufSize;
+        vm_note_host_write(set->fileBuf, read_size);
         size_t got = fread(set->fileBuf, 1, read_size, fp);
         int failed = ferror(fp);
+        vm_note_write_check(failed && got < read_size, "cellSaveData file read");
         if (fclose(fp) != 0) failed = 1;
         return failed ? CELL_SAVEDATA_ERROR_ACCESS_ERROR : (s32)got;
     }

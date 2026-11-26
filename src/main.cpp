@@ -39,6 +39,7 @@
 #include "win32_compat.h"
 #include "thread_name.h"   /* ps3_thread_setname */
 #include "ps3emu/loadtime_trace.h"   /* #11 load-stage timing (observer) */
+#include "vm_watch.h"               /* opt-in guest write watch (PS3RECOMP_VM_WRITE_WATCH=1) */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -336,6 +337,8 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
         uintptr_t base  = (uintptr_t)vm_base;
         if (vm_base && fault >= base && fault < base + VM_SIZE) {
             void* page = (void*)(fault & ~(uintptr_t)0xFFFF);
+            /* MEM_COMMIT makes every page of the block read-write, watched or not. */
+            vm_watch_forget_host(page, 0x10000, 1);
             if (VirtualAlloc(page, 0x10000, MEM_COMMIT, PAGE_READWRITE))
                 return EXCEPTION_CONTINUE_EXECUTION;
         }
@@ -394,6 +397,8 @@ int main(int argc, char** argv)
         return 1;
     }
     if (loadtime_on()) loadtime_event("boot", "stage=vm_alloc");
+    /* After alloc_guest_vm: the watch's handler then runs before vm_commit_veh. */
+    vm_watch_enable();
 
     uint32_t entry = ppu_load_elf(argv[1]);
     if (!entry) {
