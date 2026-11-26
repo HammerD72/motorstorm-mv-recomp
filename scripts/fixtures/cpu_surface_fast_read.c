@@ -221,6 +221,15 @@ static void wait_for(atomic_int *flag) {
     yield_cpu();
 }
 static void stress(void) {
+  /* Start from the writer's pending view. The view left by section C serves
+   * the probe address, and the client can probe it before the writer runs. */
+  OffRT *r = &s_d3d.off_rt[0];
+  r->cpu_address = 0x1000;
+  r->gpu_generation = 1;
+  r->cpu_generation = 0;
+  cpu_surface_view_update(r);
+  REQUIRE(cpu_surface_view_probe(cpu_surface_view_entry(0), 0x1020, 4) == CPU_SURFACE_VIEW_PENDING,
+          "the stress starts from a pending view");
   REQUIRE(start_thread(stress_writer), "renderer thread");
   REQUIRE(start_thread(stress_reader), "client thread");
   wait_for(&stress_writer_done);
