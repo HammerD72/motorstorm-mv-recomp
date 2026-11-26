@@ -2234,9 +2234,9 @@ static u32 vp_hash_ucode(const u8* p, u32 n)
     return h ? h : 1u;
 }
 
-/* RSX_VP_COMPACT=0 keeps every VP-path vertex at all 16 slots. Debug
- * switches that read or patch attribute slots by position, or that make the
- * shader read inputs the program does not, force the full layout too. */
+/* RSX_VP_COMPACT=1 enables compact uploads. Keep the full layout by default
+ * because the fallback pipelines require all 16 slots. Debug switches that
+ * use fixed slots also require the full layout. */
 static int vp_compact_on(void)
 {
     static int on = -1;
@@ -2245,7 +2245,7 @@ static int vp_compact_on(void)
             "VP_BYPASS", "VP_TESTTRI", "RSX_DBG_VTX", "RSX_DBG_SCALE",
             "RSX_DBG_TRACK", "VTX_DUMP", "IDX_DBG" };
         const char* e = getenv("RSX_VP_COMPACT");
-        on = !(e && e[0] == '0');
+        on = e && e[0] == '1' && !e[1];
         for (size_t i = 0; i < sizeof full_only / sizeof full_only[0]; i++)
             if (getenv(full_only[i])) on = 0;
     }

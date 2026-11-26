@@ -11,8 +11,8 @@ knows a program's inputs exactly, the vertex shader is built with
 start at a multiple of their stride, records carry `vb_stride`, and replay
 rebinds the vertex buffer view when the stride changes. A compact record
 without its own guest fragment-program pipeline is skipped and logged,
-because the fallback pipelines read all 16 slots. On by default;
-`RSX_VP_COMPACT=0` keeps the full layout, and the slot debug switches
+because the fallback pipelines read all 16 slots. The full layout is the
+default. `RSX_VP_COMPACT=1` enables compact uploads. The slot debug switches
 (`VP_BYPASS`, `VP_TESTTRI`, `RSX_DBG_VTX`, `RSX_DBG_SCALE`, `RSX_DBG_TRACK`,
 `VTX_DUMP`, `IDX_DBG`) force it. Game-free coverage: the vp_upload,
 indexed_strip, restart, triangle_capacity and depth_contract checks run the

@@ -445,10 +445,10 @@ the selection. `RSX_CPU_SURFACE_PROFILE=1` also prints `[CPUSURFACE_EAGER]`
 submit counts. Game-free coverage:
 [check_cpu_surface_eager.py](../scripts/check_cpu_surface_eager.py).
 
-The D3D12 VP path uploads only the attribute slots each vertex program reads
-when its inputs are known exactly (on by default; `RSX_VP_COMPACT=0` keeps
-every vertex at all 16 slots, 256 bytes). See VENDOR.md, "Compact VP vertex
-layout".
+`RSX_VP_COMPACT=1` lets the D3D12 VP path upload only the attribute slots
+that the vertex program reads when it can identify all of them. The default
+keeps all 16 slots so the fallback pipelines can still draw. See
+[Compact VP vertex layout](VENDOR.md#compact-vp-vertex-layout-339).
 
 `--submit-draws N` (default `0`, off) sets `RSX_SUBMIT_DRAWS`. The renderer then
 submits the batch at the first draw boundary where it already holds `N` or
