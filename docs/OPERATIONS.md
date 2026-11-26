@@ -429,10 +429,9 @@ selection. `RSX_CPU_SURFACE_PREFETCH_LOG=1` prints used, waited, missed and
 copy counts. Game-free coverage:
 [check_cpu_surface_prefetch.py](../scripts/check_cpu_surface_prefetch.py).
 
-A CPU read whose surfaces all hold their current copy is served on the
-calling thread instead of through the renderer queue (on by default;
-`RSX_CPU_SURFACE_FAST=0` keeps every read queued). In MotorStorm races this is
-most of the ~28 one-byte wheel-depth reads per frame. Game-free coverage:
+`RSX_CPU_SURFACE_FAST=1` lets a client thread serve reads of current surface
+copies when no recorded surface write waits for submission. The default uses
+the renderer queue. Game-free coverage:
 [check_cpu_surface_fast_read.py](../scripts/check_cpu_surface_fast_read.py).
 
 `--eager-surface-submit 0|1` (default `0`) sets `RSX_CPU_SURFACE_EAGER` to

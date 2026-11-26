@@ -48,16 +48,15 @@ performance, minimum 30 FPS and interpreter removal remain open.
 
 ## Caller-side reads of current surfaces (#326)
 
-The reusable fork implementation is own-fork commit `622274a9cf`
-(robbe1912/ps3recomp#8, not yet in `combined`); the vendor copy carries it as
-`a65cb758`. A client read of a surface with no recorded write since its last
-copy used to wait for the renderer service. The renderer now keeps one view per
-surface-pool slot (guest range, and whether a copy would be a hit); the table
-grows with the pool. A client thread serves the read itself when every surface
-it touches is current; every other read takes the queued path. A served read
-notes its surface for the prefetch refresh, as a queued hit did. On by default;
-`RSX_CPU_SURFACE_FAST=0` keeps every read queued. Game-free coverage:
-`check_cpu_surface_fast_read.py` (25 behaviour and 5 wiring mutants).
+The original implementation is own-fork commit `622274a9cf` in
+robbe1912/ps3recomp#8. The order fix is on own-fork branch
+`codex/surface-fast-order`. The renderer publishes one view for each
+surface-pool slot. A client thread uses a view only when all overlapping
+surfaces are current, no recorded surface writes wait for submission, and
+the complete view table stays unchanged during the scan. If the view
+table cannot grow, all reads use the queue. `RSX_CPU_SURFACE_FAST=1` enables
+the fast path. A served read notes its surface for the prefetch refresh.
+Game-free coverage: `check_cpu_surface_fast_read.py`.
 
 ## Eager submission after writes to listed surfaces (#326)
 
