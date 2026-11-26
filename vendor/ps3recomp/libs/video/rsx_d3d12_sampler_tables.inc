@@ -49,12 +49,30 @@ static GuestSamplerHeap* guest_sampler_heap_new(void)
     }
     return h;
 }
+/* A pre-check only: guest_sampler_find confirms every equal hash with memcmp
+ * and the values never leave the process, so any function of the table's
+ * bytes keeps the result. It runs once per replayed draw over 16 descriptors
+ * (832 bytes): four independent lanes over 8-byte words, not one dependent
+ * multiply per byte. */
 static unsigned long long guest_sampler_hash(const D3D12_SAMPLER_DESC* desc)
 {
     const unsigned char* b = (const unsigned char*)desc;
-    unsigned long long h = 1469598103934665603ull;
-    for (size_t i = 0; i < 16 * sizeof(*desc); ++i) { h ^= b[i]; h *= 1099511628211ull; }
-    return h;
+    const size_t n = 16 * sizeof(*desc);
+    const unsigned long long p = 0x9E3779B97F4A7C15ull;
+    unsigned long long h[4] = {1469598103934665603ull, 0xC2B2AE3D27D4EB4Full,
+                               0x165667B19E3779F9ull, 0x27D4EB2F165667C5ull};
+    size_t i = 0;
+    for (; i + 32 <= n; i += 32)
+        for (unsigned k = 0; k < 4; ++k) {
+            unsigned long long w;
+            memcpy(&w, b + i + 8 * k, 8);
+            h[k] = (h[k] ^ w) * p;
+            h[k] ^= h[k] >> 31;
+        }
+    for (; i < n; ++i) h[i & 3] = (h[i & 3] ^ b[i]) * p;
+    unsigned long long r = (unsigned long long)n;
+    for (unsigned k = 0; k < 4; ++k) { r = (r ^ h[k]) * p; r ^= r >> 29; }
+    return r;
 }
 
 /* Record time: the draw keeps the sampler registers that were live when the
