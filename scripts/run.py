@@ -115,6 +115,8 @@ def main():
     if args.native_owned_jobs:env['SPU_NATIVE_OWNED_JOBS']='1'
     if args.jobmod_header_fnv:env['SPU_JOBMOD_HEADER_FNV']='1'
     if args.pm_native_services:env['SPU_PM_NATIVE_SVC']='1'
+    env.pop('SPURS_MARKER_WAKE',None)
+    if args.spurs_marker_wake=='1':env['SPURS_MARKER_WAKE']='1'
     env['PS3_KEYS_FILE']=str(c.get('keys',ROOT/'game/private_keys')/'keys.json')
     if args.trace_task_lifecycle:
         env['SPU_TASK_LIFECYCLE_TRACE']=str(args.trace_task_lifecycle)
@@ -143,8 +145,6 @@ def main():
     if args.surface_prefetch=='1':env['RSX_CPU_SURFACE_PREFETCH']=SURFACE_PREFETCH
     if args.eager_surface_submit=='1':env['RSX_CPU_SURFACE_EAGER']=SURFACE_EAGER
     if args.submit_draws:env['RSX_SUBMIT_DRAWS']=str(args.submit_draws)
-    env.pop('SPURS_MARKER_WAKE',None)
-    if args.spurs_marker_wake=='1':env['SPURS_MARKER_WAKE']='1'
     if args.cpu_surface_flush != 'default':env['RSX_CPU_SURFACE_FLUSH']=args.cpu_surface_flush
     if args.drain_overlap != 'default':env['RSX_DRAIN_OVERLAP']=args.drain_overlap
     env.update(RSX_TEXTURE_RETENTION=args.texture_retention,RSX_TEXTURE_CACHE_MIB=str(args.texture_cache_mib),RSX_TEX_MIPS=args.texture_mips)
