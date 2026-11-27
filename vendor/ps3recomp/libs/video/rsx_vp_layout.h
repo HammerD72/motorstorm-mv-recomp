@@ -25,11 +25,12 @@ typedef struct rsx_vp_layout {
     uint32_t stride;   /* bytes per vertex: 16 per carried slot */
     uint32_t count;    /* carried slots */
     uint8_t slot[16];  /* slot[k] = attribute stored at byte 16 * k */
+    int8_t index_of[16]; /* index_of[a] = k with slot[k] == a, or -1 */
 } rsx_vp_layout;
 
 #define RSX_VP_LAYOUT_FULL \
     { 0xFFFFu, RSX_VP_UNIT_BYTES, 16u, \
-      { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } }
+      { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },       { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } }
 
 /* Layout for a vertex program that reads the attributes in `mask`. A program
  * that reads none still gets slot 0, so every vertex keeps a nonzero stride;
@@ -44,9 +45,13 @@ static void rsx_vp_layout_init(rsx_vp_layout* layout, uint32_t mask)
 {
     layout->mask = rsx_vp_layout_mask(mask);
     layout->count = 0;
-    for (uint32_t attr = 0; attr < 16; ++attr)
-        if (layout->mask & (1u << attr))
+    for (uint32_t attr = 0; attr < 16; ++attr) {
+        layout->index_of[attr] = -1;
+        if (layout->mask & (1u << attr)) {
+            layout->index_of[attr] = (int8_t)layout->count;
             layout->slot[layout->count++] = (uint8_t)attr;
+        }
+    }
     for (uint32_t k = layout->count; k < 16; ++k) layout->slot[k] = 0;
     layout->stride = layout->count * RSX_VP_SLOT_BYTES;
 }
