@@ -1,36 +1,5 @@
 # Vendor provenance and upstream
 
-## SPURS marker wake (#327)
-
-Fork `combined` `79e7bb4c` holds the host line commit hook in `ab8da921`
-(`feat(spu): add host line commit wakeup`). The fork needs no other change,
-so this item has no new fork commit, fork check or fork doc. The game commit
-that carries the code copies the hook into `vendor/ps3recomp`. The check
-`scripts/check_spurs_marker_wake.py`, its fixture, the launcher lines of
-`--spurs-marker-wake`, their two tests and this section are in the commit
-that carries the check. Default off.
-
-`SPURS_MARKER_WAKE=1` ends a marker wait of the game at the commit of a job.
-Without the switch the wait reads the counters of its job list 64 times and
-sleeps in a high-resolution timer with a due of 100 us. On the build machine
-the timer wakes after 0.52 ms at least, so each cooperation is late by about
-0.4 ms. With the switch on, the runtime calls a host hook after each
-committing PUTLLC on a guest line. The job wait adapter installs the hook,
-keeps the lines of the job list that a marker wait waits on, and signals an
-event when one of these lines commits. The wait blocks on the event and on
-the timer, so a lost wake-up cannot hang. The runtime calls the hook only
-after a successful PUTLLC or PUTLLUC, after the coherence lock is released.
-One waiting thread owns the line filter and event. Other threads keep the
-timer path. The owner clears the filter when its marker wait ends.
-
-Checks: `python scripts/check_spurs_marker_wake.py` here rejects 5 source
-mutants of `spu_channels.c`, 2 adapter audit mutants, 12 adapter mutants and
-5 launcher mutants. It builds the adapter with the wait core and compiles
-`spu_channels.c` syntax-only. `scripts/check_native_job_wait.py` passes with
-the changed adapter. Both pass.
-
-Measured result (exe `c45ff520ed9c4e4d`: main `38b6c3a2` + #355 + #356 + local test aids + this change, and an unused local spin switch; lifted jobs, `SPURS_KERNEL_NOTIFY=1`, `RSX_SUBMIT_DRAWS=256`; idle-vehicle race, window 100 to 130 s; 6 races per arm in the order off, on, spin, spin, on, off three times; one machine, i7-12700K + RTX 4070 SUPER): 815.5 presents per 30 s off (792 to 828), 859.2 on (839 to 876), +43.7 (+5.4 percent), every on race above every off race, one-sided permutation p = 1/924. One wake step takes 0.076 ms (median) against 0.518 ms for the timer. Runs `20261126T180357Z` to `20261126T185212Z` (list in #327). No run of the later race windows.
-
 ## Native policy-module services (#327)
 
 Own-fork branch `codex/pm-native-services` carries the reusable runtime and
@@ -2217,6 +2186,22 @@ The last 60 intact diagnostic groups through nominal second401 recorded
 115.040-355.418ms intervals; rounding bound0.0001645s, no missing groups).
 This single trial is not scanout, matched performance evidence or stable30FPS.
 #71's intermittent freeze and #27's full performance/graphics goal remain open.
+
+## SPURS marker wake (#327)
+
+Own-fork `combined` commit `79e7bb4c` includes the host line commit
+hook from `ab8da921`. The game uses the same hook without a fork change.
+
+`SPURS_MARKER_WAKE=1` lets a successful PUTLLC or PUTLLUC signal
+the waiting thread after it releases the coherence lock. One waiting
+thread owns the line filter and event. Other threads use the timer.
+The owner clears the filter when its wait ends. The timer remains
+active if an event does not arrive. The switch is off by default.
+
+`python scripts/check_spurs_marker_wake.py` compiles the adapter and
+checks the runtime hook, wait behavior, and launcher. The author
+reported timings for the original path in [#327](https://github.com/robbe1912/motorstorm-mv-recomp/issues/327).
+Those timings do not measure the reviewed version.
 
 ## Held SPU float controls (#338)
 
