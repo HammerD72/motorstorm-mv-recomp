@@ -78,6 +78,18 @@ static void rsx_vp_layout_pack(const rsx_vp_layout* layout, void* dst,
                s + (size_t)layout->slot[k] * RSX_VP_SLOT_BYTES, RSX_VP_SLOT_BYTES);
 }
 
+/* Copy one vertex already in this layout (`count` slots) to `dst`. Fixed
+ * 16-byte copies, like the pack, so no variable-length memcpy call. */
+static void rsx_vp_layout_copy(const rsx_vp_layout* layout, void* dst,
+                               const void* packed_vertex)
+{
+    unsigned char* d = (unsigned char*)dst;
+    const unsigned char* s = (const unsigned char*)packed_vertex;
+    for (uint32_t k = 0; k < layout->count; ++k)
+        memcpy(d + (size_t)k * RSX_VP_SLOT_BYTES, s + (size_t)k * RSX_VP_SLOT_BYTES,
+               RSX_VP_SLOT_BYTES);
+}
+
 /* First offset at or after `offset` where a draw with this stride can start,
  * so that its first vertex is offset / stride. Returns 0 with *aligned
  * untouched if the result does not fit a 32-bit buffer offset. */

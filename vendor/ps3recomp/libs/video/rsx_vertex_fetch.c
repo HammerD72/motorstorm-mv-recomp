@@ -67,8 +67,14 @@ void rsx_vertex_fetch_prepare(rsx_vertex_fetch_batch* batch, const rsx_state* st
 }
 
 /* Decode one prepared array element of vertex vi into o, which already holds
- * the slot's constant register. Unrecognised types take the scalar fetch. */
-static inline void fetch_slot(const rsx_vertex_fetch_batch* batch,
+ * the slot's constant register. Unrecognised types take the scalar fetch.
+ * Forced inline: it runs once per attribute per vertex in both fetch loops. */
+#if defined(_MSC_VER)
+#define RSX_VTX_INLINE __forceinline
+#else
+#define RSX_VTX_INLINE inline __attribute__((always_inline))
+#endif
+static RSX_VTX_INLINE void fetch_slot(const rsx_vertex_fetch_batch* batch,
                               const rsx_vertex_fetch_slot* s, u32 vi, float* o)
 {
     if (!prepared_type(s->type)) {

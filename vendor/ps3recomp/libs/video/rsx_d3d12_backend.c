@@ -7860,7 +7860,7 @@ static void vp_put_vertex(const rsx_state* state, const rsx_vertex_fetch_batch* 
     }
     VPSlot packed[16];
     read_vp_vertex_packed(state, batch, vi, packed);
-    memcpy(dst, packed, s_vp_layout.stride);
+    rsx_vp_layout_copy(&s_vp_layout, dst, packed);
 }
 
 /* VTX_POS=<N>: print the first fetched position of the first N draws. A guest
@@ -8449,8 +8449,8 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
                 bits |= 1u << way;
             }
             cached_state[set] = (u8)((bits & 3u) | ((way ^ 1u) << 2));
-            memcpy(rsx_vp_layout_at(&s_vp_layout, out, o), cached_vertices[set][way],
-                   s_vp_layout.stride);
+            rsx_vp_layout_copy(&s_vp_layout, rsx_vp_layout_at(&s_vp_layout, out, o),
+                               cached_vertices[set][way]);
             ++o;
         }
     }
