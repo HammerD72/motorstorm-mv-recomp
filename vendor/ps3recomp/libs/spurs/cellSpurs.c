@@ -605,7 +605,9 @@ static s32 spurs_initialize_common(u32 spurs_ea, u32 nspus, const char* prefix)
     ReleaseSRWLockExclusive(&si->lock);
     ReleaseSRWLockExclusive(&s_inst_directory_lock);
     const uint32_t requested_lanes = nspus;
-    nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));
+    /* A one-lane instance keeps its count: the game sized that workload for
+     * one SPU (a race creates one beside the five-lane job instance). */
+    if (requested_lanes > 1u) nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));
     si->nspus = (nspus > 0 && nspus <= CELL_SPURS_MAX_SPU) ? nspus : 1;
     memset(si->prefix, 0, sizeof(si->prefix));
     if (prefix) memcpy(si->prefix, prefix, 15);

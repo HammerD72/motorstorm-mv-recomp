@@ -3,8 +3,9 @@
 
 1. Audits the vendor copy and scripts/run.py: the override sits after the
    validity check of the value of the game and before the instance gets its
-   count; the launcher sets the switch only with --spurs-lanes and records it.
-   Mutants must fail.
+   count, and applies only to an instance that requests more than one lane (a
+   race also creates a one-lane instance); the launcher sets the switch only
+   with --spurs-lanes and records it. Mutants must fail.
 2. Compiles the production header with an authored fixture: each kind of
    SPURS_LANES value gives the documented lane count. Mutants of the header
    must fail.
@@ -30,7 +31,7 @@ WIRING = [
     '#include "spurs_lane_count.h"',
     '    if (!nspus || nspus > 6) return CELL_SPURS_CORE_ERROR_INVAL;',
     '    const uint32_t requested_lanes = nspus;',
-    '    nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));',
+    '    if (requested_lanes > 1u) nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));',
     '    si->nspus = (nspus > 0 && nspus <= CELL_SPURS_MAX_SPU) ? nspus : 1;',
     'nSpus=%u requested=%u',
     'si->prefix, spurs_ea, si->nspus, requested_lanes);',
@@ -38,16 +39,19 @@ WIRING = [
 SOURCE_MUTANTS = [
     # (name, old, new)
     ("include-lost", '#include "spurs_lane_count.h"   /* SPURS_LANES: optional lane count override */\n', ""),
-    ("override-lost", 'nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));\n', ""),
+    ("override-lost", 'if (requested_lanes > 1u) nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));\n', ""),
+    # A one-lane instance keeps its single lane.
+    ("one-lane-instance-overridden", 'if (requested_lanes > 1u) nspus', 'nspus'),
+    ("one-lane-guard-at-one", 'if (requested_lanes > 1u) nspus', 'if (requested_lanes >= 1u) nspus'),
     ("override-before-validity-check",
      '    if (!nspus || nspus > 6) return CELL_SPURS_CORE_ERROR_INVAL;\n',
      '    nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));\n'
      '    if (!nspus || nspus > 6) return CELL_SPURS_CORE_ERROR_INVAL;\n'),
     ("count-written-first",
-     '    nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));\n'
+     '    if (requested_lanes > 1u) nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));\n'
      '    si->nspus = (nspus > 0 && nspus <= CELL_SPURS_MAX_SPU) ? nspus : 1;\n',
      '    si->nspus = (nspus > 0 && nspus <= CELL_SPURS_MAX_SPU) ? nspus : 1;\n'
-     '    nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));\n'),
+     '    if (requested_lanes > 1u) nspus = spurs_lane_count(nspus, getenv("SPURS_LANES"));\n'),
     ("log-without-requested-count", "nSpus=%u requested=%u", "nSpus=%u"),
     ("log-prints-count-twice", "si->prefix, spurs_ea, si->nspus, requested_lanes);",
      "si->prefix, spurs_ea, si->nspus, si->nspus);"),
