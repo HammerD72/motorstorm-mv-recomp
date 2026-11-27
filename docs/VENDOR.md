@@ -2264,6 +2264,22 @@ The last 60 intact diagnostic groups through nominal second401 recorded
 This single trial is not scanout, matched performance evidence or stable30FPS.
 #71's intermittent freeze and #27's full performance/graphics goal remain open.
 
+## SPURS marker wake (#327)
+
+Own-fork `combined` commit `79e7bb4c` includes the host line commit
+hook from `ab8da921`. The game uses the same hook without a fork change.
+
+`SPURS_MARKER_WAKE=1` lets a successful PUTLLC or PUTLLUC signal
+the waiting thread after it releases the coherence lock. One waiting
+thread owns the line filter and event. Other threads use the timer.
+The owner clears the filter when its wait ends. The timer remains
+active if an event does not arrive. The switch is off by default.
+
+`python scripts/check_spurs_marker_wake.py` compiles the adapter and
+checks the runtime hook, wait behavior, and launcher. The author
+reported timings for the original path in [#327](https://github.com/robbe1912/motorstorm-mv-recomp/issues/327).
+Those timings do not measure the reviewed version.
+
 ## Held SPU float controls (#338)
 
 Fork branch: `review/spu-float-held`,
