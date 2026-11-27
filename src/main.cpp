@@ -338,9 +338,10 @@ static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
         if (vm_base && fault >= base && fault < base + VM_SIZE) {
             void* page = (void*)(fault & ~(uintptr_t)0xFFFF);
             /* MEM_COMMIT makes every page of the block read-write, watched or not. */
-            vm_watch_forget_host(page, 0x10000, 1);
-            if (VirtualAlloc(page, 0x10000, MEM_COMMIT, PAGE_READWRITE))
-                return EXCEPTION_CONTINUE_EXECUTION;
+            vm_watch_change_begin(page, 0x10000);
+            void* committed = VirtualAlloc(page, 0x10000, MEM_COMMIT, PAGE_READWRITE);
+            vm_watch_change_end(page, 0x10000, committed != NULL);
+            if (committed) return EXCEPTION_CONTINUE_EXECUTION;
         }
     }
     return EXCEPTION_CONTINUE_SEARCH;

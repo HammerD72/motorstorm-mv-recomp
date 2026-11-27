@@ -422,8 +422,9 @@ without hashing it again. `verify` also sets `RSX_TEX_WATCH_VERIFY=1` and
 `PS3RECOMP_VM_WRITE_WATCH_STRICT=1`: every skipped hash is computed anyway,
 `[TEXWATCH] MISSED` reports one that changed, and an OS read into a watched
 page that was not announced is fatal. The launcher clears inherited watch
-selections and records them. `RSX_TEX_WATCH_STATS=1` (set by hand) prints the
-counts every 10 s. Game-free coverage:
+selections and records them. The watch excludes pages used as OS write
+destinations. Textures that use those pages still need a hash.
+`RSX_TEX_WATCH_STATS=1` prints counts every 10 s. Game-free coverage:
 [check_rsx_texture_watch.py](../scripts/check_rsx_texture_watch.py); see
 `docs/VENDOR.md` for the runtime source and measured result.
 

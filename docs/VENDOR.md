@@ -16,6 +16,35 @@ drain and owned gate with lifter-emitted calls and service bodies. It checks
 full GPR/LS/status parity in eleven modes and rejects nine compiled mutants,
 including a jump at the purported call site. The fixture uses authored bytes.
 
+## Held textures validated by guest write watch (#332)
+
+The runtime uses own-fork commit
+[`f95dd6eb`](https://github.com/robbe1912/ps3recomp/commit/f95dd6eb3c07e2ba7b988e06132610df78cb9af7).
+It builds on sp00nznet/ps3recomp `e85647a3`
+([#727](https://github.com/sp00nznet/ps3recomp/pull/727),
+[#728](https://github.com/sp00nznet/ps3recomp/pull/728); MIT).
+
+The watch protects host pages and records the first guest write to each
+page. A protection change excludes its range from the watch until the
+platform call ends. The Windows demand-commit handler does this for the
+whole 64 KiB block. The watch runs before that handler. The PPU write
+guard excludes its block from the watch before it sets protection.
+The watch also excludes announced OS write destinations for the life of
+the VM. The kernel cannot run the user-space fault handler.
+
+`RSX_TEX_WATCH=1` with `RSX_TEXTURE_RETENTION=1` checks a watch for the
+same source span as the texture hash. The renderer arms the watch before
+a hash or an upload. It skips the next hash only if every page is clean.
+An upload that races a tracked write must upload again at the next
+validation. If the watch refuses a span, the renderer uses the hash. Verify mode
+hashes clean spans too and reports `[TEXWATCH] MISSED` on a difference.
+
+[check_rsx_texture_watch.py](../scripts/check_rsx_texture_watch.py) checks
+the write and protection paths, plus reuse, re-arming and hash fallback.
+It uses no game data. The author reported race results on the original
+implementation in [#332](https://github.com/robbe1912/motorstorm-mv-recomp/issues/332#issuecomment-7183145446).
+Those results do not measure the reviewed version.
+
 ## Coherent surface prefetch (#322)
 
 The reusable implementation and authored validation are own-fork modular and
@@ -2215,66 +2244,3 @@ scope mutants. Its existing exact-rational oracle passes 36,816 helper lanes.
 These checks need no private input and do not cover SPU FPSCR status flags.
 
 Measured result: none. No run yet.
-
-## Held textures validated by guest write watch (#332)
-
-Ported from sp00nznet/ps3recomp `runtime/memory` at master `e85647a3`
-([#727](https://github.com/sp00nznet/ps3recomp/pull/727),
-[#728](https://github.com/sp00nznet/ps3recomp/pull/728); MIT):
-`vm_watch.c`, `vm_watch.h` and `vm_watch_hooks.h`, unchanged apart from a
-provenance line. The watch write-protects 4 KB guest pages and records the
-first write to each one in a per-page epoch. A vectored exception handler
-(Windows) or SIGSEGV/SIGBUS handler (POSIX) unprotects the page, records the
-write and lets the store complete. `vm_watch(ea, len)` returns an epoch;
-`vm_clean_since(ea, len, epoch)` says whether any page of the span was written
-since. It is off unless `PS3RECOMP_VM_WRITE_WATCH=1`.
-
-Wiring in this tree:
-
-- `vm_commit` and `vm_protect` release watched pages before they change
-  protection (a read-only `vm_protect` pins them unwatched).
-- `vm_commit_veh` in `src/main.cpp` commits whole 64 KB blocks read-write,
-  which would silently make a watched page writable; it releases the block
-  first. `main()` enables the watch after `alloc_guest_vm()`, so the watch's
-  handler runs before the demand-commit handler and a write to one watched
-  page leaves its block neighbours clean. The PPU write guard pins its page.
-- OS writes into guest memory do not fault: `ReadFile`/`fread`/`recv` into a
-  protected page fail with `ERROR_NOACCESS` (or `EFAULT`). Every such reader
-  (`cellFsRead`, `cellFsReadWithOffset`, `sys_fs_read`, `cellFs`,
-  `cellSaveData`, `cellHttp`, `sysNet` recv/recvfrom, and the POSIX readers in
-  `sysPrxForUser` and `cellSsl`) announces the range with `vm_note_write` or
-  `vm_note_host_write` first. `PS3RECOMP_VM_WRITE_WATCH_STRICT=1` makes an
-  unannounced failed read fatal.
-
-`RSX_TEX_WATCH=1` ([rsx_texture_watch.h](../vendor/ps3recomp/libs/video/rsx_texture_watch.h))
-uses it for held textures under `RSX_TEXTURE_RETENTION=1`. A texture held
-from an earlier batch is validated against its complete XXH3 fingerprint on
-every bind. With the watch on, the fingerprint's source span (all cube faces
-and uploaded levels, or a volume's base level) is armed before each hash and
-before each upload's conversion reads it; a later bind skips the hash while
-no page of the span has been written. A write before the arming is in the
-bytes read; one after it is recorded. A span the watch refuses is hashed on
-every bind, as before. `RSX_TEX_WATCH_VERIFY=1` hashes every clean answer
-anyway and reports `[TEXWATCH] MISSED` for any that changed;
-`RSX_TEX_WATCH_STATS=1` prints the counts every 10 s.
-
-[check_rsx_texture_watch.py](../scripts/check_rsx_texture_watch.py) compiles
-the vendored watch with the production `vm_commit`, `vm_protect` and (on
-Windows) `vm_commit_veh`, installed in the production order. It checks reads,
-writes, announced OS writes, releases and pins, a raw OS read into a watched
-page (fails unannounced, works announced), a demand commit inside a watched
-block, block-neighbour precision and 20,000 rounds against a concurrent
-writer with no missed write. It compiles the production held-texture lookup
-with a fake watch, covering skip, re-arm, a write racing the arming, stale,
-refused, off and verify modes. It rejects three runtime and six lookup
-mutants, and audits the wiring above. These checks need no game data.
-
-Measured result (i7-12700K, RTX 4070 SUPER, idle-vehicle race, 30 s samples, both
-arms in the same build): 18 races per arm over three alternating sets,
-25.47 fps with the watch against 24.48 without (+0.99 ± 0.42 standard error, medians 26.02
-and 24.57; Mann-Whitney U 249 of 324). Mean frame clock 34.0 to 31.1 ms per
-present. In verify-mode races about 97-98% of held-texture validations skipped
-the hash, with about 110-270 write faults per second and no missed write in
-about 1.8 million clean answers. Three slow races (21.8-22.9 fps) occurred,
-two with the watch and one without; their cause is not known. Single machine;
-not yet repeated by another tester.

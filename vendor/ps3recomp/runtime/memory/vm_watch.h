@@ -19,6 +19,8 @@
  * such caller announces the write first with vm_note_write() (vm_watch_hooks.h); with
  * PS3RECOMP_VM_WRITE_WATCH_STRICT=1 vm_note_write_check() turns a missed one
  * into a fatal report.
+ * The watch excludes each announced destination page for the life of the VM.
+ * This prevents re-arming while the kernel still holds the destination.
  *
  * The OS writers into guest memory, each announced (keep this list current):
  *   runtime/syscalls/sys_fs.c      sys_fs read (fread)

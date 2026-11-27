@@ -256,7 +256,7 @@ typedef struct {
     u32 depth;          /* 3D volume depth; 0/1 = 2D or cube */
     u32 levels;         /* uploaded mip levels (RSX_TEX_MIPS); 0/1 = level 0 only */
     u64 last_use, allocation_bytes;
-    u64 watch_epoch;    /* RSX_TEX_WATCH: vm_watch epoch of the source span; 0 = not watched */
+    u64 watch_epoch;    /* zero if not watched, UINT64_MAX if upload raced a write */
 } VPTexSlot;
 /* Distinct textures uploadable per frame. Four was enough for a UI/atlas-style
  * frame but not for a scene: this title binds ~20 distinct textures per frame,
@@ -3677,6 +3677,10 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
              * changed. Most of this scene's textures are static, and converting
              * every one of them every frame was ~70% of the frame's CPU time. */
             rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_VALIDATED_HIT);
+            if (c->watch_epoch == UINT64_MAX) {
+                if (profile) profile->outcome = RSX_TEX_STALE;
+                slot = i; break;
+            }
             /* RSX_TEX_WATCH (rsx_texture_watch.h): no hash while no page of the
              * source span has been written since the last hash or upload. */
             if (texture_watch_on(retention)) {
@@ -3945,8 +3949,9 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     const u32 _off0 = off; u8* const _map0 = (u8*)mapped;
     /* RSX_TEX_WATCH: armed before conversion reads the source. */
     u64 watch_armed = 0;
+    u32 wspan = 0;
     if (texture_watch_on(retention)) {
-        const u32 wspan = texture_watch_span(off, w, h, fmt, cube, mips, depth, levels, src_bytes);
+        wspan = texture_watch_span(off, w, h, fmt, cube, mips, depth, levels, src_bytes);
         watch_armed = wspan ? vm_watch(off, wspan) : 0;
         ++s_tex_watch_counts.uploads;
     }
@@ -4297,7 +4302,10 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     s_vp_tex_hint[vp_tex_hint_hash(key_off, w, h, fmt, cube)] = (u32)slot + 1u;
     if (retention) texture_retention_trim();
     t->csum = TEX_CSUM(vm_base + off, src_bytes);
-    t->watch_epoch = watch_armed;
+    /* A write during conversion can separate the upload from its fingerprint.
+     * Require a new upload at the next validation even if the hashes match. */
+    t->watch_epoch = watch_armed && !vm_clean_since(off, wspan, watch_armed)
+                   ? UINT64_MAX : watch_armed;
     #undef TEX_CSUM
     return slot;
 }

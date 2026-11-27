@@ -4,11 +4,12 @@
    vm_commit/vm_protect (runtime/memory/vm.h) and, on Windows, the production
    demand-commit handler from src/main.cpp, installed in the production order
    (handler first, then vm_watch_enable, so the watch runs first). Checks: a
-   read keeps a span clean and a write dirties it; an announced OS write
-   dirties only its pages; vm_commit releases watched pages and a read-only
-   vm_protect pins them; a concurrent writer is never missed (20000 rounds);
-   a raw OS read into a watched page fails without an announcement and works
-   with one. Windows also checks that a demand commit of another page in a
+   read keeps a span clean and a write dirties it. The watch refuses an
+   announced kernel destination and a range in a protection transition.
+   A runtime commit releases watched pages. A read-only protection pins them.
+   It checks a concurrent writer for missed writes. A raw OS read into a
+   watched page fails without an announcement and works with one. Windows
+   also checks that a demand commit of another page in a
    watched 64 KB block does not leave the watched page silently writable, and
    that a write to one watched page leaves its block neighbour clean.
    Mutants must fail: vm_commit without the release, the demand-commit handler
@@ -185,18 +186,24 @@ int main(void)
 
     e = vm_watch(a, 0x4000);
     vm_note_write(a + 0x1000, 16);                            /* an announced OS write */
+    CHECK(vm_watch(a + 0x1000, 16) == 0);
     CHECK(!vm_clean_since(a, 0x4000, e) && vm_clean_since(a, 0x1000, e) && vm_clean_since(a + 0x2000, 0x2000, e));
 
     /* vm_commit (runtime allocation over a watched range) releases it: the
      * write after it must not go unrecorded. */
-    e = vm_watch(a, 0x2000);
+    e = vm_watch(a, 0x1000);
+    CHECK(e != 0);
     CHECK(vm_commit(a, 0x2000) == 0);
     vm_base[a + 8] = 3;
-    CHECK(!vm_clean_since(a, 0x2000, e));
+    CHECK(!vm_clean_since(a, 0x1000, e));
     /* A read-only vm_protect pins: the watch refuses it until made writable. */
     CHECK(vm_protect(a + 0x3000, 0x1000, 1, 0, 0) == 0);
     CHECK(vm_watch(a + 0x3000, 0x1000) == 0);
     CHECK(vm_protect(a + 0x3000, 0x1000, 1, 1, 0) == 0);
+    CHECK(vm_watch(a + 0x3000, 0x1000) != 0);
+    vm_watch_change_begin(vm_base + a + 0x3000, 0x1000);
+    CHECK(vm_watch(a + 0x3000, 0x1000) == 0);
+    vm_watch_change_end(vm_base + a + 0x3000, 0x1000, 1);
     CHECK(vm_watch(a + 0x3000, 0x1000) != 0);
 
     /* OS writes do not fault: unannounced, the read fails on a watched page. */
@@ -264,9 +271,9 @@ def runtime_part(cc, directory):
     vm_size = re.search(r'#define VM_SIZE[^\n]*', main_cpp)[0]
     vm_h = (MEMORY / 'vm.h').read_text(encoding='utf-8')
     variants = {'production': (veh, vm_h, False)}
-    variants['vm_commit keeps watched pages'] = (veh, vm_h.replace('    vm_watch_forget(addr, size, 1);\n', '', 1), False)
+    variants['vm_commit keeps watched pages'] = (veh, vm_h.replace('    vm_watch_change_begin(vm_base + addr, size);\n', '', 1), False)
     if WINDOWS:
-        variants['demand commit keeps watched pages'] = (veh.replace('vm_watch_forget_host(page, 0x10000, 1);', ''), vm_h, False)
+        variants['demand commit keeps watched pages'] = (veh.replace('vm_watch_change_begin(page, 0x10000);', ''), vm_h, False)
         variants['watch installed before the demand-commit handler'] = (veh, vm_h, True)
     for name, (v, h, first) in variants.items():
         assert v != veh or h != vm_h or first or name == 'production', name
@@ -406,6 +413,10 @@ int main(int argc, char** argv) {
         g_race_at = 67; unsigned h0 = hashes();
         CHECK(lookup(64,0)==1 && hashes()==h0+1 && measured.outcomes[RSX_TEX_STALE]==stale+1);
     }
+    /* When a write raced conversion, equal hashes do not validate the upload. */
+    hold(64,0); s_d3d.vp_tex[1].watch_epoch=UINT64_MAX;
+    unsigned dirty=(unsigned)measured.outcomes[RSX_TEX_STALE];
+    CHECK(lookup(64,0)==1 && measured.outcomes[RSX_TEX_STALE]==dirty+1);
     /* a refused watch hashes every time */
     hold(64,0); g_refuse=1; unsigned h0=hashes();
     CHECK(lookup(64,0)==1); s_d3d.vp_tex[1].used=0; CHECK(lookup(64,0)==1);
@@ -442,6 +453,7 @@ def consumer_part(cc, directory, backend):
         'arms after hashing': [(rearm, ''), (hashed, hashed + late)],
         'watches the level-0 bytes only': [('texture_watch_span(c->off, w, h, fmt, cube, mips, depth, levels, src_bytes)', 'src_bytes')],
         'verify keeps a changed texture': [('same = TEX_CSUM(vm_base + c->off, src_bytes) == c->csum;', 'same = 1;')],
+        'reuses an upload that raced a write': [('c->watch_epoch == UINT64_MAX', '0')],
     }
     modes = [('watch', {'RSX_TEXTURE_RETENTION': '1', 'RSX_TEX_WATCH': '1'}),
              ('verify', {'RSX_TEXTURE_RETENTION': '1', 'RSX_TEX_WATCH': '1', 'RSX_TEX_WATCH_VERIFY': '1'}),
@@ -491,7 +503,9 @@ def wiring(backend):
     assert '"${PS3RECOMP_DIR}/runtime/memory/vm_watch.c"' in cmake, 'vm_watch.c is not built'
     main_cpp = (ROOT / 'src/main.cpp').read_text(encoding='utf-8')
     veh = function(main_cpp, 'static LONG WINAPI vm_commit_veh(')
-    assert veh.index('vm_watch_forget_host(page, 0x10000, 1);') < veh.index('VirtualAlloc(page, 0x10000, MEM_COMMIT')
+    assert (veh.index('vm_watch_change_begin(page, 0x10000);') <
+            veh.index('VirtualAlloc(page, 0x10000, MEM_COMMIT') <
+            veh.index('vm_watch_change_end(page, 0x10000, committed != NULL);'))
     alloc = function(main_cpp, 'static bool alloc_guest_vm(void)')
     assert alloc.index('AddVectoredExceptionHandler(1, vm_commit_veh);') < alloc.index('VirtualAlloc(NULL, VM_SIZE')
     entry = function(main_cpp, 'int main(int argc, char** argv)')
@@ -499,12 +513,17 @@ def wiring(backend):
     assert main_cpp.count('vm_watch_enable(') == 1
     vm_h = (MEMORY / 'vm.h').read_text(encoding='utf-8')
     commit = function(vm_h, 'static inline int32_t vm_commit(')
-    assert commit.index('vm_watch_forget(addr, size, 1);') < commit.index('VirtualAlloc(vm_base + addr')
+    assert (commit.index('vm_watch_change_begin(vm_base + addr, size);') <
+            commit.index('VirtualAlloc(vm_base + addr') <
+            commit.index('vm_watch_change_end(vm_base + addr, size, ok);'))
     protect = function(vm_h, 'static inline int32_t vm_protect(')
-    assert protect.index('vm_watch_forget(addr, size, read && write);') < protect.index('VirtualProtect(vm_base + addr')
+    assert (protect.index('vm_watch_change_begin(vm_base + addr, size);') <
+            protect.index('VirtualProtect(vm_base + addr') <
+            protect.index('vm_watch_change_end(vm_base + addr, size, ok && read && write && !exec);'))
     loader = (VENDOR / 'runtime/ppu/ppu_loader.cpp').read_text(encoding='utf-8')
     guard = function(loader, 'extern "C" void ppu_guard_page(uint32_t guest_ea)')
-    assert guard.index('vm_watch_forget_host((void*)s_guard_page, 0x1000, 0);') < guard.index('VirtualProtect((void*)s_guard_page, 0x1000, PAGE_READONLY')
+    assert (guard.index('vm_watch_forget_host((void*)(s_guard_page & ~(uintptr_t)0xFFFF), 0x10000, 0);') <
+            guard.index('VirtualProtect((void*)s_guard_page, 0x1000, PAGE_READONLY'))
     for rel, calls in ANNOUNCED.items():
         text = (VENDOR / rel).read_text(encoding='utf-8')
         lines = text.split('\n')
@@ -522,7 +541,7 @@ def wiring(backend):
     upload = function(backend, 'static int vp_upload_tex_slot_impl(')
     arm = upload.index('watch_armed = wspan ? vm_watch(off, wspan) : 0;')
     assert upload.index('const u32 _off0 = off;') < arm < upload.index('for (u32 _f = 0; _f < _nfaces; _f++)')
-    stamp = upload.index('t->watch_epoch = watch_armed;')
+    stamp = upload.index('t->watch_epoch = watch_armed && !vm_clean_since(off, wspan, watch_armed)')
     assert upload.index('t->csum = TEX_CSUM(vm_base + off, src_bytes);') < stamp
     end = backend.index('} VPTexSlot;')
     assert 'u64 watch_epoch;' in backend[backend.rindex('typedef struct {', 0, end):end]
