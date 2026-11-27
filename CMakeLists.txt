@@ -161,6 +161,7 @@ endif()
 set(PS3RECOMP_SCAFFOLD
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_loader.cpp"
     "${PS3RECOMP_DIR}/runtime/memory/guest_read_sync.c"
+    "${PS3RECOMP_DIR}/runtime/memory/vm_watch.c"
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_hle.cpp"
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_fs.cpp"
     "${PS3RECOMP_DIR}/runtime/ppu/ppu_sysprx.cpp"

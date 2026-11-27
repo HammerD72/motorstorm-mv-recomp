@@ -42,6 +42,35 @@ drain and owned gate with lifter-emitted calls and service bodies. It checks
 full GPR/LS/status parity in eleven modes and rejects nine compiled mutants,
 including a jump at the purported call site. The fixture uses authored bytes.
 
+## Held textures validated by guest write watch (#332)
+
+The runtime uses own-fork commit
+[`f95dd6eb`](https://github.com/robbe1912/ps3recomp/commit/f95dd6eb3c07e2ba7b988e06132610df78cb9af7).
+It builds on sp00nznet/ps3recomp `e85647a3`
+([#727](https://github.com/sp00nznet/ps3recomp/pull/727),
+[#728](https://github.com/sp00nznet/ps3recomp/pull/728); MIT).
+
+The watch protects host pages and records the first guest write to each
+page. A protection change excludes its range from the watch until the
+platform call ends. The Windows demand-commit handler does this for the
+whole 64 KiB block. The watch runs before that handler. The PPU write
+guard excludes its block from the watch before it sets protection.
+The watch also excludes announced OS write destinations for the life of
+the VM. The kernel cannot run the user-space fault handler.
+
+`RSX_TEX_WATCH=1` with `RSX_TEXTURE_RETENTION=1` checks a watch for the
+same source span as the texture hash. The renderer arms the watch before
+a hash or an upload. It skips the next hash only if every page is clean.
+An upload that races a tracked write must upload again at the next
+validation. If the watch refuses a span, the renderer uses the hash. Verify mode
+hashes clean spans too and reports `[TEXWATCH] MISSED` on a difference.
+
+[check_rsx_texture_watch.py](../scripts/check_rsx_texture_watch.py) checks
+the write and protection paths, plus reuse, re-arming and hash fallback.
+It uses no game data. The author reported race results on the original
+implementation in [#332](https://github.com/robbe1912/motorstorm-mv-recomp/issues/332#issuecomment-7183145446).
+Those results do not measure the reviewed version.
+
 ## Coherent surface prefetch (#322)
 
 The reusable implementation and authored validation are own-fork modular and

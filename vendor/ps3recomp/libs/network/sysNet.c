@@ -15,6 +15,7 @@
  * so Windows translates by subtraction; Linux numbers differ and get a table.
  */
 
+#include "../../runtime/memory/vm_watch_hooks.h"   /* OS writes into guest memory are announced */
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
     #include <winsock2.h>
@@ -396,6 +397,7 @@ int32_t sys_net_bnet_recv(int32_t s, void* buf, uint32_t len, int32_t flags)
 {
     if (!valid_socket(s)) return fail(SYS_NET_EBADF);
     if (would_block(s, flags, POLLIN)) return fail(SYS_NET_EWOULDBLOCK);
+    vm_note_host_write(GUEST_PTR(EA(buf), char*), (size_t)len);
     int n = recv(s_sockets[s].host_fd, GUEST_PTR(EA(buf), char*), (int)len, host_recv_flags(flags));
     return n == HOST_SOCKET_ERROR ? host_fail() : n;
 }
@@ -409,6 +411,7 @@ int32_t sys_net_bnet_recvfrom(int32_t s, void* buf, uint32_t len, int32_t flags,
     if (would_block(s, flags, POLLIN)) return fail(SYS_NET_EWOULDBLOCK);
 
     memset(&a, 0, sizeof(a));
+    vm_note_host_write(GUEST_PTR(EA(buf), char*), (size_t)len);
     int n = recvfrom(s_sockets[s].host_fd, GUEST_PTR(EA(buf), char*), (int)len,
                      host_recv_flags(flags), (struct sockaddr*)&a, &alen);
     if (n == HOST_SOCKET_ERROR) return host_fail();

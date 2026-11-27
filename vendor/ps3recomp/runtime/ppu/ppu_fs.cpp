@@ -19,6 +19,7 @@
 #include "ps3emu/guest_call.h" /* ps3_invoke_guest: AIO completion is a guest OPD */
 #include "sdata_decrypt.h"   /* SDATA/EDAT (NPD) decryption for cellFsSdataOpen */
 #include "ps3emu/loadtime_trace.h"   /* #11 load-stage timing (observer) */
+#include "../memory/vm_watch_hooks.h"   /* fread into guest memory is announced */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -471,7 +472,9 @@ static void cellFsRead(ppu_context* ctx)
     unsigned long long rd0 = loadtime_on() ? loadtime_us() : 0;
     if (ppu_vm_size && (uint64_t)buf + nbytes > ppu_vm_size) nbytes = ppu_vm_size - buf;
     fs_prefault(buf, nbytes);
+    vm_note_write(buf, (size_t)nbytes);
     size_t n = fread(vm_base + buf, 1, (size_t)nbytes, g_files[fd]);   /* raw bytes, no swap */
+    vm_note_write_check(n < (size_t)nbytes && ferror(g_files[fd]), "cellFsRead");
     if (loadtime_on()) { char d[256];
         snprintf(d, sizeof d, "fd=%d want=%llu got=%zu pos=%ld dur_us=%llu",
                  fd, (unsigned long long)raw_nbytes, n, fpos_before, loadtime_us() - rd0);
@@ -872,8 +875,11 @@ static void cellFsAioRead(ppu_context* ctx)
         fs_prefault(buf, size);
         /* AIO reads are absolute -- they do not disturb the fd's own file
          * position, and the guest interleaves them freely across threads. */
-        if (HOST_FSEEK64(g_files[fd], offset) == 0)
+        if (HOST_FSEEK64(g_files[fd], offset) == 0) {
+            vm_note_write(buf, (size_t)size);
             n = fread(vm_base + buf, 1, (size_t)size, g_files[fd]);
+            vm_note_write_check(n < (size_t)size && ferror(g_files[fd]), "cellFsReadWithOffset");
+        }
         err = CELL_OK;
     }
     if (getenv("PS3_FSLOG"))

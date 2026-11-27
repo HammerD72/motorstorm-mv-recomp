@@ -30,6 +30,7 @@
 #include "rsx_capture_event.h"
 #include "rsx_texture_capture.h"
 #include "rsx_env_once.h"   /* read-once debug switches on hot paths */
+#include "rsx_texture_watch.h"   /* RSX_TEX_WATCH: skip re-hashing unwritten held textures */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -263,6 +264,7 @@ typedef struct {
     u32 depth;          /* 3D volume depth; 0/1 = 2D or cube */
     u32 levels;         /* uploaded mip levels (RSX_TEX_MIPS); 0/1 = level 0 only */
     u64 last_use, allocation_bytes;
+    u64 watch_epoch;    /* zero if not watched, UINT64_MAX if upload raced a write */
 } VPTexSlot;
 /* Distinct textures uploadable per frame. Four was enough for a UI/atlas-style
  * frame but not for a scene: this title binds ~20 distinct textures per frame,
@@ -3601,6 +3603,28 @@ static u64 texture_source_csum(rsx_texture_profile_call* profile, const u8* sour
 }
 
 
+/* RSX_TEX_WATCH_STATS=1: every 10 s of binds, the held-texture watch counts and
+ * the guest write watch's own (rsx_texture_watch.h, runtime/memory/vm_watch.h). */
+static void texture_watch_report(void)
+{
+    static ULONGLONG last;
+    static vm_watch_stats_t prev;
+    const ULONGLONG now = GetTickCount64();
+    if (!last) { last = now; vm_watch_stats(&prev); return; }
+    if (now - last < 10000) return;
+    vm_watch_stats_t st; vm_watch_stats(&st);
+    rsx_texture_watch_counts* n = &s_tex_watch_counts;
+    fprintf(stderr, "[TEXWATCH] %.1fs clean=%llu hashed=%llu unwatched=%llu uploads=%llu verified=%llu missed=%llu "
+            "| watches=%llu pages=%llu faults=%llu notes=%llu forgotten=%llu refused=%llu\n",
+            (now - last) / 1000.0, n->clean, n->hashed, n->unwatched, n->uploads, n->verified, n->missed,
+            (unsigned long long)(st.watches - prev.watches), (unsigned long long)(st.protected_pages - prev.protected_pages),
+            (unsigned long long)(st.faults - prev.faults), (unsigned long long)(st.notes - prev.notes),
+            (unsigned long long)(st.forgotten - prev.forgotten), (unsigned long long)(st.refused - prev.refused));
+    const unsigned long long missed = n->missed;   /* a running total */
+    memset(n, 0, sizeof *n); n->missed = missed;
+    prev = st; last = now;
+}
+
 /* depth > 1: the base level of an uncompressed 3D volume (tex_unit_volume),
  * uploaded as a Texture3D; 1 for 2D and cube textures. */
 static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips, u32 depth, rsx_texture_profile_call* profile)
@@ -3734,6 +3758,33 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
              * changed. Most of this scene's textures are static, and converting
              * every one of them every frame was ~70% of the frame's CPU time. */
             rsx_texture_profile_lookup_end(profile, j + 1, RSX_TEX_VALIDATED_HIT);
+            if (c->watch_epoch == UINT64_MAX) {
+                if (profile) profile->outcome = RSX_TEX_STALE;
+                slot = i; break;
+            }
+            /* RSX_TEX_WATCH (rsx_texture_watch.h): no hash while no page of the
+             * source span has been written since the last hash or upload. */
+            if (texture_watch_on(retention)) {
+                const u32 wspan = texture_watch_span(c->off, w, h, fmt, cube, mips, depth, levels, src_bytes);
+                if (c->watch_epoch && wspan && vm_clean_since(c->off, wspan, c->watch_epoch)) {
+                    int same = 1;
+                    if (s_tex_watch_verify) {
+                        ++s_tex_watch_counts.verified;
+                        same = TEX_CSUM(vm_base + c->off, src_bytes) == c->csum;
+                    }
+                    if (same) { ++s_tex_watch_counts.clean; c->used = 1; if (retention) c->last_use = serial; return i; }
+                    if (s_tex_watch_counts.missed++ < 16)
+                        fprintf(stderr, "[TEXWATCH] MISSED off=%08X span=%u %ux%u fmt=%02X cube=%d\n",
+                                c->off, wspan, w, h, fmt, cube);
+                    c->watch_epoch = 0;
+                    if (profile) profile->outcome = RSX_TEX_STALE;
+                    slot = i; break;
+                }
+                /* Re-arm before reading: a write after this is recorded. */
+                c->watch_epoch = wspan ? vm_watch(c->off, wspan) : 0;
+                ++s_tex_watch_counts.hashed;
+                if (!c->watch_epoch) ++s_tex_watch_counts.unwatched;
+            }
             u64 cs = TEX_CSUM(vm_base + c->off, src_bytes);
             if (cs == c->csum) { c->used = 1; if (retention) c->last_use = serial; return i; }
             if (profile) profile->outcome = RSX_TEX_STALE;
@@ -3977,6 +4028,14 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     }
     const u32 _face_bytes = (u32)upload_view.face_stride;
     const u32 _off0 = off; u8* const _map0 = (u8*)mapped;
+    /* RSX_TEX_WATCH: armed before conversion reads the source. */
+    u64 watch_armed = 0;
+    u32 wspan = 0;
+    if (texture_watch_on(retention)) {
+        wspan = texture_watch_span(off, w, h, fmt, cube, mips, depth, levels, src_bytes);
+        watch_armed = wspan ? vm_watch(off, wspan) : 0;
+        ++s_tex_watch_counts.uploads;
+    }
     for (u32 _f = 0; _f < _nfaces; _f++) {
     off    = _off0 + _f * _face_bytes;
     if (cube && rsx_env_once("CUBEDBG")) { u32 _s=0; const u8* _p = vm_base + off;
@@ -4324,12 +4383,20 @@ static int vp_upload_tex_slot_impl(u32 off, u32 w, u32 h, u32 fmt, int cube, u32
     s_vp_tex_hint[vp_tex_hint_hash(key_off, w, h, fmt, cube)] = (u32)slot + 1u;
     if (retention) texture_retention_trim();
     t->csum = TEX_CSUM(vm_base + off, src_bytes);
+    /* A write during conversion can separate the upload from its fingerprint.
+     * Require a new upload at the next validation even if the hashes match. */
+    t->watch_epoch = watch_armed && !vm_clean_since(off, wspan, watch_armed)
+                   ? UINT64_MAX : watch_armed;
     #undef TEX_CSUM
     return slot;
 }
 
 static int vp_upload_tex_slot(u32 off, u32 w, u32 h, u32 fmt, int cube, u32 mips, u32 depth)
 {
+    if (s_tex_watch > 0) {
+        const char* stats = rsx_env_once("RSX_TEX_WATCH_STATS");
+        if (stats && stats[0] == '1') texture_watch_report();
+    }
     if (!texture_profile_on()) return vp_upload_tex_slot_impl(off,w,h,fmt,cube,mips,depth,NULL);
     rsx_texture_profile_call call;
     rsx_texture_profile_begin(&call,&s_texture_profile,texture_profile_clock,NULL);

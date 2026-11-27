@@ -21,7 +21,13 @@ SOURCE = r'''
 #define VP_TEX_SLOTS 4
 typedef uint32_t u32;typedef uint64_t u64;
 typedef uint8_t u8;
-typedef struct {void*res;u32 key,w,h,fmt,off,mips,depth,levels;u64 csum,last_use;int cube,used;} VPTexSlot;
+typedef struct {void*res;u32 key,w,h,fmt,off,mips,depth,levels;u64 csum,last_use,watch_epoch;int cube,used;} VPTexSlot;
+/* The held-texture watch is off here (check_rsx_texture_watch.py covers it). */
+#define RSX_TEXTURE_WATCH_FAKE
+static int vm_watch_enable(void){return 0;}
+static uint64_t vm_watch(uint32_t ea,uint32_t len){(void)ea;(void)len;return 0;}
+static int vm_clean_since(uint32_t ea,uint32_t len,uint64_t epoch){(void)ea;(void)len;(void)epoch;return 0;}
+#include "rsx_texture_watch.h"
 static struct {unsigned vp_tex_capacity;VPTexSlot vp_tex[4];u64 vp_tex_use_serial;} s_d3d;
 static u8 source_bytes[256];
 static u8* vm_base=source_bytes;

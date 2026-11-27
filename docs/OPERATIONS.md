@@ -415,6 +415,19 @@ own width; that rule has no hardware cross-check yet. Game-free coverage:
 [check_rsx_texture_mips.py](../scripts/check_rsx_texture_mips.py); D3D12
 readback and per-level sampling: `check_rsx_texture_gpu.py` phase `mips-only`.
 
+`--texture-watch 0|1|verify` (default `0`, needs `--texture-retention 1`)
+sets `PS3RECOMP_VM_WRITE_WATCH=1` and `RSX_TEX_WATCH=1`: a held texture whose
+guest pages have not been written since its last hash or upload is reused
+without hashing it again. `verify` also sets `RSX_TEX_WATCH_VERIFY=1` and
+`PS3RECOMP_VM_WRITE_WATCH_STRICT=1`: every skipped hash is computed anyway,
+`[TEXWATCH] MISSED` reports one that changed, and an OS read into a watched
+page that was not announced is fatal. The launcher clears inherited watch
+selections and records them. The watch excludes pages used as OS write
+destinations. Textures that use those pages still need a hash.
+`RSX_TEX_WATCH_STATS=1` prints counts every 10 s. Game-free coverage:
+[check_rsx_texture_watch.py](../scripts/check_rsx_texture_watch.py); see
+`docs/VENDOR.md` for the runtime source and measured result.
+
 `--surface-prefetch 0|1` (default `0`) sets `RSX_CPU_SURFACE_PREFETCH` to
 MotorStorm's three race feedback surfaces: the 2048x2048 deformation surface
 (`01A80500`), a 1280x720 surface the game probes at varying points

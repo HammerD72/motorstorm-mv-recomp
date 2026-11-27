@@ -29,7 +29,13 @@ def fixture(source):
 #include <string.h>
 #include "rsx_texture_profile.h"
 typedef uint32_t u32; typedef uint64_t u64; typedef uint8_t u8;
-typedef struct {void*res;u32 off,key,w,h,fmt,mips,depth,levels;u64 csum;int cube,used;u64 last_use;} VPTexSlot;
+typedef struct {void*res;u32 off,key,w,h,fmt,mips,depth,levels;u64 csum;int cube,used;u64 last_use,watch_epoch;} VPTexSlot;
+/* The held-texture watch is off here (check_rsx_texture_watch.py covers it). */
+#define RSX_TEXTURE_WATCH_FAKE
+static int vm_watch_enable(void){return 0;}
+static uint64_t vm_watch(uint32_t ea,uint32_t len){(void)ea;(void)len;return 0;}
+static int vm_clean_since(uint32_t ea,uint32_t len,uint64_t epoch){(void)ea;(void)len;(void)epoch;return 0;}
+#include "rsx_texture_watch.h"
 static struct {VPTexSlot vp_tex[3];unsigned vp_tex_capacity;u64 vp_tex_use_serial;} s_d3d;
 static u8 bytes[1024],*vm_base=bytes;
 #define TEX_CSUM(base,size) ((u32)*(base))
@@ -98,8 +104,9 @@ def main():
         (output/'result.json').write_text(json.dumps(result,indent=2));return p
     def build(text,tag):
         c=output/(tag+'.c');c.write_text(fixture(text));exe=output/(tag+('.exe' if os.name=='nt' else ''))
-        if os.name=='nt':cmd=[compiler,'/nologo','/TC','/std:c17','/O2','/UNDEBUG','/MDd','/I'+str(VENDOR/'libs/video'),str(c),'/Fo'+str(output/(tag+'.obj')),'/Fe'+str(exe)]
-        else:cmd=[compiler,'-std=c17','-O2','-UNDEBUG','-I'+str(VENDOR/'libs/video'),str(c),'-o',str(exe)]
+        layout=VENDOR/'libs/video/rsx_texture_layout.c'   # rsx_texture_watch.h sizes spans with the layout table
+        if os.name=='nt':cmd=[compiler,'/nologo','/TC','/std:c17','/O2','/UNDEBUG','/MDd','/I'+str(VENDOR/'libs/video'),'/I'+str(VENDOR/'include'),str(c),str(layout),'/Fo'+str(output)+os.sep,'/Fe'+str(exe)]
+        else:cmd=[compiler,'-std=c17','-O2','-UNDEBUG','-I'+str(VENDOR/'libs/video'),'-I'+str(VENDOR/'include'),str(c),str(layout),'-o',str(exe)]
         assert command(cmd,tag+'-compile').returncode==0,f'Compilation failed: {output}/result.json'
         return exe
     exe=build(source,'production')
