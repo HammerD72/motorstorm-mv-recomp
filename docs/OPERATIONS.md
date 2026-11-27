@@ -429,6 +429,11 @@ selection. `RSX_CPU_SURFACE_PREFETCH_LOG=1` prints used, waited, missed and
 copy counts. Game-free coverage:
 [check_cpu_surface_prefetch.py](../scripts/check_cpu_surface_prefetch.py).
 
+`RSX_CPU_SURFACE_FAST=1` lets a client thread serve reads of current surface
+copies when no recorded surface write waits for submission. The default uses
+the renderer queue. Game-free coverage:
+[check_cpu_surface_fast_read.py](../scripts/check_cpu_surface_fast_read.py).
+
 `--eager-surface-submit 0|1` (default `0`) sets `RSX_CPU_SURFACE_EAGER` to
 MotorStorm's 64x64 HDR exposure target (`02A30480`). The main thread reads it
 once per race frame, 10-20 ms after the renderer records the draws that write

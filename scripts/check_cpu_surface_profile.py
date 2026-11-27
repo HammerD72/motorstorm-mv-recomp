@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 ROOT=Path(__file__).resolve().parents[1]
@@ -22,9 +23,9 @@ def main():
     for marker,value in [('DECLARATIONS',declarations),('HELPERS',helper),('SERVICE',function(source,'cpu_surface_service')),('COMPLETION',function(source,'cpu_surface_frame_complete')),('REQUEST',function(source,'cpu_surface_request'))]:
         fixture=fixture.replace('/* PRODUCTION_'+marker+' */',value)
     c=out/'check.c';c.write_text(fixture);exe=out/('check.exe' if os.name=='nt' else 'check')
-    compiler=os.environ.get('MV_CLANG') or os.environ.get('CC') or ('clang-cl' if os.name=='nt' else 'cc')
+    compiler=os.environ.get('MV_CLANG') or os.environ.get('CC') or ('clang-cl' if os.name=='nt' else shutil.which('clang') or 'cc')  # the view helpers use clang's C11 atomic builtins
     if os.name=='nt':cmd=[compiler,'/nologo','/O2','/UNDEBUG','/I'+str(ROOT/'vendor/ps3recomp/libs/video'),str(c),'/Fo'+str(out) + os.sep,'/Fe'+str(exe)]
-    else:cmd=[compiler,'-std=c11','-O2','-UNDEBUG','-Wall','-Wextra','-Werror','-I'+str(ROOT/'vendor/ps3recomp/libs/video'),str(c),'-o',str(exe)]
+    else:cmd=[compiler,'-std=c11','-O2','-UNDEBUG','-Wall','-Wextra','-Werror','-Wno-unused-function','-I'+str(ROOT/'vendor/ps3recomp/libs/video'),str(c),'-o',str(exe)]
     build=subprocess.run(cmd,capture_output=True,text=True);(out/'build.log').write_text(build.stdout+build.stderr)
     if build.returncode:print(build.stdout+build.stderr);return build.returncode
     run=subprocess.run([str(exe)],capture_output=True,text=True);(out/'run.log').write_text(run.stdout+run.stderr);print(run.stdout+run.stderr)
