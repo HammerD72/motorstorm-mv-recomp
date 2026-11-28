@@ -59,6 +59,7 @@ static void vp_upload_reserve(u64 count)
     if (!rsx_vp_layout_reserve(&b, s_d3d.vp_vb_offset, count * s_vp_layout.stride, &ops)) abort();
     s_d3d.vp_vb_mapped = b.memory; s_d3d.vp_capacity = b.capacity;
 }
+static struct { VPSlot* dst; u64 room; rsx_index_strip cursor; const rsx_state* owner; u32 epoch; int fan; } s_vc_io;   /* the uploaders' vertex-cache state (rsx_d3d12_backend.c) */
 @UPLOAD_FUNCTIONS@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x); return 1; } } while (0)
 int main(int argc, char** argv)

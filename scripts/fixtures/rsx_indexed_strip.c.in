@@ -40,6 +40,7 @@ static void rsx_vtx_pos_dbg(const rsx_state* s,const float* v,u32 n)
  * count those vertices here (a function-like macro does not expand itself). */
 #define rsx_fetch_vertex_slots(...) (++fetches,rsx_fetch_vertex_slots(__VA_ARGS__))
 @FETCH_VERTEX_FUNCTION@
+static struct { VPSlot* dst; u64 room; rsx_index_strip cursor; const rsx_state* owner; u32 epoch; int fan; } s_vc_io;   /* the uploaders' vertex-cache state (rsx_d3d12_backend.c) */
 @INDEXED_STRIP_FUNCTION@
 #define CHECK(x) do{if(!(x)){fprintf(stderr,"FAIL line%d: %s\n",__LINE__,#x);return 1;}}while(0)
 static void be32(u8* p,u32 w)

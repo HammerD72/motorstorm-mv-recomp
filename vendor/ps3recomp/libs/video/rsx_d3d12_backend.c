@@ -112,11 +112,19 @@ static u32 rsx_record_color_masks(const rsx_state* state)
  * draw's vertex program reads (rsx_vp_layout.h). vp_layout_begin selects it
  * per draw; the upload helpers and the record's vb_stride follow it. */
 static rsx_vp_layout s_vp_layout = RSX_VP_LAYOUT_FULL;
+/* RSX_VC_CACHE=1 cross-frame vertex cache (see vc_upload). */
+static void vc_arena_view(u32 arena, D3D12_GPU_VIRTUAL_ADDRESS* loc, UINT* size);
+static void vc_frame(void);
+static int vc_enabled(void);
+static u32 vc_upload(const rsx_state* state, u32 first, u32 count, int kind, int bypass, u32* rec, u32* buf);
+static int vc_reemit_run(u32 first, u32 count);
+static void vc_note_record(u32 first);
 #define VERTEX_STRIDE       36  /* bytes per host vertex: pos3 + col4 + uv2 */
 
 typedef struct {
     u32 vb_byte_offset; /* offset into vb_mapped where this draw's verts live */
     u32 vb_stride;      /* VP path: bytes per vertex (rsx_vp_layout stride) */
+    u32 vb_buf;         /* VP path: 0 = the VP upload ring, n = vertex cache arena n-1 */
     u32 vertex_count;
     u32 topology;       /* rsx_topology (NOT a D3D value; see topo_to_d3d) */
     int textured;       /* 1 = sample the bound font/atlas texture (dbgfont) */
@@ -6384,6 +6392,8 @@ static void render_frame(void)
             vbv.StrideInBytes  = 256;   /* 16 float4 attrib slots */
             s_d3d.cmd_list->lpVtbl->IASetVertexBuffers(s_d3d.cmd_list, 0, 1, &vbv);
             u32 bound_vb_stride = vbv.StrideInBytes;   /* records carry their own */
+            const D3D12_GPU_VIRTUAL_ADDRESS vp_ring_loc = vbv.BufferLocation;
+            const UINT vp_ring_size = vbv.SizeInBytes;
             D3D12_GPU_DESCRIPTOR_HANDLE gh_base;
             s_d3d.srv_heap->lpVtbl->GetGPUDescriptorHandleForHeapStart(s_d3d.srv_heap, &gh_base);
             int cur_rt = -1;                       /* target A: -1 = backbuffer */
@@ -6798,10 +6808,16 @@ static void render_frame(void)
                 phase_gpu_draw(is_small, 0);
                 cpu_surface_written(cur_rt,cur_m);
                 native_depth_begin(dr, next_pso);
-                if (dr->vb_stride != bound_vb_stride) {
-                    vbv.StrideInBytes = dr->vb_stride;
-                    s_d3d.cmd_list->lpVtbl->IASetVertexBuffers(s_d3d.cmd_list, 0, 1, &vbv);
-                    bound_vb_stride = dr->vb_stride;
+                {   /* A record served by the vertex cache lives in an arena. */
+                    D3D12_GPU_VIRTUAL_ADDRESS want_loc = vp_ring_loc; UINT want_size = vp_ring_size;
+                    if (dr->vb_buf) vc_arena_view(dr->vb_buf - 1, &want_loc, &want_size);
+                    if (dr->vb_stride != bound_vb_stride || want_loc != vbv.BufferLocation) {
+                        vbv.BufferLocation = want_loc;
+                        vbv.SizeInBytes = want_size;
+                        vbv.StrideInBytes = dr->vb_stride;
+                        s_d3d.cmd_list->lpVtbl->IASetVertexBuffers(s_d3d.cmd_list, 0, 1, &vbv);
+                        bound_vb_stride = dr->vb_stride;
+                    }
                 }
                 gpu_pso_draw(next_pso, dr->vertex_count, dr->vb_byte_offset / dr->vb_stride);
                 native_depth_end(dr);
@@ -7274,6 +7290,7 @@ skip_dump_consider: ;
         /* FPS_STATS=1: stamp AFTER the (vsync-blocking) Present so the frame
          * delta measures the real on-screen cadence, not submit time. */
         rsx_fps_stats_on_present();
+        vc_frame();
         if (phase_on()) s_phase.presents++;
     }
     if (phase_on()) s_phase.present = perf_now() - ph_present;
@@ -8130,6 +8147,13 @@ static u32 read_guest_index(const rsx_state* st, u32 k)
     return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | p[3];
 }
 
+/* Shared with the RSX_VC_CACHE vertex cache (vc_upload): dst, when set, is
+ * where the indexed tris/strip uploaders write their triangle list (room
+ * bytes) instead of the VP upload ring; cursor is the indexed strip/fan state
+ * that continues across the calls of one BEGIN, so the cache can store and
+ * restore it. */
+static struct { VPSlot* dst; u64 room; rsx_index_strip cursor; const rsx_state* owner; u32 epoch; int fan; } s_vc_io;
+
 /* Indexed variants of the VP-path uploads. */
 static u32 upload_quads_vp_indexed(const rsx_state* state, u32 first, u32 count)
 {
@@ -8184,9 +8208,13 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
     rsx_vertex_fetch_batch fetch_batch;
     rsx_vertex_fetch_prepare(&fetch_batch, state);
     vp_attrs_dbg(state);
-    vp_upload_reserve(count);
-    VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
-        + (u64)s_d3d.vp_parity * s_d3d.vp_capacity * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+    VPSlot* out;
+    if (s_vc_io.dst) out = s_vc_io.dst;
+    else {
+        vp_upload_reserve(count);
+        out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+            + (u64)s_d3d.vp_parity * s_d3d.vp_capacity * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+    }
     { double _tv = perf_on() ? perf_now() : 0.0;
       for (u32 k = 0; k < count; k++)
           vp_put_vertex(state, &fetch_batch, read_guest_index(state, first + k), out, k);
@@ -8381,7 +8409,7 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
                 read_guest_index(state, first+2),
                 a0->offset, vbase, nz, a0->stride, a0->size, a0->type,
                 out[0].v[0], out[0].v[1], out[0].v[2], 10); } }
-    s_d3d.vp_vb_offset += count * s_vp_layout.stride;
+    if (!s_vc_io.dst) s_d3d.vp_vb_offset += count * s_vp_layout.stride;
     return count;
 }
 
@@ -8392,22 +8420,25 @@ static u32 upload_tris_vp_indexed(const rsx_state* state, u32 first, u32 count)
 static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count, int fan)
 {
     extern uint8_t* vm_base;
-    static rsx_index_strip cursor;
-    static const rsx_state* owner;
-    static u32 epoch;
-    static int previous_fan;
     if (!state || !vm_base || !s_d3d.vp_vb_mapped) return 0;
     if (!state->vertex_attribs[0].enabled) return 0;
     rsx_vertex_fetch_batch fetch_batch;
     rsx_vertex_fetch_prepare(&fetch_batch, state);
-    if (owner != state || epoch != state->begin_epoch || previous_fan != fan) {
-        memset(&cursor, 0, sizeof cursor);
-        owner = state; epoch = state->begin_epoch; previous_fan = fan;
+    if (s_vc_io.owner != state || s_vc_io.epoch != state->begin_epoch || s_vc_io.fan != fan) {
+        memset(&s_vc_io.cursor, 0, sizeof s_vc_io.cursor);
+        s_vc_io.owner = state; s_vc_io.epoch = state->begin_epoch; s_vc_io.fan = fan;
     }
-    vp_upload_reserve((u64)count * 3);
-    u32 maxv = (u32)(((u64)s_d3d.vp_capacity * VP_VERT_STRIDE - s_d3d.vp_vb_offset) / s_vp_layout.stride);
-    VPSlot* out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
-        + (u64)s_d3d.vp_parity * s_d3d.vp_capacity * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+    u32 maxv;
+    VPSlot* out;
+    if (s_vc_io.dst) {
+        out = s_vc_io.dst;
+        maxv = (u32)(s_vc_io.room / s_vp_layout.stride);
+    } else {
+        vp_upload_reserve((u64)count * 3);
+        maxv = (u32)(((u64)s_d3d.vp_capacity * VP_VERT_STRIDE - s_d3d.vp_vb_offset) / s_vp_layout.stride);
+        out = (VPSlot*)((u8*)s_d3d.vp_vb_mapped
+            + (u64)s_d3d.vp_parity * s_d3d.vp_capacity * VP_VERT_STRIDE + s_d3d.vp_vb_offset);
+    }
     u32 o = 0;
     /* Strip/fan triangles share vertices. Reuse their exact decoded bytes
      * only within this callback: all attribute/base/frequency state is fixed,
@@ -8416,7 +8447,7 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
      * vertices and the fan center are retained across common strip/fan patterns.
      * Two ways also retain reuse between neighbouring strip rows. Entries hold
      * the vertex as the layout stores it (s_vp_layout.stride bytes). */
-    const int use_cache = count > 3 || count + cursor.held > 3;
+    const int use_cache = count > 3 || count + s_vc_io.cursor.held > 3;
     enum { VP_STRIP_SETS = 32 };
     VPSlot cached_vertices[VP_STRIP_SETS][2][16];
     u32 cached_indices[VP_STRIP_SETS][2];
@@ -8424,7 +8455,7 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
     if (use_cache) memset(cached_state, 0, sizeof cached_state);
     for (u32 k = 0; k < count; k++) {
         u32 triangle[3];
-        if (!rsx_index_strip_push(&cursor, read_guest_index(state, first + k), fan,
+        if (!rsx_index_strip_push(&s_vc_io.cursor, read_guest_index(state, first + k), fan,
                 state->restart_index_enable, state->restart_index,
                 ((state->index_array_dma >> 4) & 15u) != 1, triangle)) continue;
         if (maxv - o < 3) {
@@ -8454,14 +8485,14 @@ static u32 upload_strip_vp_indexed(const rsx_state* state, u32 first, u32 count,
             ++o;
         }
     }
-    s_d3d.vp_vb_offset += o * s_vp_layout.stride;
+    if (!s_vc_io.dst) s_d3d.vp_vb_offset += o * s_vp_layout.stride;
     return o;
 }
 
 /* A compatible TRIANGLES continuation consumes no new record slot. Decide
  * before a capacity drain can discard the unfinished primitive tail. Keep the
  * predicate shared with the post-upload merge so reservation and merge agree. */
-static int vp_triangle_can_merge(u32 primitive, u32 first, u32 rec, int check_control)
+static int vp_triangle_can_merge(u32 primitive, u32 first, u32 rec, u32 buf, int check_control, int check_pos)
 {
     if (primitive != RSX_PRIMITIVE_TRIANGLES || !s_d3d.merge_prev_draw ||
         !s_d3d.draw_count || s_d3d.merge_first_end != first ||
@@ -8484,7 +8515,8 @@ static int vp_triangle_can_merge(u32 primitive, u32 first, u32 rec, int check_co
         /* Same BEGIN means same vertex program, so the stride matches too;
          * kept as a guard so no record ever spans two layouts. */
         pv->vb_stride == s_vp_layout.stride &&
-        (u64)pv->vb_byte_offset + (u64)pv->vertex_count * pv->vb_stride == rec;
+        (!check_pos || (pv->vb_buf == buf &&
+         (u64)pv->vb_byte_offset + (u64)pv->vertex_count * pv->vb_stride == rec));
 }
 
 static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
@@ -8508,7 +8540,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
 
     if (!s_d3d.pipeline_ready || !s_d3d.vb_mapped) return;
     if (count == 0 || count > MAX_VERTICES) return;
-    if (!(s_d3d.current_rsx_state && s_d3d.current_rsx_state->vp_ucode_bytes >= 16 && vp_triangle_can_merge(primitive, first, s_d3d.vp_vb_offset, 1)))
+    if (!(s_d3d.current_rsx_state && s_d3d.current_rsx_state->vp_ucode_bytes >= 16 && vp_triangle_can_merge(primitive, first, s_d3d.vp_vb_offset, 0, 1, 1)))
         ensure_draw_record_capacity();
 
     /* QUADS (prim 8) have no D3D12 topology; expand to a triangle list.
@@ -8529,7 +8561,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
             u32 emitted = upload_quads_vp(s_d3d.current_rsx_state, first, count);
             if (emitted && s_d3d.draw_count < MAX_DRAWS) {
                 D3D12DrawRecord* dr = &s_d3d.draws[s_d3d.draw_count];
-                dr->vb_byte_offset = rec;
+                dr->vb_byte_offset = rec; dr->vb_buf = 0;
                 dr->vertex_count   = emitted;
                 dr->topology       = RSX_TOPOLOGY_TRIANGLES;
                 dr->textured       = s_d3d.tex_bound;
@@ -8642,7 +8674,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
          * rendered as spike triangles with a zero texcoord along the tub rim.
          * The batches land contiguously in the vertex buffer, so extending the
          * previous record is all that is needed to restore the stream. */
-        if (emitted && vp_triangle_can_merge(primitive, first, rec, 1)) {
+        if (emitted && vp_triangle_can_merge(primitive, first, rec, 0, 1, 1)) {
             s_d3d.draws[s_d3d.draw_count - 1].vertex_count += emitted;
             s_d3d.merge_first_end = first + count;
             vp_vs_unref(vs_idx);
@@ -8650,7 +8682,7 @@ static void d3d12_draw_arrays(void* ud, u32 primitive, u32 first, u32 count)
         }
         if (emitted && s_d3d.draw_count < MAX_DRAWS) {
             D3D12DrawRecord* dr = &s_d3d.draws[s_d3d.draw_count];
-            dr->vb_byte_offset = rec;
+            dr->vb_byte_offset = rec; dr->vb_buf = 0;
             dr->vertex_count   = emitted;
             dr->topology       = RSX_TOPOLOGY_TRIANGLES;
             dr->textured       = s_d3d.tex_bound;
@@ -8774,7 +8806,11 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
     if (!s_d3d.pipeline_ready) return;
     if (count == 0 || count > MAX_VERTICES) return;
     if (!s_d3d.vp_vb_mapped || !s_d3d.vp_root_sig) return;
-    if (!vp_triangle_can_merge(primitive, first, s_d3d.vp_vb_offset, 0))
+    const int vc = primitive != RSX_PRIMITIVE_QUADS && vc_enabled();
+    const int vc_cont = vc && vp_triangle_can_merge(primitive, first, 0, 0, 0, 0);
+    /* With the vertex cache the output's position is known only after the
+     * upload, so a state-compatible continuation must not drain here. */
+    if (!vp_triangle_can_merge(primitive, first, s_d3d.vp_vb_offset, 0, 0, !vc))
         ensure_draw_record_capacity();
 
     /* Expand through the VP path (indices resolved CPU-side): QUADS -> two
@@ -8790,23 +8826,35 @@ static void d3d12_draw_indexed(void* ud, u32 primitive, u32 first, u32 count)
     }
     int vs_idx = vp_get_vs(s_d3d.current_rsx_state);
     vp_layout_begin(vs_idx);
-    u32 rec = s_d3d.vp_vb_offset;
+    u32 rec = s_d3d.vp_vb_offset, rec_buf = 0;
     if (primitive == RSX_PRIMITIVE_QUADS)             emitted = upload_quads_vp_indexed(s_d3d.current_rsx_state, first, count);
+    else if (vc) {
+        /* A continuation of a ring record stays in the ring: contiguous. */
+        const int bypass = vc_cont && s_d3d.draws[s_d3d.draw_count - 1].vb_buf == 0;
+        const int kind = primitive == RSX_PRIMITIVE_TRIANGLES ? 0 : primitive == RSX_PRIMITIVE_TRIANGLE_STRIP ? 1 : 2;
+        emitted = vc_upload(s_d3d.current_rsx_state, first, count, kind, bypass, &rec, &rec_buf);
+    }
     else if (primitive == RSX_PRIMITIVE_TRIANGLES)    emitted = upload_tris_vp_indexed(s_d3d.current_rsx_state, first, count);
     else if (primitive == RSX_PRIMITIVE_TRIANGLE_STRIP) emitted = upload_strip_vp_indexed(s_d3d.current_rsx_state, first, count, 0);
     else                                              emitted = upload_strip_vp_indexed(s_d3d.current_rsx_state, first, count, 1);
     /* Same BEGIN/END batch concatenation as the non-indexed path: this title's
      * fluid arrives as ~3000 DRAW_INDEX_ARRAY batches of 256, and 256 is not a
      * multiple of 3, so every batch after the first assembled out of phase. */
-    if (emitted && vp_triangle_can_merge(primitive, first, rec, 0)) {
+    if (emitted && vp_triangle_can_merge(primitive, first, rec, rec_buf, 0, 1)) {
         s_d3d.draws[s_d3d.draw_count - 1].vertex_count += emitted;
+        s_d3d.merge_first_end = first + count;
+        vp_vs_unref(vs_idx);
+        return;
+    }
+    if (emitted && vc_cont && vc_reemit_run(first, count)) {
         s_d3d.merge_first_end = first + count;
         vp_vs_unref(vs_idx);
         return;
     }
     if (emitted && s_d3d.draw_count < MAX_DRAWS) {
         D3D12DrawRecord* dr = &s_d3d.draws[s_d3d.draw_count];
-        dr->vb_byte_offset = rec;
+        dr->vb_byte_offset = rec; dr->vb_buf = rec_buf;
+        if (vc) vc_note_record(first);
         dr->vertex_count   = emitted;
         dr->topology       = RSX_TOPOLOGY_TRIANGLES;
         dr->textured       = s_d3d.tex_bound;
@@ -9359,6 +9407,256 @@ void rsx_d3d12_backend_present(void)
         render_frame();
         s_present_this_frame = 1;
     }
+}
+
+/* RSX_VC_CACHE=1: cross-frame cache of the indexed TRIANGLES/STRIP/FAN
+ * VP uploads. This title redraws the same static meshes every frame from the
+ * same guest buffers; converting them again was most of the RSX thread's
+ * vertex work. An entry is keyed by the draw's state and guest addresses (no
+ * content hash) and stays valid while vm_watch reports no write to its index
+ * span or to any vertex array span its indices reach (plus a strip cursor's
+ * held vertices). Output lives in one of two persistent upload-heap arenas,
+ * written once and never overwritten in place: when the active arena is
+ * three-quarters full, at a present with no records pending, the GPU is
+ * drained and the other arena is reset (its entries die) and becomes active.
+ * Needs PS3RECOMP_VM_WRITE_WATCH=1. RSX_VC_CACHE_MB: arena size (default 256).
+ * RSX_VC_CACHE_VERIFY=1: every 64th hit is also converted into the ring and
+ * compared. RSX_VC_CACHE_STATS=1: a [VCACHE] line every 600 presents. */
+enum { VC_N = 1u << 18, VC_PROBE = 16, VC_SWITCH_GAP = 120, VC_VERIFY_EVERY = 512 };
+typedef struct {
+    u64 key, ep_idx, ep[8];
+    u32 idx_ea, idx_len, ea[8], len[8];
+    u32 off, out, stride, gen, last_frame;
+    rsx_index_strip cur_in, cur_out;
+    u8 used, arena, nspan, valid;
+} vc_ent;
+typedef struct { ID3D12Resource* res; u8* mem; D3D12_GPU_VIRTUAL_ADDRESS gpu; u32 top, gen; } vc_arena;
+static vc_ent* s_vc;
+static vc_arena s_vca[2];
+static u32 s_vca_bytes, s_vca_active, s_vc_frame = 1, s_vc_last_switch;
+static int s_vc_on = -1, s_vc_verify, s_vc_stats;
+static u32 s_vc_run_first, s_vc_run_draw = 0xFFFFFFFFu, s_vc_run_epoch;
+static struct { u64 calls, hit, hit_v, fill, fill_v, dirty, bypass, full, unwatched, noncontig, reemit, reemit_v, switches,
+                verified, bad, t_hit, t_fill; } s_vcs;
+static void vc_arena_view(u32 arena, D3D12_GPU_VIRTUAL_ADDRESS* loc, UINT* size)
+{
+    *loc = s_vca[arena & 1].gpu;
+    *size = s_vca_bytes;
+}
+static int vc_enabled(void)
+{
+    if (s_vc_on >= 0) return s_vc_on;
+    s_vc_on = 0;
+    const char* e = getenv("RSX_VC_CACHE");
+    if (!e || e[0] != '1') return 0;
+    if (!vm_watch_enable()) { fprintf(stderr, "[VCACHE] off: needs PS3RECOMP_VM_WRITE_WATCH=1\n"); return 0; }
+    const char* m = getenv("RSX_VC_CACHE_MB");
+    u32 mb = m ? (u32)atoi(m) : 256u;
+    if (mb < 16) mb = 16;
+    if (mb > 1024) mb = 1024;
+    s_vca_bytes = mb << 20;
+    s_vc = (vc_ent*)calloc(VC_N, sizeof *s_vc);
+    if (!s_vc) return 0;
+    for (int i = 0; i < 2; i++) {
+        rsx_upload_buffer b = {0};
+        if (!vp_upload_allocate(NULL, s_vca_bytes, &b)) { fprintf(stderr, "[VCACHE] off: arena allocation failed\n"); return 0; }
+        s_vca[i].res = (ID3D12Resource*)b.resource;
+        s_vca[i].mem = (u8*)b.memory;
+        s_vca[i].gpu = s_vca[i].res->lpVtbl->GetGPUVirtualAddress(s_vca[i].res);
+        s_vca[i].gen = 1;
+    }
+    e = getenv("RSX_VC_CACHE_VERIFY"); s_vc_verify = e && e[0] == '1';
+    e = getenv("RSX_VC_CACHE_STATS"); s_vc_stats = e && e[0] == '1';
+    fprintf(stderr, "[VCACHE] on: 2 x %u MiB arenas, %u entries%s\n", mb, (unsigned)VC_N, s_vc_verify ? ", verify" : "");
+    s_vc_on = 1;
+    return 1;
+}
+static void vc_frame(void)
+{
+    if (s_vc_on != 1) return;
+    ++s_vc_frame;
+    vc_arena* a = &s_vca[s_vca_active];
+    /* Switches stay VC_SWITCH_GAP presents apart: a live set larger than
+     * an arena would otherwise refill and switch every present. Until then
+     * a full arena sends fills to the ring, as with the cache off. */
+    if (a->top > s_vca_bytes / 4 * 3 && s_vc_frame - s_vc_last_switch >= VC_SWITCH_GAP && s_d3d.draw_count == 0) {
+        /* Every record that could read the other arena has been submitted. */
+        wait_for_gpu_required();
+        s_vc_last_switch = s_vc_frame;
+        s_vca_active ^= 1;
+        s_vca[s_vca_active].top = 0;
+        s_vca[s_vca_active].gen++;
+        s_vcs.switches++;
+    }
+    if (s_vc_stats && s_vc_frame % 600 == 0) {
+        LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+        const double ms = 1e3 / (double)f.QuadPart / 600.0;
+        typedef unsigned long long ull;
+        fprintf(stderr, "[VCACHE] 600 presents: calls=%llu hit=%llu (%llu verts) fill=%llu (%llu verts) dirty=%llu bypass=%llu full=%llu"
+                " unwatched=%llu noncontig=%llu reemit=%llu (%llu verts) switches=%llu verified=%llu BAD=%llu"
+                " | ms/present hit=%.3f fill=%.3f | arena%u top=%.1f MiB\n",
+                (ull)s_vcs.calls, (ull)s_vcs.hit, (ull)s_vcs.hit_v, (ull)s_vcs.fill, (ull)s_vcs.fill_v, (ull)s_vcs.dirty,
+                (ull)s_vcs.bypass, (ull)s_vcs.full, (ull)s_vcs.unwatched, (ull)s_vcs.noncontig, (ull)s_vcs.reemit,
+                (ull)s_vcs.reemit_v, (ull)s_vcs.switches, (ull)s_vcs.verified, (ull)s_vcs.bad,
+                s_vcs.t_hit * ms, s_vcs.t_fill * ms, s_vca_active, s_vca[s_vca_active].top / 1048576.0);
+        const u64 bad = s_vcs.bad;
+        memset(&s_vcs, 0, sizeof s_vcs);
+        s_vcs.bad = bad;   /* a running total */
+    }
+}
+static u32 vc_ring(const rsx_state* state, u32 first, u32 count, int kind)
+{
+    return kind ? upload_strip_vp_indexed(state, first, count, kind == 2) : upload_tris_vp_indexed(state, first, count);
+}
+/* kind: 0 TRIANGLES, 1 STRIP, 2 FAN. *rec/*buf: where the output landed
+ * (left as the ring offset / 0 when it went to the ring). */
+static u32 vc_upload(const rsx_state* state, u32 first, u32 count, int kind, int bypass, u32* rec, u32* buf)
+{
+    extern uint8_t* vm_base;
+    extern u32 cellGcmResolveLocated(int local, u32 offset);
+    if (bypass || !state || !vm_base || !s_d3d.vp_vb_mapped || !state->vertex_attribs[0].enabled) {
+        s_vcs.bypass++;
+        return vc_ring(state, first, count, kind);
+    }
+    LARGE_INTEGER t0, t1; QueryPerformanceCounter(&t0);
+    s_vcs.calls++;
+    rsx_vertex_fetch_batch b; rsx_vertex_fetch_prepare(&b, state);
+    if (b.count > 8) { s_vcs.bypass++; return vc_ring(state, first, count, kind); }
+    for (u32 i = 0; i < b.count; i++)
+        if (b.slots[i].frequency > 1 && !b.nofreq) { s_vcs.bypass++; return vc_ring(state, first, count, kind); }
+    if (kind && (s_vc_io.owner != state || s_vc_io.epoch != state->begin_epoch || s_vc_io.fan != (kind == 2))) {
+        memset(&s_vc_io.cursor, 0, sizeof s_vc_io.cursor);   /* as upload_strip_vp_indexed resets it */
+        s_vc_io.owner = state; s_vc_io.epoch = state->begin_epoch; s_vc_io.fan = kind == 2;
+    }
+    const u32 isz = ((state->index_array_dma >> 4) & 15u) == 1 ? 2u : 4u;
+    const u32 idx_ea = cellGcmResolveLocated((state->index_array_dma & 0xF) == 0, state->index_array_offset) + first * isz;
+    const u32 idx_len = count * isz;
+    struct { rsx_index_strip cur; u32 kind, idx_ea, count, isz, restart_en, restart, mask, stride, n, nofreq; u8 active[16];
+             rsx_vertex_fetch_slot sl[8]; rsx_vertex_value c[16]; } st;
+    memset(&st, 0, sizeof st);
+    if (kind) st.cur = s_vc_io.cursor;
+    st.kind = (u32)kind; st.idx_ea = idx_ea; st.count = count; st.isz = isz;
+    st.restart_en = state->restart_index_enable; st.restart = state->restart_index;
+    st.mask = s_vp_layout.mask; st.stride = s_vp_layout.stride; st.n = b.count; st.nofreq = (u32)b.nofreq;
+    memcpy(st.active, b.active, sizeof st.active);
+    memcpy(st.sl, b.slots, sizeof(rsx_vertex_fetch_slot) * b.count);
+    memcpy(st.c, b.constants, sizeof st.c);
+    u64 key = XXH3_64bits(&st, sizeof st); if (!key) key = 1;
+    vc_ent* e = NULL; vc_ent* victim = NULL;
+    for (u32 n = 0; n < VC_PROBE; n++) {
+        vc_ent* c = &s_vc[((u32)key + n) & (VC_N - 1)];
+        if (c->used && c->key == key) { e = c; break; }
+        if (!c->used) { if (!victim || victim->used) victim = c; }
+        else if (!victim || (victim->used && c->last_frame < victim->last_frame)) victim = c;
+    }
+    const u32 stride = s_vp_layout.stride;
+    if (e && e->valid && e->gen == s_vca[e->arena].gen && e->stride == stride &&
+        (!kind || !memcmp(&e->cur_in, &s_vc_io.cursor, sizeof s_vc_io.cursor))) {
+        int clean = vm_clean_since(e->idx_ea, e->idx_len, e->ep_idx);
+        for (u32 i = 0; clean && i < e->nspan; i++) clean = vm_clean_since(e->ea[i], e->len[i], e->ep[i]);
+        if (clean) {
+            e->last_frame = s_vc_frame;
+            if (s_vc_verify && ++s_vcs.verified % VC_VERIFY_EVERY == 0) {
+                /* Convert again into cached scratch memory and compare. The
+                 * ring and the arenas are upload-heap (write-combined) memory,
+                 * slow to read, so the compare reads only the stored copy and
+                 * only for 1 hit in VC_VERIFY_EVERY. */
+                static VPSlot* scratch; static u64 scratch_bytes;
+                const u64 vneed = (u64)(kind ? 3u : 1u) * count * stride;
+                if (vneed > scratch_bytes) {
+                    free(scratch); scratch = (VPSlot*)malloc((size_t)vneed); scratch_bytes = scratch ? vneed : 0;
+                }
+                if (scratch) {
+                    if (kind) s_vc_io.cursor = e->cur_in;
+                    s_vc_io.dst = scratch; s_vc_io.room = vneed;
+                    const u32 n = vc_ring(state, first, count, kind);
+                    s_vc_io.dst = NULL;
+                    if (n != e->out || memcmp(scratch, s_vca[e->arena].mem + e->off, (size_t)n * stride) ||
+                        (kind && memcmp(&s_vc_io.cursor, &e->cur_out, sizeof s_vc_io.cursor))) {
+                        if (s_vcs.bad++ < 16)
+                            fprintf(stderr, "[VCACHE] BAD kind=%d first=%u count=%u out=%u/%u idx_ea=%08X ea0=%08X len0=%u\n",
+                                    kind, first, count, n, e->out, idx_ea, e->ea[0], e->len[0]);
+                    }
+                }
+            }
+            if (kind) s_vc_io.cursor = e->cur_out;
+            *rec = e->off; *buf = e->arena + 1u;
+            s_vcs.hit++; s_vcs.hit_v += e->out;
+            QueryPerformanceCounter(&t1); s_vcs.t_hit += (u64)(t1.QuadPart - t0.QuadPart);
+            return e->out;
+        }
+    }
+    /* Fill: room for the worst case in the active arena, else the ring. */
+    vc_arena* a = &s_vca[s_vca_active];
+    const u64 need = (u64)(kind ? 3u : 1u) * count * stride;
+    const u64 at = ((u64)a->top + stride - 1) / stride * stride;
+    if (at + need > s_vca_bytes) { s_vcs.full++; return vc_ring(state, first, count, kind); }
+    if (e) s_vcs.dirty++;
+    else { e = victim; memset(e, 0, sizeof *e); e->key = key; e->used = 1; }
+    e->valid = 1; e->nspan = 0;
+    e->idx_ea = idx_ea; e->idx_len = idx_len;
+    /* Arm every watch before the conversion reads the bytes. */
+    e->ep_idx = vm_watch(idx_ea, idx_len);
+    if (!e->ep_idx) e->valid = 0;
+    const u8* ip = vm_base + idx_ea;
+    u32 mn = 0xFFFFFFFFu, mx = 0;
+    for (u32 k = 0; k < count; k++) {
+        u32 v = isz == 2 ? ((u32)ip[2*k] << 8 | ip[2*k+1]) : ((u32)ip[4*k] << 24 | (u32)ip[4*k+1] << 16 | (u32)ip[4*k+2] << 8 | ip[4*k+3]);
+        if (state->restart_index_enable && v == state->restart_index) continue;
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+    }
+    if (kind) {   /* held strip/fan vertices from earlier calls are read too */
+        if (s_vc_io.cursor.held >= 1) { if (s_vc_io.cursor.first < mn) mn = s_vc_io.cursor.first; if (s_vc_io.cursor.first > mx) mx = s_vc_io.cursor.first; }
+        if (s_vc_io.cursor.held >= 2) { if (s_vc_io.cursor.previous < mn) mn = s_vc_io.cursor.previous; if (s_vc_io.cursor.previous > mx) mx = s_vc_io.cursor.previous; }
+    }
+    if (mn <= mx) for (u32 i = 0; i < b.count; i++) {
+        const rsx_vertex_fetch_slot* sl = &b.slots[i];
+        const u64 span = (u64)(mx - mn) * sl->stride;
+        const u32 lo = cellGcmResolveLocated(sl->location, sl->offset + mn * sl->stride);
+        const u32 hi = cellGcmResolveLocated(sl->location, sl->offset + mx * sl->stride);
+        if ((u64)(u32)(hi - lo) != span || span > (64u << 20)) { s_vcs.noncontig++; e->valid = 0; break; }
+        e->ea[i] = lo; e->len[i] = (u32)span + 16u; e->nspan = (u8)(i + 1);
+        e->ep[i] = vm_watch(lo, e->len[i]);
+        if (!e->ep[i]) e->valid = 0;
+    }
+    if (!e->valid) s_vcs.unwatched++;
+    if (kind) e->cur_in = s_vc_io.cursor;
+    s_vc_io.dst = (VPSlot*)(a->mem + at);
+    s_vc_io.room = need;
+    const u32 n = vc_ring(state, first, count, kind);
+    s_vc_io.dst = NULL;
+    if (kind) e->cur_out = s_vc_io.cursor;
+    e->off = (u32)at; e->out = n; e->stride = stride;
+    e->arena = (u8)s_vca_active; e->gen = a->gen; e->last_frame = s_vc_frame;
+    a->top = (u32)(at + (u64)n * stride);
+    *rec = (u32)at; *buf = s_vca_active + 1u;
+    s_vcs.fill++; s_vcs.fill_v += n;
+    QueryPerformanceCounter(&t1); s_vcs.t_fill += (u64)(t1.QuadPart - t0.QuadPart);
+    return n;
+}
+/* A TRIANGLES continuation whose output did not land right after its run's
+ * (a cached part next to a refilled one) would split the triangle stream out
+ * of phase: convert the whole run again into the ring as the one record. */
+static int vc_reemit_run(u32 first, u32 count)
+{
+    if (!s_d3d.draw_count) return 0;
+    D3D12DrawRecord* pv = &s_d3d.draws[s_d3d.draw_count - 1];
+    const rsx_state* state = s_d3d.current_rsx_state;
+    if (!pv->vb_buf || s_vc_run_draw != s_d3d.draw_count - 1 || !state ||
+        s_vc_run_epoch != state->begin_epoch || first <= s_vc_run_first) return 0;
+    const u32 off = s_d3d.vp_vb_offset;
+    const u32 n = upload_tris_vp_indexed(state, s_vc_run_first, first + count - s_vc_run_first);
+    if (!n) return 0;
+    pv->vb_buf = 0; pv->vb_byte_offset = off; pv->vertex_count = n;
+    s_vcs.reemit++; s_vcs.reemit_v += n;
+    return 1;
+}
+/* The indexed record just written starts a run that later calls may extend. */
+static void vc_note_record(u32 first)
+{
+    s_vc_run_first = first; s_vc_run_draw = s_d3d.draw_count;
+    s_vc_run_epoch = s_d3d.current_rsx_state ? s_d3d.current_rsx_state->begin_epoch : 0;
 }
 
 #else /* !_WIN32 */

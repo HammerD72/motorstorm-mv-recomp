@@ -101,6 +101,36 @@ It uses no game data. The author reported race results on the original
 implementation in [#332](https://github.com/robbe1912/motorstorm-mv-recomp/issues/332#issuecomment-7183145446).
 Those results do not measure the reviewed version.
 
+## Indexed vertex upload cache
+
+`RSX_VC_CACHE=1` (with `PS3RECOMP_VM_WRITE_WATCH=1`) in
+`libs/video/rsx_d3d12_backend.c` keeps converted indexed VP uploads
+(triangles, strips and fans; not quads). The key hashes the draw kind, index
+address, count and size, restart state, the attribute layout, every active
+slot's address, format and stride, and the constant attributes. Strips and
+fans also key the cursor they continue from. An entry is reused only if the
+watch reports its index span and each slot's referenced vertex span clean
+since the epoch armed before conversion. A strip entry's span also covers the
+held first and previous vertices. Conversion writes straight into one of two
+persistent upload-heap arenas. Arenas are bump-allocated and never rewritten
+in place. At a present with no recorded draws, when the active arena is over
+3/4 full, the renderer waits for the GPU and switches to the other arena,
+which it resets and whose entries the new generation invalidates. Switches
+stay at least 120 presents apart; until then a full arena sends fills to
+the ring, so a live set larger than an arena cannot switch every present.
+Replayed records name their buffer (ring or arena) and rebind the vertex
+buffer view when it changes. Triangle records merge only when contiguous in the same
+buffer. A run that would mix ring and arena output is emitted again into the
+ring. A draw with no arena room, or whose span the watch refuses, converts
+into the ring as before.
+
+[check_rsx_vertex_cache.py](../scripts/check_rsx_vertex_cache.py) compiles
+the production cache with the real attribute prepare and authored memory,
+watch and uploaders. It covers reuse, element, index, local-array and
+constant changes, strip cursor and held vertices, arena switch draining and
+invalidation, ring fallback and verify mode. It also rejects twelve source mutants that
+drop a guard. It uses no game data.
+
 ## Coherent surface prefetch (#322)
 
 The reusable implementation and authored validation are own-fork modular and
